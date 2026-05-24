@@ -24,21 +24,35 @@ class UpdateExecutor : public AbstractExecutor {
     std::string tab_name_;
     std::vector<SetClause> set_clauses_;
     SmManager *sm_manager_;
+    bool done_ = false;
 
    public:
     UpdateExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<SetClause> set_clauses,
                    std::vector<Condition> conds, std::vector<Rid> rids, Context *context) {
         sm_manager_ = sm_manager;
         tab_name_ = tab_name;
-        set_clauses_ = set_clauses;
+        set_clauses_ = std::move(set_clauses);
         tab_ = sm_manager_->db_.get_table(tab_name);
         fh_ = sm_manager_->fhs_.at(tab_name).get();
-        conds_ = conds;
-        rids_ = rids;
+        conds_ = std::move(conds);
+        rids_ = std::move(rids);
         context_ = context;
     }
+
     std::unique_ptr<RmRecord> Next() override {
-        
+        if (done_) {
+            return nullptr;
+        }
+        done_ = true;
+
+        for (auto &rid : rids_) {
+            auto rec = fh_->get_record(rid, context_);
+            for (auto &set_clause : set_clauses_) {
+                auto col = tab_.get_col(set_clause.lhs.col_name);
+                memcpy(rec->data + col->offset, set_clause.rhs.raw->data, col->len);
+            }
+            fh_->update_record(rid, rec->data, context_);
+        }
         return nullptr;
     }
 

@@ -17,12 +17,13 @@ See the Mulan PSL v2 for more details. */
 
 class DeleteExecutor : public AbstractExecutor {
    private:
-    TabMeta tab_;                   // 表的元数据
-    std::vector<Condition> conds_;  // delete的条件
-    RmFileHandle *fh_;              // 表的数据文件句柄
-    std::vector<Rid> rids_;         // 需要删除的记录的位置
-    std::string tab_name_;          // 表名称
+    TabMeta tab_;
+    std::vector<Condition> conds_;
+    RmFileHandle *fh_;
+    std::vector<Rid> rids_;
+    std::string tab_name_;
     SmManager *sm_manager_;
+    bool done_ = false;
 
    public:
     DeleteExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<Condition> conds,
@@ -31,12 +32,20 @@ class DeleteExecutor : public AbstractExecutor {
         tab_name_ = tab_name;
         tab_ = sm_manager_->db_.get_table(tab_name);
         fh_ = sm_manager_->fhs_.at(tab_name).get();
-        conds_ = conds;
-        rids_ = rids;
+        conds_ = std::move(conds);
+        rids_ = std::move(rids);
         context_ = context;
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        if (done_) {
+            return nullptr;
+        }
+        done_ = true;
+
+        for (auto &rid : rids_) {
+            fh_->delete_record(rid, context_);
+        }
         return nullptr;
     }
 
