@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -35,10 +36,15 @@ class IndexScanExecutor : public AbstractExecutor {
     std::vector<Condition> conds_;
     std::unordered_map<std::string, std::vector<Condition>> col2conds_;
 
-    Rid rid_;
+    Rid rid_{-1, -1};
     std::unique_ptr<RecScan> scan_;
     std::unique_ptr<RmRecord> rec_;
     bool is_end_ = false;
+
+    std::vector<std::unique_ptr<RmRecord>> batch_recs_;
+    std::vector<Rid> batch_rids_;
+    size_t batch_index_ = 0;
+    std::unordered_map<int, std::vector<Rid>> batch_rids_map_;
 
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
@@ -64,12 +70,24 @@ class IndexScanExecutor : public AbstractExecutor {
                 cond.op = swap_op.at(cond.op);
             }
             if (cond.is_rhs_val && cond.op != OP_NE) {
-                col2conds_[cond.lhs_col.col_name].push_back(cond);
+                auto it = std::find(index_col_names_.begin(), index_col_names_.end(), cond.lhs_col.col_name);
+                if (it != index_col_names_.end()) {
+                    col2conds_[cond.lhs_col.col_name].push_back(cond);
+                }
             }
         }
     }
 
     void beginTuple() override {
+        is_end_ = false;
+        rec_.reset();
+        scan_.reset();
+        batch_recs_.clear();
+        batch_rids_.clear();
+        batch_rids_map_.clear();
+        batch_index_ = 0;
+        rid_ = {-1, -1};
+
         std::vector<std::string> full_index_col_names;
         for (const auto &col : index_meta_.cols) {
             full_index_col_names.push_back(col.name);
@@ -93,15 +111,31 @@ class IndexScanExecutor : public AbstractExecutor {
         scan_ = std::make_unique<IxScan>(ih, lower_iid, upper_iid, sm_manager_->get_bpm());
         delete[] lower_key;
         delete[] upper_key;
-        advance_to_match();
+
+        while (!scan_->is_end()) {
+            Rid r = scan_->rid();
+            if (r.page_no >= 0) {
+                batch_rids_map_[r.page_no].push_back(r);
+            }
+            scan_->next();
+        }
+
+        load_next_batch();
     }
 
     void nextTuple() override {
         if (is_end_ || !scan_) {
             return;
         }
-        scan_->next();
-        advance_to_match();
+
+        if (batch_index_ + 1 < batch_recs_.size()) {
+            batch_index_++;
+            rec_ = std::make_unique<RmRecord>(*batch_recs_[batch_index_]);
+            rid_ = batch_rids_[batch_index_];
+            return;
+        }
+
+        load_next_batch();
     }
 
     std::unique_ptr<RmRecord> Next() override {
@@ -111,7 +145,7 @@ class IndexScanExecutor : public AbstractExecutor {
         return std::make_unique<RmRecord>(*rec_);
     }
 
-    bool is_end() const override { return is_end_; }
+    bool is_end() const override { return is_end_ || (scan_ && scan_->is_end() && rid_.slot_no == -1); }
 
     size_t tupleLen() const override { return len_; }
 
@@ -120,18 +154,54 @@ class IndexScanExecutor : public AbstractExecutor {
     const std::vector<ColMeta> &cols() const override { return cols_; }
 
    private:
-    void advance_to_match() {
+    void load_next_batch() {
+        batch_recs_.clear();
+        batch_rids_.clear();
+        batch_index_ = 0;
         rec_.reset();
-        while (scan_ && !scan_->is_end()) {
-            rid_ = scan_->rid();
-            auto record = fh_->get_record(rid_, context_);
-            if (record && eval_conditions(*record, conds_, cols_)) {
-                rec_ = std::move(record);
-                return;
+        rid_ = {-1, -1};
+
+        while (batch_recs_.empty() && !batch_rids_map_.empty()) {
+            std::vector<std::unique_ptr<RmRecord>> tmp_batch_recs;
+            std::vector<Rid> tmp_batch_rids;
+            bool has_found = false;
+
+            for (auto it = batch_rids_map_.begin(); it != batch_rids_map_.end();) {
+                auto page_no = it->first;
+                auto rids = std::move(it->second);
+                it = batch_rids_map_.erase(it);
+                if (rids.empty()) {
+                    continue;
+                }
+                auto page_recs = fh_->batch_get_records(page_no, rids, context_);
+                if (page_recs.size() != rids.size()) {
+                    throw InternalError("Batch size mismatch in IndexScanExecutor");
+                }
+                tmp_batch_recs.insert(tmp_batch_recs.end(), std::make_move_iterator(page_recs.begin()),
+                                      std::make_move_iterator(page_recs.end()));
+                tmp_batch_rids.insert(tmp_batch_rids.end(), rids.begin(), rids.end());
+                has_found = true;
+                break;
             }
-            scan_->next();
+
+            if (!has_found) {
+                break;
+            }
+
+            for (size_t i = 0; i < tmp_batch_recs.size(); ++i) {
+                if (eval_conditions(*tmp_batch_recs[i], conds_, cols_)) {
+                    batch_recs_.push_back(std::move(tmp_batch_recs[i]));
+                    batch_rids_.push_back(tmp_batch_rids[i]);
+                }
+            }
         }
-        is_end_ = true;
+
+        if (!batch_recs_.empty()) {
+            rec_ = std::make_unique<RmRecord>(*batch_recs_[0]);
+            rid_ = batch_rids_[0];
+        } else {
+            is_end_ = true;
+        }
     }
 
     void build_lower_key(char *key) {
@@ -223,6 +293,10 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void write_condition_rhs_val_to_key(char *key, const Condition &cond, int len = 0) {
+        if (cond.rhs_val.raw) {
+            memcpy(key, cond.rhs_val.raw->data, len);
+            return;
+        }
         switch (cond.rhs_val.type) {
             case TYPE_INT:
                 memcpy(key, &cond.rhs_val.int_val, sizeof(int));

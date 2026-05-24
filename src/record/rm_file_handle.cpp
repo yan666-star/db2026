@@ -33,6 +33,33 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
     return record;
 }
 
+std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_no, std::vector<Rid> &rids,
+                                                                       Context *context) const {
+    std::vector<std::unique_ptr<RmRecord>> records;
+    if (rids.empty()) {
+        return records;
+    }
+
+    RmPageHandle page_handle = fetch_page_handle(page_no);
+    std::vector<Rid> valid_rids;
+    valid_rids.reserve(rids.size());
+    for (const auto &rid : rids) {
+        if (rid.page_no != page_no) {
+            continue;
+        }
+        if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
+            continue;
+        }
+        auto record = std::make_unique<RmRecord>(file_hdr_.record_size);
+        memcpy(record->data, page_handle.get_slot(rid.slot_no), file_hdr_.record_size);
+        records.push_back(std::move(record));
+        valid_rids.push_back(rid);
+    }
+    buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
+    rids = std::move(valid_rids);
+    return records;
+}
+
 /**
  * @description: 在当前表中插入一条记录，不指定插入位置
  * @param {char*} buf 要插入的记录的数据

@@ -73,6 +73,8 @@ class RmFileHandle {
 
     std::unique_ptr<RmRecord> get_record(const Rid &rid, Context *context) const;
 
+    std::vector<std::unique_ptr<RmRecord>> batch_get_records(int page_no, std::vector<Rid> &rids, Context *context) const;
+
     Rid insert_record(char *buf, Context *context);
 
     void insert_record(const Rid &rid, char *buf);

@@ -10,24 +10,28 @@ See the Mulan PSL v2 for more details. */
 
 #include "ix_scan.h"
 
-/**
- * @brief 
- * @todo 加上读锁（需要使用缓冲池得到page）
- */
 void IxScan::next() {
-    assert(!is_end());
-    IxNodeHandle *node = ih_->fetch_node(iid_.page_no);
-    assert(node->is_leaf_page());
-    assert(iid_.slot_no < node->get_size());
-    // increment slot no
-    iid_.slot_no++;
-    if (iid_.page_no != ih_->file_hdr_->last_leaf_ && iid_.slot_no == node->get_size()) {
-        // go to next leaf
+    if (iid_.slot_no < node_size_ - 1) {
+        iid_.slot_no++;
+        return;
+    }
+    if (!is_end() && iid_.page_no != ih_->file_hdr_->last_leaf_) {
+        auto node = ih_->fetch_node(iid_.page_no);
         iid_.slot_no = 0;
         iid_.page_no = node->get_next_leaf();
+        bpm_->unpin_page(node->get_page_id(), false);
+        delete node;
+
+        node = ih_->fetch_node(iid_.page_no);
+        node_size_ = node->get_size();
+        batch_rids_ = ih_->get_rids(iid_);
+        bpm_->unpin_page(node->get_page_id(), false);
+        delete node;
+    } else {
+        iid_ = end_;
     }
 }
 
 Rid IxScan::rid() const {
-    return ih_->get_rid(iid_);
+    return batch_rids_.empty() ? Rid{-1, -1} : batch_rids_[iid_.slot_no];
 }

@@ -13,20 +13,27 @@ See the Mulan PSL v2 for more details. */
 #include "ix_defs.h"
 #include "ix_index_handle.h"
 
-// class IxIndexHandle;
-
-// 用于遍历叶子结点
-// 用于直接遍历叶子结点，而不用findleafpage来得到叶子结点
-// TODO：对page遍历时，要加上读锁
 class IxScan : public RecScan {
     const IxIndexHandle *ih_;
-    Iid iid_;  // 初始为lower（用于遍历的指针）
-    Iid end_;  // 初始为upper
+    Iid iid_;
+    Iid end_;
     BufferPoolManager *bpm_;
+
+    int node_size_ = 0;
+    std::vector<Rid> batch_rids_;
 
    public:
     IxScan(const IxIndexHandle *ih, const Iid &lower, const Iid &upper, BufferPoolManager *bpm)
-        : ih_(ih), iid_(lower), end_(upper), bpm_(bpm) {}
+        : ih_(ih), iid_(lower), end_(upper), bpm_(bpm) {
+        if (is_end()) {
+            return;
+        }
+        auto node = ih_->fetch_node(iid_.page_no);
+        node_size_ = node->get_size();
+        batch_rids_ = ih_->get_rids(iid_);
+        bpm_->unpin_page(node->get_page_id(), false);
+        delete node;
+    }
 
     void next() override;
 

@@ -57,7 +57,11 @@ bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_c
         return false;
     }
     for (const auto& col : best_index->cols) {
-        index_col_names.push_back(col.name);
+        if (available_cols.count(col.name)) {
+            index_col_names.push_back(col.name);
+        } else {
+            break;
+        }
     }
     return true;
 }
