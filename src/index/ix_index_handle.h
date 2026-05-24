@@ -194,8 +194,13 @@ class IxIndexHandle {
 
     void redistribute(IxNodeHandle *neighbor_node, IxNodeHandle *node, IxNodeHandle *parent, int index);
 
+    void redistribute_internal(IxNodeHandle *neighbor_node, IxNodeHandle *node, IxNodeHandle *parent, int index);
+
     bool coalesce(IxNodeHandle **neighbor_node, IxNodeHandle **node, IxNodeHandle **parent, int index,
                   Transaction *transaction, bool *root_is_latched);
+
+    bool coalesce_internal(IxNodeHandle **neighbor_node, IxNodeHandle **node, IxNodeHandle **parent, int index,
+                           Transaction *transaction, bool *root_is_latched);
 
     Iid lower_bound(const char *key);
 
@@ -225,6 +230,10 @@ class IxIndexHandle {
 
     void maintain_child(IxNodeHandle *node, int child_idx);
 
+    IxNodeHandle *split_internal(IxNodeHandle *node, char *promote_key);
+
     // for index test
     Rid get_rid(const Iid &iid) const;
+
+    std::vector<Rid> get_rids(const Iid &iid) const;
 };

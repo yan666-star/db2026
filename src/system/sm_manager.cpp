@@ -253,7 +253,54 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
  * @param {Context*} context
  */
 void SmManager::create_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    TabMeta& tab = db_.get_table(tab_name);
+    if (ix_manager_->exists(tab_name, col_names)) {
+        throw IndexExistsError(tab_name, col_names);
+    }
+
+    std::vector<ColMeta> cols(col_names.size());
+    int col_tot_len = 0;
+    for (size_t i = 0; i < col_names.size(); ++i) {
+        auto col = tab.get_col(col_names[i]);
+        cols[i] = *col;
+        col_tot_len += col->len;
+    }
+
+    ix_manager_->create_index(tab_name, cols);
+    auto index_handle = ix_manager_->open_index(tab_name, cols);
+    tab.indexes.push_back({tab_name, col_tot_len, static_cast<int>(cols.size()), cols});
+    ihs_.emplace(ix_manager_->get_index_name(tab_name, col_names), std::move(index_handle));
+    flush_meta();
+
+    auto rm_handle = fhs_.at(tab_name).get();
+    auto ih = ihs_.at(ix_manager_->get_index_name(tab_name, cols)).get();
+    char* key = new char[col_tot_len];
+
+    RmScan rm_scan(rm_handle);
+    while (!rm_scan.is_end()) {
+        auto record = rm_handle->get_record(rm_scan.rid(), context);
+        if (!record) {
+            rm_scan.next();
+            continue;
+        }
+        int offset = 0;
+        for (size_t i = 0; i < cols.size(); ++i) {
+            memcpy(key + offset, record->data + cols[i].offset, cols[i].len);
+            offset += cols[i].len;
+        }
+        std::vector<Rid> tmp_result;
+        if (ih->get_value(key, &tmp_result, context == nullptr ? nullptr : context->txn_)) {
+            ihs_.erase(ix_manager_->get_index_name(tab_name, cols));
+            ix_manager_->destroy_index(tab_name, cols);
+            tab.indexes.pop_back();
+            flush_meta();
+            delete[] key;
+            throw RMDBError("Index duplicate key error");
+        }
+        ih->insert_entry(key, rm_scan.rid(), context == nullptr ? nullptr : context->txn_);
+        rm_scan.next();
+    }
+    delete[] key;
 }
 
 /**
@@ -263,7 +310,17 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    if (!ix_manager_->exists(tab_name, col_names)) {
+        throw IndexNotFoundError(tab_name, col_names);
+    }
+    auto index_name = ix_manager_->get_index_name(tab_name, col_names);
+    TabMeta& tab = db_.get_table(tab_name);
+    auto index_meta = tab.get_index_meta(col_names);
+    tab.indexes.erase(index_meta);
+    ix_manager_->close_index(ihs_.at(index_name).get());
+    ix_manager_->destroy_index(tab_name, col_names);
+    ihs_.erase(index_name);
+    flush_meta();
 }
 
 /**
@@ -273,5 +330,32 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<std::s
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMeta>& cols, Context* context) {
-    
+    std::vector<std::string> col_names;
+    for (auto& col : cols) {
+        col_names.push_back(col.name);
+    }
+    drop_index(tab_name, col_names, context);
+}
+
+void SmManager::show_index(const std::string& tab_name, Context* context) {
+    TabMeta& tab = db_.get_table(tab_name);
+    if (tab.indexes.empty()) {
+        return;
+    }
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    RecordPrinter printer(3);
+    printer.print_separator(context);
+    for (auto& index : tab.indexes) {
+        std::string col_str = "(";
+        for (auto& col : index.cols) {
+            col_str += col.name + ",";
+        }
+        col_str.pop_back();
+        col_str += ")";
+        printer.print_record({tab_name, "unique", col_str}, context);
+        outfile << "| " << tab.name << " | unique | " << col_str << " |\n";
+        printer.print_separator(context);
+    }
+    outfile.close();
 }

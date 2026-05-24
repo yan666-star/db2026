@@ -10,6 +10,12 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <algorithm>
+#include <limits>
+#include <unordered_map>
+#include <vector>
+
+#include "execution_eval.h"
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -18,63 +24,297 @@ See the Mulan PSL v2 for more details. */
 
 class IndexScanExecutor : public AbstractExecutor {
    private:
-    std::string tab_name_;                      // 表名称
-    TabMeta tab_;                               // 表的元数据
-    std::vector<Condition> conds_;              // 扫描条件
-    RmFileHandle *fh_;                          // 表的数据文件句柄
-    std::vector<ColMeta> cols_;                 // 需要读取的字段
-    size_t len_;                                // 选取出来的一条记录的长度
-    std::vector<Condition> fed_conds_;          // 扫描条件，和conds_字段相同
-
-    std::vector<std::string> index_col_names_;  // index scan涉及到的索引包含的字段
-    IndexMeta index_meta_;                      // index scan涉及到的索引元数据
+    SmManager *sm_manager_;
+    std::string tab_name_;
+    TabMeta tab_;
+    std::vector<std::string> index_col_names_;
+    RmFileHandle *fh_;
+    std::vector<ColMeta> cols_;
+    size_t len_;
+    IndexMeta index_meta_;
+    std::vector<Condition> conds_;
+    std::unordered_map<std::string, std::vector<Condition>> col2conds_;
 
     Rid rid_;
     std::unique_ptr<RecScan> scan_;
-
-    SmManager *sm_manager_;
+    std::unique_ptr<RmRecord> rec_;
+    bool is_end_ = false;
 
    public:
-    IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, std::vector<std::string> index_col_names,
-                    Context *context) {
+    IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
+                      std::vector<std::string> index_col_names, Context *context) {
         sm_manager_ = sm_manager;
         context_ = context;
         tab_name_ = std::move(tab_name);
         tab_ = sm_manager_->db_.get_table(tab_name_);
         conds_ = std::move(conds);
-        // index_no_ = index_no;
-        index_col_names_ = index_col_names; 
+        index_col_names_ = std::move(index_col_names);
         index_meta_ = *(tab_.get_index_meta(index_col_names_));
         fh_ = sm_manager_->fhs_.at(tab_name_).get();
         cols_ = tab_.cols;
         len_ = cols_.back().offset + cols_.back().len;
+
         std::map<CompOp, CompOp> swap_op = {
             {OP_EQ, OP_EQ}, {OP_NE, OP_NE}, {OP_LT, OP_GT}, {OP_GT, OP_LT}, {OP_LE, OP_GE}, {OP_GE, OP_LE},
         };
-
         for (auto &cond : conds_) {
             if (cond.lhs_col.tab_name != tab_name_) {
-                // lhs is on other table, now rhs must be on this table
                 assert(!cond.is_rhs_val && cond.rhs_col.tab_name == tab_name_);
-                // swap lhs and rhs
                 std::swap(cond.lhs_col, cond.rhs_col);
                 cond.op = swap_op.at(cond.op);
             }
+            if (cond.is_rhs_val && cond.op != OP_NE) {
+                col2conds_[cond.lhs_col.col_name].push_back(cond);
+            }
         }
-        fed_conds_ = conds_;
     }
 
     void beginTuple() override {
-        
+        std::vector<std::string> full_index_col_names;
+        for (const auto &col : index_meta_.cols) {
+            full_index_col_names.push_back(col.name);
+        }
+        IxIndexHandle *ih =
+            sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, full_index_col_names)).get();
+
+        char *lower_key = new char[index_meta_.col_tot_len];
+        char *upper_key = new char[index_meta_.col_tot_len];
+        build_lower_key(lower_key);
+        build_upper_key(upper_key);
+        if (compare_index_key(upper_key, lower_key, index_meta_) < 0) {
+            is_end_ = true;
+            delete[] lower_key;
+            delete[] upper_key;
+            return;
+        }
+
+        auto lower_iid = ih->lower_bound(lower_key);
+        auto upper_iid = ih->upper_bound(upper_key);
+        scan_ = std::make_unique<IxScan>(ih, lower_iid, upper_iid, sm_manager_->get_bpm());
+        delete[] lower_key;
+        delete[] upper_key;
+        advance_to_match();
     }
 
     void nextTuple() override {
-        
+        if (is_end_ || !scan_) {
+            return;
+        }
+        scan_->next();
+        advance_to_match();
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        if (!rec_) {
+            return nullptr;
+        }
+        return std::make_unique<RmRecord>(*rec_);
     }
 
+    bool is_end() const override { return is_end_; }
+
+    size_t tupleLen() const override { return len_; }
+
     Rid &rid() override { return rid_; }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+   private:
+    void advance_to_match() {
+        rec_.reset();
+        while (scan_ && !scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto record = fh_->get_record(rid_, context_);
+            if (record && eval_conditions(*record, conds_, cols_)) {
+                rec_ = std::move(record);
+                return;
+            }
+            scan_->next();
+        }
+        is_end_ = true;
+    }
+
+    void build_lower_key(char *key) {
+        int offset = 0;
+        bool range_applied = false;
+        for (int i = 0; i < index_meta_.col_num; ++i) {
+            auto col = index_meta_.cols[i];
+            auto it = col2conds_.find(col.name);
+            if (it != col2conds_.end() && !range_applied) {
+                bool has_eq = false;
+                Condition eq_cond;
+                for (const auto &cond : it->second) {
+                    if (cond.op == OP_EQ) {
+                        eq_cond = cond;
+                        has_eq = true;
+                        break;
+                    }
+                }
+                if (has_eq) {
+                    write_condition_rhs_val_to_key(key + offset, eq_cond, col.len);
+                } else {
+                    Condition best_lower;
+                    bool has_lower = false;
+                    for (const auto &cond : it->second) {
+                        if (cond.op == OP_GT || cond.op == OP_GE) {
+                            if (!has_lower || is_better_lower_bound(cond, best_lower)) {
+                                best_lower = cond;
+                                has_lower = true;
+                            }
+                        }
+                    }
+                    if (has_lower) {
+                        write_condition_rhs_val_to_key(key + offset, best_lower, col.len);
+                        range_applied = true;
+                    } else {
+                        write_min_to_key(key + offset, col.type, col.len);
+                        range_applied = true;
+                    }
+                }
+            } else {
+                write_min_to_key(key + offset, col.type, col.len);
+            }
+            offset += col.len;
+        }
+    }
+
+    void build_upper_key(char *key) {
+        int offset = 0;
+        bool range_applied = false;
+        for (int i = 0; i < index_meta_.col_num; ++i) {
+            auto col = index_meta_.cols[i];
+            auto it = col2conds_.find(col.name);
+            if (it != col2conds_.end() && !range_applied) {
+                bool has_eq = false;
+                Condition eq_cond;
+                for (const auto &cond : it->second) {
+                    if (cond.op == OP_EQ) {
+                        eq_cond = cond;
+                        has_eq = true;
+                        break;
+                    }
+                }
+                if (has_eq) {
+                    write_condition_rhs_val_to_key(key + offset, eq_cond, col.len);
+                } else {
+                    Condition best_upper;
+                    bool has_upper = false;
+                    for (const auto &cond : it->second) {
+                        if (cond.op == OP_LT || cond.op == OP_LE) {
+                            if (!has_upper || is_better_upper_bound(cond, best_upper)) {
+                                best_upper = cond;
+                                has_upper = true;
+                            }
+                        }
+                    }
+                    if (has_upper) {
+                        write_condition_rhs_val_to_key(key + offset, best_upper, col.len);
+                        range_applied = true;
+                    } else {
+                        write_max_to_key(key + offset, col.type, col.len);
+                        range_applied = true;
+                    }
+                }
+            } else {
+                write_max_to_key(key + offset, col.type, col.len);
+            }
+            offset += col.len;
+        }
+    }
+
+    void write_condition_rhs_val_to_key(char *key, const Condition &cond, int len = 0) {
+        switch (cond.rhs_val.type) {
+            case TYPE_INT:
+                memcpy(key, &cond.rhs_val.int_val, sizeof(int));
+                break;
+            case TYPE_FLOAT:
+                memcpy(key, &cond.rhs_val.float_val, sizeof(float));
+                break;
+            default:
+                memset(key, 0, len);
+                if (len > 0 && !cond.rhs_val.str_val.empty()) {
+                    int copy_len = std::min(static_cast<int>(cond.rhs_val.str_val.length()), len);
+                    memcpy(key, cond.rhs_val.str_val.c_str(), copy_len);
+                }
+                break;
+        }
+    }
+
+    void write_max_to_key(char *key, ColType type, int len) {
+        switch (type) {
+            case TYPE_INT: {
+                int max_val = std::numeric_limits<int>::max();
+                memcpy(key, &max_val, sizeof(int));
+                break;
+            }
+            case TYPE_FLOAT: {
+                float max_val = std::numeric_limits<float>::max();
+                memcpy(key, &max_val, sizeof(float));
+                break;
+            }
+            default:
+                memset(key, 0xFF, len);
+                break;
+        }
+    }
+
+    void write_min_to_key(char *key, ColType type, int len) {
+        switch (type) {
+            case TYPE_INT: {
+                int min_val = std::numeric_limits<int>::min();
+                memcpy(key, &min_val, sizeof(int));
+                break;
+            }
+            case TYPE_FLOAT: {
+                float min_val = std::numeric_limits<float>::lowest();
+                memcpy(key, &min_val, sizeof(float));
+                break;
+            }
+            default:
+                memset(key, 0, len);
+                break;
+        }
+    }
+
+    bool is_better_lower_bound(const Condition &a, const Condition &b) {
+        if (a.op == OP_GE && b.op == OP_GT) return true;
+        if (a.op == OP_GT && b.op == OP_GE) return false;
+        return compare_values(a.rhs_val, b.rhs_val) > 0;
+    }
+
+    bool is_better_upper_bound(const Condition &a, const Condition &b) {
+        if (a.op == OP_LE && b.op == OP_LT) return true;
+        if (a.op == OP_LT && b.op == OP_LE) return false;
+        return compare_values(a.rhs_val, b.rhs_val) < 0;
+    }
+
+    int compare_values(const Value &v1, const Value &v2) {
+        switch (v1.type) {
+            case TYPE_INT:
+                if (v1.int_val < v2.int_val) return -1;
+                if (v1.int_val > v2.int_val) return 1;
+                return 0;
+            case TYPE_FLOAT:
+                if (v1.float_val < v2.float_val) return -1;
+                if (v1.float_val > v2.float_val) return 1;
+                return 0;
+            case TYPE_STRING:
+                return v1.str_val.compare(v2.str_val);
+            default:
+                return 0;
+        }
+    }
+
+    int compare_index_key(const char *lhs, const char *rhs, const IndexMeta &meta) {
+        int offset = 0;
+        for (int i = 0; i < meta.col_num; ++i) {
+            const auto &col = meta.cols[i];
+            int cmp = compare_col_value(lhs + offset, rhs + offset, col.type, col.len);
+            if (cmp != 0) {
+                return cmp;
+            }
+            offset += col.len;
+        }
+        return 0;
+    }
 };

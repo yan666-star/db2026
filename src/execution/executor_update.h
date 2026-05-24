@@ -47,11 +47,56 @@ class UpdateExecutor : public AbstractExecutor {
 
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
+            auto rec_new = std::make_unique<RmRecord>(*rec);
             for (auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
-                memcpy(rec->data + col->offset, set_clause.rhs.raw->data, col->len);
+                memcpy(rec_new->data + col->offset, set_clause.rhs.raw->data, col->len);
             }
-            fh_->update_record(rid, rec->data, context_);
+
+            int max_key_len = 0;
+            for (auto &index : tab_.indexes) {
+                max_key_len = std::max(max_key_len, index.col_tot_len);
+            }
+            char *key = max_key_len > 0 ? new char[max_key_len] : nullptr;
+            for (auto &index : tab_.indexes) {
+                auto ih =
+                    sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                int offset = 0;
+                for (int i = 0; i < index.col_num; ++i) {
+                    memcpy(key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
+                }
+                std::vector<Rid> dup;
+                if (ih->get_value(key, &dup, context_->txn_) &&
+                    !(dup.size() == 1 && dup[0] == rid)) {
+                    delete[] key;
+                    throw RMDBError("failure");
+                }
+            }
+
+            for (auto &index : tab_.indexes) {
+                auto ih =
+                    sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                int offset = 0;
+                for (int i = 0; i < index.col_num; ++i) {
+                    memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
+                }
+                std::vector<Rid> old_rids;
+                if (ih->get_value(key, &old_rids, context_->txn_) && !old_rids.empty() &&
+                    old_rids[0] == rid) {
+                    ih->delete_entry(key, context_->txn_);
+                }
+                offset = 0;
+                for (int i = 0; i < index.col_num; ++i) {
+                    memcpy(key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
+                }
+                ih->insert_entry(key, rid, context_->txn_);
+            }
+            delete[] key;
+
+            fh_->update_record(rid, rec_new->data, context_);
         }
         return nullptr;
     }

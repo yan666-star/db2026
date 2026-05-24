@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <algorithm>
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -100,19 +101,69 @@ struct TabMeta {
         return false;
     }
 
-    /* 根据字段名称集合获取索引元数据 */
+    /* 根据字段名称集合获取索引元数据，支持最左前缀匹配 */
     std::vector<IndexMeta>::iterator get_index_meta(const std::vector<std::string>& col_names) {
-        for(auto index = indexes.begin(); index != indexes.end(); ++index) {
-            if((*index).col_num != col_names.size()) continue;
-            auto& index_cols = (*index).cols;
-            size_t i = 0;
-            for(; i < col_names.size(); ++i) {
-                if(index_cols[i].name.compare(col_names[i]) != 0) 
-                    break;
+        struct IndexCandidate {
+            std::vector<IndexMeta>::iterator iter;
+            int consecutive_prefix_len;
+            int match_score;
+            bool has_first_col;
+        };
+
+        std::vector<IndexCandidate> candidates;
+        std::set<std::string> query_col_set(col_names.begin(), col_names.end());
+
+        for (auto index = indexes.begin(); index != indexes.end(); ++index) {
+            IndexCandidate candidate;
+            candidate.iter = index;
+            candidate.consecutive_prefix_len = 0;
+            candidate.match_score = 0;
+            candidate.has_first_col = false;
+
+            if ((*index).col_num > 0) {
+                for (const auto& query_col : col_names) {
+                    if (query_col == (*index).cols[0].name) {
+                        candidate.has_first_col = true;
+                        break;
+                    }
+                }
             }
-            if(i == col_names.size()) return index;
+            if (!candidate.has_first_col) {
+                continue;
+            }
+
+            for (size_t i = 0; i < static_cast<size_t>((*index).col_num); ++i) {
+                if (query_col_set.find((*index).cols[i].name) != query_col_set.end()) {
+                    candidate.consecutive_prefix_len++;
+                    candidate.match_score += 10;
+                } else {
+                    break;
+                }
+            }
+
+            for (const auto& query_col : col_names) {
+                for (size_t j = 0; j < static_cast<size_t>((*index).col_num); ++j) {
+                    if ((*index).cols[j].name == query_col) {
+                        candidate.match_score += 1;
+                        break;
+                    }
+                }
+            }
+            candidates.push_back(candidate);
         }
-        throw IndexNotFoundError(name, col_names);
+
+        if (candidates.empty()) {
+            throw IndexNotFoundError(name, col_names);
+        }
+
+        auto best = std::max_element(candidates.begin(), candidates.end(),
+                                     [](const IndexCandidate& a, const IndexCandidate& b) {
+                                         if (a.consecutive_prefix_len != b.consecutive_prefix_len) {
+                                             return a.consecutive_prefix_len < b.consecutive_prefix_len;
+                                         }
+                                         return a.match_score < b.match_score;
+                                     });
+        return best->iter;
     }
 
     /* 根据字段名称获取字段元数据 */
