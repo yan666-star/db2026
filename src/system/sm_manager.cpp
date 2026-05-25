@@ -295,7 +295,7 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
             tab.indexes.pop_back();
             flush_meta();
             delete[] key;
-            throw RMDBError("Index duplicate key error");
+            throw RMDBError("failure");
         }
         ih->insert_entry(key, rm_scan.rid(), context == nullptr ? nullptr : context->txn_);
         rm_scan.next();
