@@ -30,6 +30,8 @@
 
 %}
 
+
+
 alpha [a-zA-Z]
 digit [0-9]
 white_space [ \t]+
@@ -85,6 +87,10 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "ORDER" { return ORDER; }
 "BY" {  return BY;  }
 "ASC" { return ASC; }
+"EXPLAIN" { return EXPLAIN; }
+"ANALYZE" { return ANALYZE; }
+"ON" { return ON; }
+"AS" { return AS; }
 "ENABLE_NESTLOOP" { return ENABLE_NESTLOOP; }
 "ENABLE_SORTMERGE" { return ENABLE_SORTMERGE; }
 "TRUE" { 
@@ -95,6 +101,8 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
     yylval->sv_bool = false;
     return VALUE_BOOL;
 }
+
+
     /* operators */
 ">=" { return GEQ; }
 "<=" { return LEQ; }

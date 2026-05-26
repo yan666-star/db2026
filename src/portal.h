@@ -28,6 +28,7 @@ See the Mulan PSL v2 for more details. */
 typedef enum portalTag{
     PORTAL_Invalid_Query = 0,
     PORTAL_ONE_SELECT,
+    PORTAL_EXPLAIN_ANALYZE,
     PORTAL_DML_WITHOUT_SELECT,
     PORTAL_MULTI_QUERY,
     PORTAL_CMD_UTILITY
@@ -70,8 +71,23 @@ class Portal
                 case T_select:
                 {
                     std::shared_ptr<ProjectionPlan> p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_);
-                    std::unique_ptr<AbstractExecutor> root= convert_plan_executor(p, context);
-                    return std::make_shared<PortalStmt>(PORTAL_ONE_SELECT, std::move(p->sel_cols_), std::move(root), plan);
+                    std::unique_ptr<AbstractExecutor> root = convert_plan_executor(p, context);
+
+                    if (x->is_explain_analyze_) {
+                        return std::make_shared<PortalStmt>(
+                            PORTAL_EXPLAIN_ANALYZE,
+                            std::move(p->sel_cols_),
+                            std::move(root),
+                            plan
+                        );
+                    }
+
+                    return std::make_shared<PortalStmt>(
+                        PORTAL_ONE_SELECT,
+                        std::move(p->sel_cols_),
+                        std::move(root),
+                        plan
+                    );
                 }
                     
                 case T_Update:
@@ -127,6 +143,12 @@ class Portal
                 break;
             }
 
+            case PORTAL_EXPLAIN_ANALYZE:
+            {
+                ql->explain_analyze(std::move(portal->root), portal->plan, context);
+                break;
+            }
+
             case PORTAL_DML_WITHOUT_SELECT:
             {
                 ql->run_dml(std::move(portal->root));
@@ -158,7 +180,12 @@ class Portal
         if(auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)){
             return std::make_unique<ProjectionExecutor>(convert_plan_executor(x->subplan_, context), 
                                                         x->sel_cols_);
-        } else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
+        } 
+        //此时天剑filter在project和scan之间，所以如果当前节点是filter，就继续往它的子节点找，直到找到scan节点
+        else if(auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
+                return convert_plan_executor(x->subplan_, context);
+            }
+        else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
             if(x->tag == T_SeqScan) {
                 return std::make_unique<SeqScanExecutor>(sm_manager_, x->tab_name_, x->conds_, context);
             }

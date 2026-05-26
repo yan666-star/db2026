@@ -207,6 +207,26 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     RecordPrinter::print_record_count(num_rec, context);
 }
 
+void QlManager::explain_analyze(std::unique_ptr<AbstractExecutor> executorTreeRoot,
+                                std::shared_ptr<Plan> plan,
+                                Context *context) {
+    for (executorTreeRoot->beginTuple();
+         !executorTreeRoot->is_end();
+         executorTreeRoot->nextTuple()) {
+        auto tuple = executorTreeRoot->Next();
+    }
+
+    std::string output = "EXPLAIN ANALYZE TODO\n";
+
+    memcpy(context->data_send_ + *(context->offset_), output.c_str(), output.size());
+    *(context->offset_) += output.size();
+
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    outfile << output;
+    outfile.close();
+}
+
 // 执行DML语句
 void QlManager::run_dml(std::unique_ptr<AbstractExecutor> exec){
     exec->Next();
