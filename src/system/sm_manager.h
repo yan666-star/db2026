@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include "sm_defs.h"
 #include "sm_meta.h"
 #include "common/context.h"
+#include "transaction/txn_defs.h"
 
 class Context;
 
@@ -79,4 +80,12 @@ class SmManager {
     void drop_index(const std::string& tab_name, const std::vector<ColMeta>& col_names, Context* context);
 
     void show_index(const std::string& tab_name, Context* context);
+
+    void rollback(WriteRecord* record, Context* context);
+
+    void rollback_insert(const std::string& table_name, Rid& rid, Context* context);
+
+    void rollback_delete(const std::string& table_name, Rid& rid, RmRecord& record, Context* context);
+
+    void rollback_update(const std::string& table_name, Rid& rid, RmRecord& record, Context* context);
 };

@@ -13,8 +13,10 @@ See the Mulan PSL v2 for more details. */
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <fstream>
 
+#include "errors.h"
 #include "index/ix.h"
 #include "record/rm.h"
 #include "record_printer.h"
@@ -358,4 +360,97 @@ void SmManager::show_index(const std::string& tab_name, Context* context) {
         printer.print_separator(context);
     }
     outfile.close();
+}
+
+void SmManager::rollback(WriteRecord* record, Context* context) {
+    switch (record->GetWriteType()) {
+        case WType::INSERT_TUPLE:
+            rollback_insert(record->GetTableName(), record->GetRid(), context);
+            break;
+        case WType::DELETE_TUPLE:
+            rollback_delete(record->GetTableName(), record->GetRid(), record->GetRecord(), context);
+            break;
+        case WType::UPDATE_TUPLE:
+            rollback_update(record->GetTableName(), record->GetRid(), record->GetRecord(), context);
+            break;
+        default:
+            throw RMDBError("Invalid rollback type");
+    }
+}
+
+void SmManager::rollback_insert(const std::string& table_name, Rid& rid, Context* context) {
+    auto file_handle = fhs_.at(table_name).get();
+    std::unique_ptr<RmRecord> inserted_record;
+    try {
+        inserted_record = file_handle->get_record(rid, context);
+    } catch (const RecordNotFoundError&) {
+        return;
+    }
+
+    for (auto& index_meta : db_.get_table(table_name).indexes) {
+        auto index_name = ix_manager_->get_index_name(table_name, index_meta.cols);
+        auto index_handle = ihs_.at(index_name).get();
+        char* key_buf = new char[index_meta.col_tot_len];
+        int key_offset = 0;
+        for (int i = 0; i < index_meta.col_num; ++i) {
+            memcpy(key_buf + key_offset, inserted_record->data + index_meta.cols[i].offset,
+                   index_meta.cols[i].len);
+            key_offset += index_meta.cols[i].len;
+        }
+        index_handle->delete_entry(key_buf, context->txn_);
+        delete[] key_buf;
+    }
+    file_handle->delete_record(rid, context);
+}
+
+void SmManager::rollback_delete(const std::string& table_name, Rid& rid, RmRecord& record, Context* context) {
+    auto file_handle = fhs_.at(table_name).get();
+    file_handle->insert_record(rid, record.data);
+
+    for (auto& index_meta : db_.get_table(table_name).indexes) {
+        auto index_name = ix_manager_->get_index_name(table_name, index_meta.cols);
+        auto index_handle = ihs_.at(index_name).get();
+        char* key_buf = new char[index_meta.col_tot_len];
+        int key_offset = 0;
+        for (int i = 0; i < index_meta.col_num; ++i) {
+            memcpy(key_buf + key_offset, record.data + index_meta.cols[i].offset, index_meta.cols[i].len);
+            key_offset += index_meta.cols[i].len;
+        }
+        index_handle->insert_entry(key_buf, rid, context->txn_);
+        delete[] key_buf;
+    }
+}
+
+void SmManager::rollback_update(const std::string& table_name, Rid& rid, RmRecord& record, Context* context) {
+    auto file_handle = fhs_.at(table_name).get();
+    std::unique_ptr<RmRecord> new_record;
+    try {
+        new_record = file_handle->get_record(rid, context);
+    } catch (const RecordNotFoundError&) {
+        return;
+    }
+
+    file_handle->update_record(rid, record.data, context);
+
+    for (auto& index_meta : db_.get_table(table_name).indexes) {
+        auto index_name = ix_manager_->get_index_name(table_name, index_meta.cols);
+        auto index_handle = ihs_.at(index_name).get();
+        char* old_key = new char[index_meta.col_tot_len];
+        char* new_key = new char[index_meta.col_tot_len];
+        int key_offset = 0;
+        for (int i = 0; i < index_meta.col_num; ++i) {
+            memcpy(old_key + key_offset, record.data + index_meta.cols[i].offset, index_meta.cols[i].len);
+            memcpy(new_key + key_offset, new_record->data + index_meta.cols[i].offset, index_meta.cols[i].len);
+            key_offset += index_meta.cols[i].len;
+        }
+        if (memcmp(old_key, new_key, index_meta.col_tot_len) == 0) {
+            delete[] old_key;
+            delete[] new_key;
+            continue;
+        }
+        index_handle->insert_entry(old_key, rid, context->txn_);
+        index_handle->delete_entry(new_key, context->txn_);
+        delete[] old_key;
+        delete[] new_key;
+    }
 }

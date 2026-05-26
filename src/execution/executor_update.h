@@ -47,6 +47,7 @@ class UpdateExecutor : public AbstractExecutor {
 
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
+            RmRecord old_rec(*rec);
             auto rec_new = std::make_unique<RmRecord>(*rec);
             for (auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
@@ -97,6 +98,10 @@ class UpdateExecutor : public AbstractExecutor {
             delete[] key;
 
             fh_->update_record(rid, rec_new->data, context_);
+            if (context_->txn_ != nullptr) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rid, old_rec));
+            }
         }
         return nullptr;
     }
