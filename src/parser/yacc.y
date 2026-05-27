@@ -276,6 +276,7 @@ whereClause:
     }
     |   whereClause AND condition
     {
+        $$ = $1;
         $$.push_back($3);
     }
     ;
@@ -388,6 +389,11 @@ tableList:
         $$.conds = {};
     }
     |   tableList ',' tableRef
+    {
+        $1.tables.push_back($3);
+        $$ = $1;
+    }
+     |   tableList JOIN tableRef
     {
         $1.tables.push_back($3);
         $$ = $1;
