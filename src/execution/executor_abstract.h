@@ -31,7 +31,9 @@ class AbstractExecutor {
     };
 
     virtual std::string getType() { return "AbstractExecutor"; };
-
+    
+    //增加一个函数用来获取当前执行器的行数，方便explain analyze显示
+    virtual size_t rows() const { return 0; }
     virtual void beginTuple(){};
 
     virtual void nextTuple(){};

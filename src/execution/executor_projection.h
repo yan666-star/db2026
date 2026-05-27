@@ -14,17 +14,21 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
-
+#include "optimizer/plan.h"
 class ProjectionExecutor : public AbstractExecutor {
    private:
+    ProjectionPlan *plan_ = nullptr;//添加projection plan显示表示
     std::unique_ptr<AbstractExecutor> prev_;
     std::vector<ColMeta> cols_;
     size_t len_;
     std::vector<size_t> sel_idxs_;
 
    public:
-    ProjectionExecutor(std::unique_ptr<AbstractExecutor> prev, const std::vector<TabCol> &sel_cols) {
+    ProjectionExecutor(std::unique_ptr<AbstractExecutor> prev,
+                   const std::vector<TabCol> &sel_cols,
+                   ProjectionPlan *plan = nullptr) {
         prev_ = std::move(prev);
+        plan_ = plan;
 
         size_t curr_offset = 0;
         auto &prev_cols = prev_->cols();
@@ -45,9 +49,19 @@ class ProjectionExecutor : public AbstractExecutor {
 
     bool is_end() const override { return prev_->is_end(); }
 
-    void beginTuple() override { prev_->beginTuple(); }
+    void beginTuple() override {
+        prev_->beginTuple();
+        if (!prev_->is_end() && plan_ != nullptr) {
+            plan_->rows_++;
+        }
+    }
 
-    void nextTuple() override { prev_->nextTuple(); }
+    void nextTuple() override {
+        prev_->nextTuple();
+        if (!prev_->is_end() && plan_ != nullptr) {
+            plan_->rows_++;
+        }
+    }
 
     std::unique_ptr<RmRecord> Next() override {
         auto rec = prev_->Next();

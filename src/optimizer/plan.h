@@ -16,7 +16,7 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <vector>
 #include "parser/ast.h"
-
+#include <map>
 #include "parser/parser.h"
 
 typedef enum PlanTag{
@@ -160,7 +160,8 @@ class DMLPlan : public Plan
     public:
         DMLPlan(PlanTag tag, std::shared_ptr<Plan> subplan,std::string tab_name,
                 std::vector<Value> values, std::vector<Condition> conds,
-                std::vector<SetClause> set_clauses, bool is_explain_analyze = false)
+                std::vector<SetClause> set_clauses, bool is_explain_analyze = false,
+                std::map<std::string, std::string> table_to_alias = {})
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
@@ -169,6 +170,7 @@ class DMLPlan : public Plan
             conds_ = std::move(conds);
             set_clauses_ = std::move(set_clauses);
             is_explain_analyze_ = is_explain_analyze;
+            table_to_alias_ = std::move(table_to_alias);
         }
         ~DMLPlan(){}
         std::shared_ptr<Plan> subplan_;
@@ -177,6 +179,7 @@ class DMLPlan : public Plan
         std::vector<Condition> conds_;
         std::vector<SetClause> set_clauses_;
         bool is_explain_analyze_ = false;
+        std::map<std::string, std::string> table_to_alias_;
 };
 
 // ddl语句, 包括create/drop table; create/drop index;

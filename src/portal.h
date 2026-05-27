@@ -76,7 +76,7 @@ class Portal
                     if (x->is_explain_analyze_) {
                         return std::make_shared<PortalStmt>(
                             PORTAL_EXPLAIN_ANALYZE,
-                            std::move(p->sel_cols_),
+                            p->sel_cols_ ,//第一次直接move 导致Project(columns=[], rows=2)
                             std::move(root),
                             plan
                         );
@@ -84,7 +84,7 @@ class Portal
 
                     return std::make_shared<PortalStmt>(
                         PORTAL_ONE_SELECT,
-                        std::move(p->sel_cols_),
+                        p->sel_cols_,
                         std::move(root),
                         plan
                     );
@@ -175,33 +175,57 @@ class Portal
     void drop(){}
 
 
-    std::unique_ptr<AbstractExecutor> convert_plan_executor(std::shared_ptr<Plan> plan, Context *context)
+    std::unique_ptr<AbstractExecutor> convert_plan_executor(std::shared_ptr<Plan> plan,
+                                                        Context *context,
+                                                        FilterPlan *filter_plan = nullptr)
     {
         if(auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)){
-            return std::make_unique<ProjectionExecutor>(convert_plan_executor(x->subplan_, context), 
-                                                        x->sel_cols_);
-        } 
+            return std::make_unique<ProjectionExecutor>(
+                convert_plan_executor(x->subplan_, context, filter_plan),
+                x->sel_cols_,
+                x.get()
+            );
+        }
         //此时天剑filter在project和scan之间，所以如果当前节点是filter，就继续往它的子节点找，直到找到scan节点
         else if(auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
-                return convert_plan_executor(x->subplan_, context);
-            }
+            return convert_plan_executor(x->subplan_, context, x.get());
+        }//FilterPlan 不创建 FilterExecutor。把自己 x.get() 传给下面的 ScanExecutor。这样 ScanExecutor 每通过一条过滤条件，就能执行 filter_plan_->rows_++。
         else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
             if(x->tag == T_SeqScan) {
-                return std::make_unique<SeqScanExecutor>(sm_manager_, x->tab_name_, x->conds_, context);
+                return std::make_unique<SeqScanExecutor>(
+                    sm_manager_,
+                    x->tab_name_,
+                    x->conds_,
+                    context,
+                    x.get(),
+                    filter_plan
+                );
             }
             else {
-                return std::make_unique<IndexScanExecutor>(sm_manager_, x->tab_name_, x->conds_, x->index_col_names_, context);
-            } 
-        } else if(auto x = std::dynamic_pointer_cast<JoinPlan>(plan)) {
-            std::unique_ptr<AbstractExecutor> left = convert_plan_executor(x->left_, context);
-            std::unique_ptr<AbstractExecutor> right = convert_plan_executor(x->right_, context);
+                return std::make_unique<IndexScanExecutor>(
+                    sm_manager_,
+                    x->tab_name_,
+                    x->conds_,
+                    x->index_col_names_,
+                    context
+                );
+            }   //SeqScanExecutor 里面可以做到：scan_plan_->rows_++;filter_plan_->rows_++;
+        }
+        else if(auto x = std::dynamic_pointer_cast<JoinPlan>(plan)) {
+            std::unique_ptr<AbstractExecutor> left = convert_plan_executor(x->left_, context, nullptr);
+            std::unique_ptr<AbstractExecutor> right = convert_plan_executor(x->right_, context, nullptr);
             std::unique_ptr<AbstractExecutor> join = std::make_unique<NestedLoopJoinExecutor>(
                                 std::move(left), 
-                                std::move(right), std::move(x->conds_));
+                                std::move(right),
+                                x->conds_,
+                                x.get());
             return join;
         } else if(auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
-            return std::make_unique<SortExecutor>(convert_plan_executor(x->subplan_, context), 
-                                            x->sel_col_, x->is_desc_);
+            return std::make_unique<SortExecutor>(
+                    convert_plan_executor(x->subplan_, context, filter_plan),
+                    x->sel_col_,
+                    x->is_desc_
+                );
         }
         return nullptr;
     }

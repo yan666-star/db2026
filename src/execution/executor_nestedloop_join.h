@@ -15,9 +15,10 @@ See the Mulan PSL v2 for more details. */
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
-
+#include "optimizer/plan.h"
 class NestedLoopJoinExecutor : public AbstractExecutor {
    private:
+    JoinPlan *plan_ = nullptr;
     std::unique_ptr<AbstractExecutor> left_;
     std::unique_ptr<AbstractExecutor> right_;
     size_t len_;
@@ -41,6 +42,9 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
                 auto right_rec = right_->Next();
                 auto joined = join_records(*left_rec, *right_rec);
                 if (fed_conds_.empty() || eval_conditions(*joined, fed_conds_, cols_)) {
+                    if (plan_ != nullptr) {
+                        plan_->rows_++;
+                    }
                     current_rec_ = std::move(joined);
                     is_end_ = false;
                     return;
@@ -59,9 +63,10 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
    public:
     NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right,
-                           std::vector<Condition> conds) {
+                           std::vector<Condition> conds, JoinPlan *plan = nullptr) {
         left_ = std::move(left);
         right_ = std::move(right);
+        plan_ = plan;
         len_ = left_->tupleLen() + right_->tupleLen();
         cols_ = left_->cols();
         auto right_cols = right_->cols();
