@@ -13,9 +13,11 @@ See the Mulan PSL v2 for more details. */
 static void cast_val_to_col(Value &val, ColType col_type) {
     if (val.type == col_type) {
         return;
-    }
+    }//1000 原来是 int literal cast 成 float 后 from_float_literal 仍是 false
     if (col_type == TYPE_FLOAT && val.type == TYPE_INT) {
+        bool from_float_literal = val.from_float_literal;
         val.set_float(static_cast<float>(val.int_val));
+        val.from_float_literal = from_float_literal;
         return;
     }
     throw IncompatibleTypeError(coltype2str(col_type), coltype2str(val.type));
@@ -208,8 +210,9 @@ Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
         val.set_int(int_lit->val);
-    } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
+   } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
         val.set_float(float_lit->val);
+        val.from_float_literal = true;
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
         val.set_str(str_lit->val);
     } else {

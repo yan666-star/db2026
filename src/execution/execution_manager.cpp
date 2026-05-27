@@ -250,6 +250,10 @@ static std::string value_to_string(const Value &val) {
         return std::to_string(val.int_val);
     }
     if (val.type == TYPE_FLOAT) {
+        if (val.from_float_literal) {
+            return std::to_string(val.float_val);
+        }
+
         std::ostringstream oss;
         oss << val.float_val;
         return oss.str();

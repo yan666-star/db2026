@@ -29,6 +29,7 @@ struct TabCol {
 };
 
 struct Value {
+    bool from_float_literal = false; 
     ColType type;  // type of value
     union {
         int int_val;      // int value
