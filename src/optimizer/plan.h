@@ -16,7 +16,7 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <vector>
 #include "parser/ast.h"
-
+#include <map>
 #include "parser/parser.h"
 
 typedef enum PlanTag{
@@ -43,7 +43,8 @@ typedef enum PlanTag{
     T_NestLoop,
     T_SortMerge,    // sort merge join
     T_Sort,
-    T_Projection
+    T_Projection,
+    T_Filter//添加filter plan显示表示
 } PlanTag;
 
 // 查询执行计划
@@ -51,6 +52,7 @@ class Plan
 {
 public:
     PlanTag tag;
+    size_t rows_ = 0;
     virtual ~Plan() = default;
 };
 
@@ -79,7 +81,20 @@ class ScanPlan : public Plan
         std::vector<std::string> index_col_names_;
     
 };
+//添加filter plan显示表示
+class FilterPlan : public Plan
+{
+public:
+    FilterPlan(std::shared_ptr<Plan> subplan, std::vector<Condition> conds)
+    {
+        Plan::tag = T_Filter;
+        subplan_ = std::move(subplan);
+        conds_ = std::move(conds);
+    }
 
+    std::shared_ptr<Plan> subplan_;
+    std::vector<Condition> conds_;
+};
 class JoinPlan : public Plan
 {
     public:
@@ -101,20 +116,24 @@ class JoinPlan : public Plan
         // future TODO: 后续可以支持的连接类型
         JoinType type;
 };
-
+//对于：SELECT *需要输出 Project(columns=[*], rows=N) 故display_all_ 标记
 class ProjectionPlan : public Plan
 {
-    public:
-        ProjectionPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols)
-        {
-            Plan::tag = tag;
-            subplan_ = std::move(subplan);
-            sel_cols_ = std::move(sel_cols);
-        }
-        ~ProjectionPlan(){}
-        std::shared_ptr<Plan> subplan_;
-        std::vector<TabCol> sel_cols_;
-        
+public:
+    ProjectionPlan(PlanTag tag,
+                   std::shared_ptr<Plan> subplan,
+                   std::vector<TabCol> sel_cols,
+                   bool display_all = false)
+    {
+        Plan::tag = tag;
+        subplan_ = std::move(subplan);
+        sel_cols_ = std::move(sel_cols);
+        display_all_ = display_all;
+    }
+
+    std::shared_ptr<Plan> subplan_;
+    std::vector<TabCol> sel_cols_;
+    bool display_all_ = false;
 };
 
 class SortPlan : public Plan
@@ -135,12 +154,14 @@ class SortPlan : public Plan
 };
 
 // dml语句，包括insert; delete; update; select语句　
+//增加is_explain_analyze_
 class DMLPlan : public Plan
 {
     public:
         DMLPlan(PlanTag tag, std::shared_ptr<Plan> subplan,std::string tab_name,
                 std::vector<Value> values, std::vector<Condition> conds,
-                std::vector<SetClause> set_clauses)
+                std::vector<SetClause> set_clauses, bool is_explain_analyze = false,
+                std::map<std::string, std::string> table_to_alias = {})
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
@@ -148,6 +169,8 @@ class DMLPlan : public Plan
             values_ = std::move(values);
             conds_ = std::move(conds);
             set_clauses_ = std::move(set_clauses);
+            is_explain_analyze_ = is_explain_analyze;
+            table_to_alias_ = std::move(table_to_alias);
         }
         ~DMLPlan(){}
         std::shared_ptr<Plan> subplan_;
@@ -155,6 +178,8 @@ class DMLPlan : public Plan
         std::vector<Value> values_;
         std::vector<Condition> conds_;
         std::vector<SetClause> set_clauses_;
+        bool is_explain_analyze_ = false;
+        std::map<std::string, std::string> table_to_alias_;
 };
 
 // ddl语句, 包括create/drop table; create/drop index;

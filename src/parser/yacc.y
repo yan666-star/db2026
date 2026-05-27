@@ -23,6 +23,7 @@ using namespace ast;
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY ENABLE_NESTLOOP ENABLE_SORTMERGE
+EXPLAIN ANALYZE ON AS
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
@@ -42,7 +43,11 @@ WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_CO
 %type <sv_val> value
 %type <sv_vals> valueList
 %type <sv_str> tbName colName
-%type <sv_strs> tableList colNameList
+//new ex analyse andd 原来%type <sv_strs> tableList colNameList
+%type <sv_strs> colNameList
+%type <sv_table_ref> tableRef
+%type <sv_from_clause> tableList
+
 %type <sv_col> col
 %type <sv_cols> colList selector
 %type <sv_set_clause> setClause
@@ -158,9 +163,20 @@ dml:
     {
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
+    /* 此处为 explain analyze 的辅助扩展 */
     |   SELECT selector FROM tableList optWhereClause opt_order_clause
     {
-        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        auto conds = $4.conds;
+        conds.insert(conds.end(), $5.begin(), $5.end());
+        $$ = std::make_shared<SelectStmt>($2, $4.tables, conds, $6);
+    }   
+    |   EXPLAIN ANALYZE SELECT selector FROM tableList optWhereClause opt_order_clause
+    {
+        auto conds = $6.conds;
+        conds.insert(conds.end(), $7.begin(), $7.end());
+        auto stmt = std::make_shared<SelectStmt>($4, $6.tables, conds, $8);
+        stmt->is_explain_analyze = true;
+        $$ = stmt;
     }
     ;
 
@@ -349,19 +365,38 @@ selector:
     }
     |   colList
     ;
-
-tableList:
+// ex an改动原tablelist
+tableRef:
         tbName
     {
-        $$ = std::vector<std::string>{$1};
+        $$ = TableRef($1, "");
     }
-    |   tableList ',' tbName
+    |   tbName tbName
     {
-        $$.push_back($3);
+        $$ = TableRef($1, $2);
     }
-    |   tableList JOIN tbName
+    |   tbName AS tbName
     {
-        $$.push_back($3);
+        $$ = TableRef($1, $3);
+    }
+    ;
+
+tableList:
+        tableRef
+    {
+        $$.tables = {$1};
+        $$.conds = {};
+    }
+    |   tableList ',' tableRef
+    {
+        $1.tables.push_back($3);
+        $$ = $1;
+    }
+    |   tableList JOIN tableRef ON condition
+    {
+        $1.tables.push_back($3);
+        $1.conds.push_back($5);
+        $$ = $1;
     }
     ;
 

@@ -17,9 +17,11 @@ See the Mulan PSL v2 for more details. */
 #include "index/ix.h"
 #include "record/rm_scan.h"
 #include "system/sm.h"
-
+#include "optimizer/plan.h"
 class SeqScanExecutor : public AbstractExecutor {
    private:
+    ScanPlan *scan_plan_ = nullptr;
+    FilterPlan *filter_plan_ = nullptr; //添加filter plan显示表示
     std::string tab_name_;
     std::vector<Condition> conds_;
     RmFileHandle *fh_;
@@ -35,23 +37,36 @@ class SeqScanExecutor : public AbstractExecutor {
     SmManager *sm_manager_;
 
     bool fetch_current() {
-        while (!scan_->is_end()) {
-            rid_ = scan_->rid();
-            auto rec = fh_->get_record(rid_, context_);
-            if (fed_conds_.empty() || eval_conditions(*rec, fed_conds_, cols_)) {
-                current_rec_ = std::move(rec);
-                is_end_ = false;
-                return true;
-            }
-            scan_->next();
+    while (!scan_->is_end()) {
+        rid_ = scan_->rid();
+        auto rec = fh_->get_record(rid_, context_);
+
+        if (scan_plan_ != nullptr) {
+            scan_plan_->rows_++;//每读取一条原始记录，Scan rows++ 每输出一条满足条件记录，Filter rows++
         }
-        current_rec_.reset();
-        is_end_ = true;
-        return false;
+
+        if (fed_conds_.empty() || eval_conditions(*rec, fed_conds_, cols_)) {
+            if (filter_plan_ != nullptr) {
+                filter_plan_->rows_++;
+            }
+            current_rec_ = std::move(rec);
+            is_end_ = false;
+            return true;
+        }
+        scan_->next();
+    }
+    current_rec_.reset();
+    is_end_ = true;
+    return false;
     }
 
    public:
-    SeqScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, Context *context) {
+    SeqScanExecutor(SmManager *sm_manager,
+                std::string tab_name,
+                std::vector<Condition> conds,
+                Context *context,
+                ScanPlan *scan_plan = nullptr,
+                FilterPlan *filter_plan = nullptr) {
         sm_manager_ = sm_manager;
         tab_name_ = std::move(tab_name);
         conds_ = std::move(conds);
@@ -62,6 +77,8 @@ class SeqScanExecutor : public AbstractExecutor {
 
         context_ = context;
         fed_conds_ = conds_;
+        scan_plan_ = scan_plan;
+        filter_plan_ = filter_plan; //添加scan 和 filter plan显示表示
     }
 
     size_t tupleLen() const override { return len_; }

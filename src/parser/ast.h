@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 #include <string>
 #include <memory>
+#include <ostream>
 
 enum JoinType {
     INNER_JOIN, LEFT_JOIN, RIGHT_JOIN, FULL_JOIN
@@ -174,6 +175,32 @@ struct BinaryExpr : public TreeNode {
             lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
 };
 
+// 增加关于ex an的表引用结构
+struct TableRef {
+    std::string tab_name;
+    std::string alias;
+
+    TableRef() = default;
+
+    TableRef(std::string tab_name_, std::string alias_)
+        : tab_name(std::move(tab_name_)), alias(std::move(alias_)) {}
+};
+
+inline std::ostream &operator<<(std::ostream &os, const TableRef &ref) {
+    os << ref.tab_name;
+    if (!ref.alias.empty()) {
+        os << " " << ref.alias;
+    }
+    return os;
+}
+
+//定义一个 FromClause，因为 JOIN ... ON ... 会同时产生表和 join 条件
+struct FromClause {
+    std::vector<ast::TableRef> tables;
+    std::vector<std::shared_ptr<ast::BinaryExpr>> conds;
+    FromClause() = default;
+};
+
 struct OrderBy : public TreeNode
 {
     std::shared_ptr<Col> cols;
@@ -222,7 +249,10 @@ struct JoinExpr : public TreeNode {
 
 struct SelectStmt : public TreeNode {
     std::vector<std::shared_ptr<Col>> cols;
-    std::vector<std::string> tabs;
+    std::vector<TableRef> tabs;
+    bool is_explain_analyze = false;
+    bool is_select_all = false;
+    //std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
 
@@ -232,12 +262,13 @@ struct SelectStmt : public TreeNode {
 
 
     SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
-               std::vector<std::string> tabs_,
+               std::vector<TableRef> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
                std::shared_ptr<OrderBy> order_) :
             cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
             order(std::move(order_)) {
                 has_sort = (bool)order;
+                is_select_all = cols.empty();
             }
 };
 
@@ -258,7 +289,8 @@ struct SemValue {
     bool sv_bool;
     OrderByDir sv_orderby_dir;
     std::vector<std::string> sv_strs;
-
+    TableRef sv_table_ref;
+    FromClause sv_from_clause;
     std::shared_ptr<TreeNode> sv_node;
 
     SvCompOp sv_comp_op;

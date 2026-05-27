@@ -9,7 +9,9 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "execution_manager.h"
-
+#include <algorithm>
+#include <set>
+#include <sstream>
 #include "executor_delete.h"
 #include "executor_index_scan.h"
 #include "executor_insert.h"
@@ -209,6 +211,221 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     // Print record count into buffer
     RecordPrinter::print_record_count(num_rec, context);
 }
+
+static void reset_plan_rows(std::shared_ptr<Plan> plan) {
+    if (plan == nullptr) {
+        return;
+    }
+
+    plan->rows_ = 0;
+
+    if (auto x = std::dynamic_pointer_cast<DMLPlan>(plan)) {
+        reset_plan_rows(x->subplan_);
+    } else if (auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)) {
+        reset_plan_rows(x->subplan_);
+    } else if (auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
+        reset_plan_rows(x->subplan_);
+    } else if (auto x = std::dynamic_pointer_cast<JoinPlan>(plan)) {
+        reset_plan_rows(x->left_);
+        reset_plan_rows(x->right_);
+    } else if (auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
+        reset_plan_rows(x->subplan_);
+    }
+}
+//操作符格式化
+static std::string op_to_string(CompOp op) {
+    switch (op) {
+        case OP_EQ: return "=";
+        case OP_NE: return "<>";
+        case OP_LT: return "<";
+        case OP_GT: return ">";
+        case OP_LE: return "<=";
+        case OP_GE: return ">=";
+    }
+    return "";
+}
+//值格式化
+static std::string value_to_string(const Value &val) {
+    if (val.type == TYPE_INT) {
+        return std::to_string(val.int_val);
+    }
+    if (val.type == TYPE_FLOAT) {
+        std::ostringstream oss;
+        oss << val.float_val;
+        return oss.str();
+    }
+    return "'" + val.str_val + "'";
+}
+
+//列格式化
+//已实现按别名打印
+static std::string col_to_string(
+    const TabCol &col,
+    const std::map<std::string, std::string> &table_to_alias) {
+    auto it = table_to_alias.find(col.tab_name);
+    std::string tab = (it == table_to_alias.end()) ? col.tab_name : it->second;
+    return tab + "." + col.col_name;
+}
+
+//条件格式化
+static std::string condition_to_string(
+    const Condition &cond,
+    const std::map<std::string, std::string> &table_to_alias) {
+    std::string s = col_to_string(cond.lhs_col, table_to_alias);
+    s += op_to_string(cond.op);
+    if (cond.is_rhs_val) {
+        s += value_to_string(cond.rhs_val);
+    } else {
+        s += col_to_string(cond.rhs_col, table_to_alias);
+    }
+    return s;
+}
+
+//字符串拼接
+static std::string join_sorted_strings(std::vector<std::string> vals) {
+    std::sort(vals.begin(), vals.end());
+    std::string out;
+    for (size_t i = 0; i < vals.size(); i++) {
+        if (i != 0) {
+            out += ", ";
+        }
+        out += vals[i];
+    }
+    return out;
+}
+
+// col
+static std::string format_columns(
+    const std::vector<TabCol> &cols,
+    bool display_all,
+    const std::map<std::string, std::string> &table_to_alias) {
+    if (display_all) {
+        return "*";
+    }
+
+    std::vector<std::string> vals;
+    for (auto &col : cols) {
+        vals.push_back(col_to_string(col, table_to_alias));
+    }
+    return join_sorted_strings(vals);
+}
+
+
+//join condition
+static std::string format_conditions(
+    const std::vector<Condition> &conds,
+    const std::map<std::string, std::string> &table_to_alias) {
+    std::vector<std::string> vals;
+    for (auto &cond : conds) {
+        vals.push_back(condition_to_string(cond, table_to_alias ));
+    }
+    return join_sorted_strings(vals);
+}
+
+//table
+static void collect_tables(std::shared_ptr<Plan> plan, std::set<std::string> &tables) {
+    if (auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
+        tables.insert(x->tab_name_);
+    } else if (auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
+        collect_tables(x->subplan_, tables);
+    } else if (auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)) {
+        collect_tables(x->subplan_, tables);
+    } else if (auto x = std::dynamic_pointer_cast<JoinPlan>(plan)) {
+        collect_tables(x->left_, tables);
+        collect_tables(x->right_, tables);
+    }
+}
+static std::string format_tables(std::shared_ptr<Plan> plan) {
+    std::set<std::string> table_set;
+    collect_tables(plan, table_set);
+    std::vector<std::string> vals(table_set.begin(), table_set.end());
+    return join_sorted_strings(vals);
+}
+
+
+// tree display
+static void append_plan_tree(std::ostringstream &out, std::shared_ptr<Plan> plan, int depth,
+    const std::map<std::string, std::string> &table_to_alias) {
+    std::string indent(depth, '\t');
+
+    if (auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)) {
+        out << indent
+            << "Project(columns=["
+            << format_columns(x->sel_cols_, x->display_all_, table_to_alias)
+            << "], rows="
+            << x->rows_
+            << ")\n";
+        append_plan_tree(out, x->subplan_, depth + 1, table_to_alias);
+        return;
+    }
+
+    if (auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
+        out << indent
+            << "Filter(condition=["
+            << format_conditions(x->conds_, table_to_alias)
+            << "], rows="
+            << x->rows_
+            << ")\n";
+        append_plan_tree(out, x->subplan_, depth + 1, table_to_alias );
+        return;
+    }
+
+    if (auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
+        out << indent
+            << "Scan(table="
+            << x->tab_name_
+            << ", type=SeqScan, rows="
+            << x->rows_
+            << ")\n";
+        return;
+    }
+
+    if (auto x = std::dynamic_pointer_cast<JoinPlan>(plan)) {
+        out << indent
+            << "Join(tables=["
+            << format_tables(plan)
+            << "], condition=["
+            << format_conditions(x->conds_, table_to_alias)
+            << "], rows="
+            << x->rows_
+            << ")\n";
+        append_plan_tree(out, x->left_, depth + 1, table_to_alias);
+        append_plan_tree(out, x->right_, depth + 1, table_to_alias);
+        return;
+    }
+}
+
+void QlManager::explain_analyze(std::unique_ptr<AbstractExecutor> executorTreeRoot,
+                                std::shared_ptr<Plan> plan,
+                                Context *context) {
+    auto dml = std::dynamic_pointer_cast<DMLPlan>(plan);
+    if (dml == nullptr || dml->subplan_ == nullptr) {
+        return;
+    }
+
+    std::shared_ptr<Plan> root_plan = dml->subplan_;
+
+    reset_plan_rows(root_plan);
+
+    for (executorTreeRoot->beginTuple();
+         !executorTreeRoot->is_end();
+         executorTreeRoot->nextTuple()) {
+        auto tuple = executorTreeRoot->Next();
+    }
+
+    std::ostringstream oss;
+    append_plan_tree(oss, root_plan, 0, dml->table_to_alias_);
+    std::string output = oss.str();
+
+    memcpy(context->data_send_ + *(context->offset_), output.c_str(), output.size());
+    *(context->offset_) += output.size();
+
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    outfile << output;
+    outfile.close();
+}
+
 
 // 执行DML语句
 void QlManager::run_dml(std::unique_ptr<AbstractExecutor> exec){
