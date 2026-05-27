@@ -207,14 +207,14 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
     for (auto &col : query->cols) {
             table_proj_cols[col.tab_name].push_back(col);
         }
-    }//加入select列
+    }//加入select列只把跨表条件，也就是 Join 条件列加入局部 Project。单表 Filter 条件列不用加入，因为 Filter 在 Project 下面已经执行完了
     for (auto &cond : query->conds) {
-        table_proj_cols[cond.lhs_col.tab_name].push_back(cond.lhs_col);
-
-        if (!cond.is_rhs_val) {
+        if (!cond.is_rhs_val && cond.lhs_col.tab_name != cond.rhs_col.tab_name) {
+            table_proj_cols[cond.lhs_col.tab_name].push_back(cond.lhs_col);
             table_proj_cols[cond.rhs_col.tab_name].push_back(cond.rhs_col);
         }
-    }//加入where条件列
+    }
+    //加入where条件列
     auto dedup_cols = [](std::vector<TabCol> &cols) {
     std::vector<TabCol> out;
         //去重
@@ -272,8 +272,8 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
     if (!curr_conds.empty()) {
         node = std::make_shared<FilterPlan>(node, curr_conds);
     }
-
-    if (!query->is_select_all) {
+//单表查询：只保留根 Project 多表非 SELECT *：给每个 Scan 上方加局部 Project 多表 SELECT *：不加局部 Project
+    if (tables.size() > 1 && !query->is_select_all) {
         auto proj_cols = table_proj_cols[tables[i]];
 
         if (!proj_cols.empty()) {
