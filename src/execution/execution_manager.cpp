@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "execution_manager.h"
 #include <algorithm>
+#include <iomanip>
 #include <set>
 #include <sstream>
 #include "executor_delete.h"
@@ -154,6 +155,23 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
 }
 
 // 执行select语句，select语句的输出除了需要返回客户端外，还需要写入output.txt文件中
+static std::string format_output_value(const ColMeta &col, char *rec_buf) {
+    if (col.type == TYPE_INT) {
+        return std::to_string(*(int *)rec_buf);
+    }
+    if (col.type == TYPE_FLOAT) {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(6) << *(float *)rec_buf;
+        return oss.str();
+    }
+    if (col.type == TYPE_STRING) {
+        std::string col_str = std::string((char *)rec_buf, col.len);
+        col_str.resize(strlen(col_str.c_str()));
+        return col_str;
+    }
+    return "";
+}
+
 void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, std::vector<TabCol> sel_cols, 
                             Context *context) {
     std::vector<std::string> captions;
@@ -183,16 +201,7 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
         auto Tuple = executorTreeRoot->Next();
         std::vector<std::string> columns;
         for (auto &col : executorTreeRoot->cols()) {
-            std::string col_str;
-            char *rec_buf = Tuple->data + col.offset;
-            if (col.type == TYPE_INT) {
-                col_str = std::to_string(*(int *)rec_buf);
-            } else if (col.type == TYPE_FLOAT) {
-                col_str = std::to_string(*(float *)rec_buf);
-            } else if (col.type == TYPE_STRING) {
-                col_str = std::string((char *)rec_buf, col.len);
-                col_str.resize(strlen(col_str.c_str()));
-            }
+            std::string col_str = format_output_value(col, Tuple->data + col.offset);
             columns.push_back(col_str);
         }
         // print record into buffer
@@ -229,6 +238,8 @@ static void reset_plan_rows(std::shared_ptr<Plan> plan) {
         reset_plan_rows(x->left_);
         reset_plan_rows(x->right_);
     } else if (auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
+        reset_plan_rows(x->subplan_);
+    } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
         reset_plan_rows(x->subplan_);
     }
 }
@@ -346,6 +357,31 @@ static std::string format_tables(std::shared_ptr<Plan> plan) {
     return join_sorted_strings(vals);
 }
 
+static std::string format_select_items(const std::vector<SelectItem> &items) {
+    std::vector<std::string> vals;
+    for (auto &item : items) {
+        if (item.is_agg) {
+            std::string name;
+            switch (item.agg.type) {
+                case AGG_COUNT: name = "COUNT"; break;
+                case AGG_MAX: name = "MAX"; break;
+                case AGG_MIN: name = "MIN"; break;
+                case AGG_SUM: name = "SUM"; break;
+                case AGG_AVG: name = "AVG"; break;
+                default: name = "AGG"; break;
+            }
+            if (item.agg.is_star) {
+                vals.push_back(name + "(*)");
+            } else {
+                vals.push_back(name + "(" + item.agg.col.tab_name + "." + item.agg.col.col_name + ")");
+            }
+        } else {
+            vals.push_back(item.col.tab_name + "." + item.col.col_name);
+        }
+    }
+    return join_sorted_strings(vals);
+}
+
 
 // tree display
 static void append_plan_tree(std::ostringstream &out, std::shared_ptr<Plan> plan, int depth,
@@ -395,6 +431,30 @@ static void append_plan_tree(std::ostringstream &out, std::shared_ptr<Plan> plan
             << ")\n";
         append_plan_tree(out, x->left_, depth + 1, table_to_alias);
         append_plan_tree(out, x->right_, depth + 1, table_to_alias);
+        return;
+    }
+
+    if (auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
+        out << indent
+            << "Sort(column="
+            << col_to_string(x->sel_col_, table_to_alias)
+            << ", order="
+            << (x->is_desc_ ? "DESC" : "ASC")
+            << ", rows="
+            << x->rows_
+            << ")\n";
+        append_plan_tree(out, x->subplan_, depth + 1, table_to_alias);
+        return;
+    }
+
+    if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
+        out << indent
+            << "Aggregate(columns=["
+            << format_select_items(x->select_items_)
+            << "], rows="
+            << x->rows_
+            << ")\n";
+        append_plan_tree(out, x->subplan_, depth + 1, table_to_alias);
         return;
     }
 }

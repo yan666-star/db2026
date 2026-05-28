@@ -21,14 +21,16 @@ See the Mulan PSL v2 for more details. */
 class SortExecutor : public AbstractExecutor {
    private:
     std::unique_ptr<AbstractExecutor> prev_;
+    SortPlan *plan_ = nullptr;
     ColMeta cols_;                              // 框架中只支持一个键排序，需要自行修改数据结构支持多个键排序
     std::vector<std::unique_ptr<RmRecord>> tuples_;
     size_t cursor_ = 0;
     bool is_desc_;
 
    public:
-    SortExecutor(std::unique_ptr<AbstractExecutor> prev, TabCol sel_cols, bool is_desc) {
+    SortExecutor(std::unique_ptr<AbstractExecutor> prev, TabCol sel_cols, bool is_desc, SortPlan *plan = nullptr) {
         prev_ = std::move(prev);
+        plan_ = plan;
         cols_ = prev_->get_col_offset(sel_cols);
         is_desc_ = is_desc;
     }
@@ -47,6 +49,9 @@ class SortExecutor : public AbstractExecutor {
             int cmp = compare_col_value(a->data + cols_.offset, b->data + cols_.offset, cols_.type, cols_.len);
             return is_desc_ ? (cmp > 0) : (cmp < 0);
         });
+        if (plan_ != nullptr) {
+            plan_->rows_ = tuples_.size();
+        }
     }
 
     void nextTuple() override {

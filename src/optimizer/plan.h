@@ -124,17 +124,20 @@ public:
     ProjectionPlan(PlanTag tag,
                    std::shared_ptr<Plan> subplan,
                    std::vector<TabCol> sel_cols,
-                   bool display_all = false)
+                   bool display_all = false,
+                   int limit_num = -1)
     {
         Plan::tag = tag;
         subplan_ = std::move(subplan);
         sel_cols_ = std::move(sel_cols);
         display_all_ = display_all;
+        limit_num_ = limit_num;
     }
 
     std::shared_ptr<Plan> subplan_;
     std::vector<TabCol> sel_cols_;
     bool display_all_ = false;
+    int limit_num_ = -1;
 };
 
 class SortPlan : public Plan

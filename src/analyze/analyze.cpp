@@ -124,6 +124,20 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             }
             h.op = convert_sv_comp_op(sv_having->op);
             h.rhs_val = convert_sv_value(sv_having->rhs);
+            ColType lhs_type = TYPE_INT;
+            if (h.lhs.type == AGG_COUNT) {
+                lhs_type = TYPE_INT;
+            } else if (h.lhs.type == AGG_AVG) {
+                lhs_type = TYPE_FLOAT;
+            } else if (!h.lhs.is_star) {
+                auto col_meta = *find_col_meta(all_cols, h.lhs.col);
+                lhs_type = (h.lhs.type == AGG_SUM && col_meta.type == TYPE_INT) ? TYPE_INT : TYPE_FLOAT;
+                if (h.lhs.type == AGG_MAX || h.lhs.type == AGG_MIN) {
+                    lhs_type = col_meta.type;
+                }
+            }
+            cast_val_to_col(h.rhs_val, lhs_type);
+            h.rhs_val.init_raw(lhs_type == TYPE_INT ? sizeof(int) : (lhs_type == TYPE_FLOAT ? sizeof(float) : 0));
             query->havings.push_back(h);
             query->has_agg = true;
         }

@@ -44,12 +44,28 @@ class AggregationExecutor : public AbstractExecutor {
 
     const ColMeta &find_col(const TabCol &col) const {
         auto it = std::find_if(in_cols_.begin(), in_cols_.end(), [&](const ColMeta &m) {
-            return m.tab_name == col.tab_name && m.name == col.col_name;
+            return (col.tab_name.empty() || m.tab_name == col.tab_name) && m.name == col.col_name;
         });
         if (it == in_cols_.end()) {
             throw ColumnNotFoundError(col.tab_name + "." + col.col_name);
         }
         return *it;
+    }
+
+    int find_order_col_idx(const OrderByItem &ob) const {
+        for (size_t i = 0; i < plan_->select_items_.size(); i++) {
+            const auto &sel = plan_->select_items_[i];
+            if (!sel.alias.empty() && sel.alias == ob.col.col_name) {
+                return static_cast<int>(i);
+            }
+            if (!sel.is_agg && !ob.is_agg &&
+                sel.col.col_name == ob.col.col_name &&
+                (ob.col.tab_name.empty() || sel.col.tab_name == ob.col.tab_name ||
+                 sel.col.tab_name.empty())) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
     }
 
     std::pair<ColType, std::string> read_col_bin(const RmRecord &rec, const TabCol &col) const {
@@ -286,8 +302,9 @@ class AggregationExecutor : public AbstractExecutor {
                 if (!item.is_agg) {
                     int gi = -1;
                     for (size_t j = 0; j < plan_->group_bys_.size(); j++) {
-                        if (plan_->group_bys_[j].tab_name == item.col.tab_name &&
-                            plan_->group_bys_[j].col_name == item.col.col_name) {
+                        if (plan_->group_bys_[j].col_name == item.col.col_name &&
+                            (plan_->group_bys_[j].tab_name == item.col.tab_name ||
+                             plan_->group_bys_[j].tab_name.empty() || item.col.tab_name.empty())) {
                             gi = static_cast<int>(j);
                             break;
                         }
@@ -307,16 +324,7 @@ class AggregationExecutor : public AbstractExecutor {
 
         if (!plan_->order_bys_.empty()) {
             auto ob = plan_->order_bys_[0];
-            int order_idx = -1;
-            for (size_t i = 0; i < plan_->select_items_.size(); i++) {
-                const auto &sel = plan_->select_items_[i];
-                if (!ob.is_agg && !sel.is_agg &&
-                    sel.col.tab_name == ob.col.tab_name &&
-                    sel.col.col_name == ob.col.col_name) {
-                    order_idx = static_cast<int>(i);
-                    break;
-                }
-            }
+            int order_idx = find_order_col_idx(ob);
             if (order_idx >= 0) {
                 const auto c = cols_[order_idx];
                 std::sort(out_.begin(), out_.end(), [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
@@ -331,6 +339,10 @@ class AggregationExecutor : public AbstractExecutor {
         if (plan_->limit_num_ >= 0 && static_cast<int>(out_.size()) > plan_->limit_num_) {
             out_.resize(plan_->limit_num_);
         }
+        if (plan_->limit_num_ == 0) {
+            out_.clear();
+        }
+        plan_->rows_ = out_.size();
     }
 
     void nextTuple() override { idx_++; }

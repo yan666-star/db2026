@@ -396,7 +396,8 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
             T_Projection,
             std::move(plannerRoot),
             std::move(sel_cols),
-            query->is_select_all
+            query->is_select_all,
+            query->limit_num
         );
     }
 
@@ -475,36 +476,9 @@ std::shared_ptr<Plan> Planner::do_planner(std::shared_ptr<Query> query, Context 
                                                      std::vector<Value>(), query->conds, 
                                                      query->set_clauses);
     } else if (auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse)) {
-
-        std::shared_ptr<plannerInfo> root = std::make_shared<plannerInfo>(x);
         auto table_to_alias = query->table_to_alias;
         bool is_explain_analyze = query->is_explain_analyze;
-        std::shared_ptr<Plan> projection;
-        if (query->has_agg || !query->group_bys.empty() || !query->havings.empty() || query->limit_num >= 0) {
-            std::vector<Condition> tmp_conds = query->conds;
-            std::vector<std::shared_ptr<Plan>> table_scan_executors(query->tables.size());
-            for (size_t i = 0; i < query->tables.size(); i++) {
-                auto curr_conds = pop_conds(tmp_conds, query->tables[i]);
-                std::vector<std::string> index_col_names;
-                bool index_exist = get_index_cols(query->tables[i], curr_conds, index_col_names);
-                if (!index_exist) {
-                    index_col_names.clear();
-                    table_scan_executors[i] =
-                        std::make_shared<ScanPlan>(T_SeqScan, sm_manager_, query->tables[i], curr_conds, index_col_names);
-                } else {
-                    table_scan_executors[i] =
-                        std::make_shared<ScanPlan>(T_IndexScan, sm_manager_, query->tables[i], curr_conds, index_col_names);
-                }
-            }
-            std::shared_ptr<Plan> base = table_scan_executors[0];
-            for (size_t i = 1; i < table_scan_executors.size(); i++) {
-                base = std::make_shared<JoinPlan>(T_NestLoop, base, table_scan_executors[i], std::vector<Condition>{});
-            }
-            projection = std::make_shared<AggregatePlan>(
-                base, query->select_items, query->group_bys, query->havings, query->order_bys, query->limit_num);
-        } else {
-            projection = generate_select_plan(std::move(query), context);
-        }
+        std::shared_ptr<Plan> projection = generate_select_plan(std::move(query), context);
         plannerRoot = std::make_shared<DMLPlan>(T_select, projection, std::string(), std::vector<Value>(),
                                                     std::vector<Condition>(), std::vector<SetClause>(), is_explain_analyze, table_to_alias);
     } else {

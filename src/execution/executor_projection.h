@@ -15,6 +15,8 @@ See the Mulan PSL v2 for more details. */
 #include "index/ix.h"
 #include "system/sm.h"
 #include "optimizer/plan.h"
+#include <limits>
+
 class ProjectionExecutor : public AbstractExecutor {
    private:
     ProjectionPlan *plan_ = nullptr;//添加projection plan显示表示
@@ -22,6 +24,8 @@ class ProjectionExecutor : public AbstractExecutor {
     std::vector<ColMeta> cols_;
     size_t len_;
     std::vector<size_t> sel_idxs_;
+    int limit_;
+    int result_idx_ = 0;
 
    public:
     ProjectionExecutor(std::unique_ptr<AbstractExecutor> prev,
@@ -29,6 +33,10 @@ class ProjectionExecutor : public AbstractExecutor {
                    ProjectionPlan *plan = nullptr) {
         prev_ = std::move(prev);
         plan_ = plan;
+        limit_ = (plan_ != nullptr) ? plan_->limit_num_ : -1;
+        if (limit_ == -1) {
+            limit_ = std::numeric_limits<int>::max();
+        }
 
         size_t curr_offset = 0;
         auto &prev_cols = prev_->cols();
@@ -47,10 +55,16 @@ class ProjectionExecutor : public AbstractExecutor {
 
     const std::vector<ColMeta> &cols() const override { return cols_; }
 
-    bool is_end() const override { return prev_->is_end(); }
+    bool is_end() const override {
+        return prev_->is_end() || result_idx_ >= limit_;
+    }
 
     void beginTuple() override {
         prev_->beginTuple();
+        result_idx_ = 0;
+        if (limit_ == 0) {
+            return;
+        }
         if (!prev_->is_end() && plan_ != nullptr) {
             plan_->rows_++;
         }
@@ -58,12 +72,17 @@ class ProjectionExecutor : public AbstractExecutor {
 
     void nextTuple() override {
         prev_->nextTuple();
-        if (!prev_->is_end() && plan_ != nullptr) {
+        result_idx_++;
+        if (!prev_->is_end() && plan_ != nullptr && result_idx_ < limit_) {
             plan_->rows_++;
         }
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        if (is_end()) {
+            return nullptr;
+        }
+
         auto rec = prev_->Next();
         if (rec == nullptr) {
             return nullptr;

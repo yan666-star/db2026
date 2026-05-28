@@ -51,7 +51,31 @@ class Portal
 {
    private:
     SmManager *sm_manager_;
-    
+
+    static std::vector<TabCol> collect_output_cols(const std::shared_ptr<Plan> &plan) {
+        if (auto p = std::dynamic_pointer_cast<ProjectionPlan>(plan)) {
+            return p->sel_cols_;
+        }
+        if (auto a = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
+            std::vector<TabCol> out_cols;
+            for (size_t i = 0; i < a->select_items_.size(); i++) {
+                TabCol tc;
+                if (!a->select_items_[i].alias.empty()) {
+                    tc = {"", a->select_items_[i].alias};
+                } else if (a->select_items_[i].is_agg) {
+                    tc = {"", "agg_" + std::to_string(i)};
+                } else {
+                    tc = a->select_items_[i].col;
+                }
+                out_cols.push_back(tc);
+            }
+            return out_cols;
+        }
+        if (auto s = std::dynamic_pointer_cast<SortPlan>(plan)) {
+            return collect_output_cols(s->subplan_);
+        }
+        return {};
+    }
 
    public:
     Portal(SmManager *sm_manager) : sm_manager_(sm_manager){}
@@ -72,22 +96,7 @@ class Portal
                 case T_select:
                 {
                     std::unique_ptr<AbstractExecutor> root = convert_plan_executor(x->subplan_, context);
-                    std::vector<TabCol> out_cols;
-                    if (auto p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_)) {
-                        out_cols = p->sel_cols_;
-                    } else if (auto a = std::dynamic_pointer_cast<AggregatePlan>(x->subplan_)) {
-                        for (size_t i = 0; i < a->select_items_.size(); i++) {
-                            TabCol tc;
-                            if (!a->select_items_[i].alias.empty()) {
-                                tc = {"", a->select_items_[i].alias};
-                            } else if (a->select_items_[i].is_agg) {
-                                tc = {"", "agg_" + std::to_string(i)};
-                            } else {
-                                tc = a->select_items_[i].col;
-                            }
-                            out_cols.push_back(tc);
-                        }
-                    }
+                    std::vector<TabCol> out_cols = collect_output_cols(x->subplan_);
 
                     if (x->is_explain_analyze_) {
                         return std::make_shared<PortalStmt>(
@@ -240,7 +249,8 @@ class Portal
             return std::make_unique<SortExecutor>(
                     convert_plan_executor(x->subplan_, context, filter_plan),
                     x->sel_col_,
-                    x->is_desc_
+                    x->is_desc_,
+                    x.get()
                 );
         } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
             return std::make_unique<AggregationExecutor>(
