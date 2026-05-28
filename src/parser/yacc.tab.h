@@ -35,8 +35,8 @@
    especially those whose name start with YY_ or yy_.  They are
    private implementation details that can be changed or removed.  */
 
-#ifndef YY_YY_MNT_HGFS_DMS_DESIGN_DB2026_SRC_PARSER_YACC_TAB_H_INCLUDED
-# define YY_YY_MNT_HGFS_DMS_DESIGN_DB2026_SRC_PARSER_YACC_TAB_H_INCLUDED
+#ifndef YY_YY_ROOT_DB2026_SRC_PARSER_YACC_TAB_H_INCLUDED
+# define YY_YY_ROOT_DB2026_SRC_PARSER_YACC_TAB_H_INCLUDED
 /* Debug traces.  */
 #ifndef YYDEBUG
 # define YYDEBUG 0
@@ -91,15 +91,23 @@ extern int yydebug;
     ANALYZE = 292,                 /* ANALYZE  */
     ON = 293,                      /* ON  */
     AS = 294,                      /* AS  */
-    LEQ = 295,                     /* LEQ  */
-    NEQ = 296,                     /* NEQ  */
-    GEQ = 297,                     /* GEQ  */
-    T_EOF = 298,                   /* T_EOF  */
-    IDENTIFIER = 299,              /* IDENTIFIER  */
-    VALUE_STRING = 300,            /* VALUE_STRING  */
-    VALUE_INT = 301,               /* VALUE_INT  */
-    VALUE_FLOAT = 302,             /* VALUE_FLOAT  */
-    VALUE_BOOL = 303               /* VALUE_BOOL  */
+    GROUP = 295,                   /* GROUP  */
+    HAVING = 296,                  /* HAVING  */
+    LIMIT = 297,                   /* LIMIT  */
+    COUNT = 298,                   /* COUNT  */
+    MAX = 299,                     /* MAX  */
+    MIN = 300,                     /* MIN  */
+    SUM = 301,                     /* SUM  */
+    AVG = 302,                     /* AVG  */
+    LEQ = 303,                     /* LEQ  */
+    NEQ = 304,                     /* NEQ  */
+    GEQ = 305,                     /* GEQ  */
+    T_EOF = 306,                   /* T_EOF  */
+    IDENTIFIER = 307,              /* IDENTIFIER  */
+    VALUE_STRING = 308,            /* VALUE_STRING  */
+    VALUE_INT = 309,               /* VALUE_INT  */
+    VALUE_FLOAT = 310,             /* VALUE_FLOAT  */
+    VALUE_BOOL = 311               /* VALUE_BOOL  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -126,4 +134,4 @@ struct YYLTYPE
 int yyparse (void);
 
 
-#endif /* !YY_YY_MNT_HGFS_DMS_DESIGN_DB2026_SRC_PARSER_YACC_TAB_H_INCLUDED  */
+#endif /* !YY_YY_ROOT_DB2026_SRC_PARSER_YACC_TAB_H_INCLUDED  */

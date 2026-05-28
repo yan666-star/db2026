@@ -108,4 +108,5 @@ class SeqScanExecutor : public AbstractExecutor {
     }
 
     Rid &rid() override { return rid_; }
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
 };

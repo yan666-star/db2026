@@ -150,6 +150,7 @@ class IndexScanExecutor : public AbstractExecutor {
     size_t tupleLen() const override { return len_; }
 
     Rid &rid() override { return rid_; }
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
 
     const std::vector<ColMeta> &cols() const override { return cols_; }
 

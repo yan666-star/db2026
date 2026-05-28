@@ -23,6 +23,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_insert.h"
 #include "execution/executor_delete.h"
 #include "execution/execution_sort.h"
+#include "execution/executor_aggregation.h"
 #include "common/common.h"
 
 typedef enum portalTag{
@@ -70,13 +71,28 @@ class Portal
             switch(x->tag) {
                 case T_select:
                 {
-                    std::shared_ptr<ProjectionPlan> p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_);
-                    std::unique_ptr<AbstractExecutor> root = convert_plan_executor(p, context);
+                    std::unique_ptr<AbstractExecutor> root = convert_plan_executor(x->subplan_, context);
+                    std::vector<TabCol> out_cols;
+                    if (auto p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_)) {
+                        out_cols = p->sel_cols_;
+                    } else if (auto a = std::dynamic_pointer_cast<AggregatePlan>(x->subplan_)) {
+                        for (size_t i = 0; i < a->select_items_.size(); i++) {
+                            TabCol tc;
+                            if (!a->select_items_[i].alias.empty()) {
+                                tc = {"", a->select_items_[i].alias};
+                            } else if (a->select_items_[i].is_agg) {
+                                tc = {"", "agg_" + std::to_string(i)};
+                            } else {
+                                tc = a->select_items_[i].col;
+                            }
+                            out_cols.push_back(tc);
+                        }
+                    }
 
                     if (x->is_explain_analyze_) {
                         return std::make_shared<PortalStmt>(
                             PORTAL_EXPLAIN_ANALYZE,
-                            p->sel_cols_ ,//第一次直接move 导致Project(columns=[], rows=2)
+                            out_cols,
                             std::move(root),
                             plan
                         );
@@ -84,7 +100,7 @@ class Portal
 
                     return std::make_shared<PortalStmt>(
                         PORTAL_ONE_SELECT,
-                        p->sel_cols_,
+                        out_cols,
                         std::move(root),
                         plan
                     );
@@ -226,6 +242,11 @@ class Portal
                     x->sel_col_,
                     x->is_desc_
                 );
+        } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
+            return std::make_unique<AggregationExecutor>(
+                convert_plan_executor(x->subplan_, context, filter_plan),
+                x.get()
+            );
         }
         return nullptr;
     }

@@ -158,6 +158,34 @@ struct Col : public Expr {
             tab_name(std::move(tab_name_)), col_name(std::move(col_name_)) {}
 };
 
+enum AggFuncType { AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM, AGG_AVG };
+
+struct AggFunc : public Expr {
+    AggFuncType func_type;
+    bool is_star = false;
+    std::shared_ptr<Col> col;
+
+    AggFunc(AggFuncType func_type_, bool is_star_, std::shared_ptr<Col> col_)
+        : func_type(func_type_), is_star(is_star_), col(std::move(col_)) {}
+};
+
+struct SelectItem : public TreeNode {
+    std::shared_ptr<Expr> expr;
+    std::string alias;
+
+    SelectItem(std::shared_ptr<Expr> expr_, std::string alias_)
+        : expr(std::move(expr_)), alias(std::move(alias_)) {}
+};
+
+struct HavingExpr : public TreeNode {
+    std::shared_ptr<AggFunc> lhs;
+    SvCompOp op;
+    std::shared_ptr<Value> rhs;
+
+    HavingExpr(std::shared_ptr<AggFunc> lhs_, SvCompOp op_, std::shared_ptr<Value> rhs_)
+        : lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
+};
+
 struct SetClause : public TreeNode {
     std::string col_name;
     std::shared_ptr<Value> val;
@@ -167,11 +195,11 @@ struct SetClause : public TreeNode {
 };
 
 struct BinaryExpr : public TreeNode {
-    std::shared_ptr<Col> lhs;
+    std::shared_ptr<Expr> lhs;
     SvCompOp op;
     std::shared_ptr<Expr> rhs;
 
-    BinaryExpr(std::shared_ptr<Col> lhs_, SvCompOp op_, std::shared_ptr<Expr> rhs_) :
+    BinaryExpr(std::shared_ptr<Expr> lhs_, SvCompOp op_, std::shared_ptr<Expr> rhs_) :
             lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
 };
 
@@ -248,27 +276,37 @@ struct JoinExpr : public TreeNode {
 };
 
 struct SelectStmt : public TreeNode {
-    std::vector<std::shared_ptr<Col>> cols;
+    std::vector<std::shared_ptr<SelectItem>> select_items;
     std::vector<TableRef> tabs;
     bool is_explain_analyze = false;
     bool is_select_all = false;
     //std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
+    std::vector<std::shared_ptr<Col>> group_bys;
+    std::vector<std::shared_ptr<HavingExpr>> havings;
+    bool has_limit = false;
+    int limit_num = -1;
 
     
     bool has_sort;
     std::shared_ptr<OrderBy> order;
 
 
-    SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
+    SelectStmt(std::vector<std::shared_ptr<SelectItem>> select_items_,
                std::vector<TableRef> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
-               std::shared_ptr<OrderBy> order_) :
-            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
+               std::vector<std::shared_ptr<Col>> group_bys_,
+               std::vector<std::shared_ptr<HavingExpr>> havings_,
+               std::shared_ptr<OrderBy> order_,
+               int limit_num_) :
+            select_items(std::move(select_items_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
+            group_bys(std::move(group_bys_)), havings(std::move(havings_)),
             order(std::move(order_)) {
                 has_sort = (bool)order;
-                is_select_all = cols.empty();
+                is_select_all = select_items.empty();
+                has_limit = limit_num_ >= 0;
+                limit_num = limit_num_;
             }
 };
 
@@ -301,6 +339,11 @@ struct SemValue {
     std::vector<std::shared_ptr<Field>> sv_fields;
 
     std::shared_ptr<Expr> sv_expr;
+    std::shared_ptr<AggFunc> sv_agg_func;
+    std::shared_ptr<SelectItem> sv_select_item;
+    std::vector<std::shared_ptr<SelectItem>> sv_select_items;
+    std::shared_ptr<HavingExpr> sv_having_expr;
+    std::vector<std::shared_ptr<HavingExpr>> sv_having_exprs;
 
     std::shared_ptr<Value> sv_val;
     std::vector<std::shared_ptr<Value>> sv_vals;
@@ -315,6 +358,7 @@ struct SemValue {
     std::vector<std::shared_ptr<BinaryExpr>> sv_conds;
 
     std::shared_ptr<OrderBy> sv_orderby;
+    std::vector<std::shared_ptr<Col>> sv_group_bys;
 
     SetKnobType sv_setKnobType;
 };

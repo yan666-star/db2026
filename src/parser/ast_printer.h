@@ -146,9 +146,22 @@ private:
             print_node_list(x->conds, offset);
         } else if (auto x = std::dynamic_pointer_cast<SelectStmt>(node)) {
             std::cout << "SELECT\n";
-            print_node_list(x->cols, offset);
+            print_node_list(x->select_items, offset);
             print_val_list(x->tabs, offset);
             print_node_list(x->conds, offset);
+        } else if (auto x = std::dynamic_pointer_cast<SelectItem>(node)) {
+            std::cout << "SELECT_ITEM\n";
+            print_node(x->expr, offset);
+            if (!x->alias.empty()) {
+                print_val(x->alias, offset);
+            }
+        } else if (auto x = std::dynamic_pointer_cast<AggFunc>(node)) {
+            std::cout << "AGG\n";
+            if (x->is_star) {
+                print_val("COUNT(*)", offset);
+            } else {
+                print_node(x->col, offset);
+            }
         } else if (auto x = std::dynamic_pointer_cast<TxnBegin>(node)) {
             std::cout << "BEGIN\n";
         } else if (auto x = std::dynamic_pointer_cast<TxnCommit>(node)) {

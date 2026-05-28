@@ -43,6 +43,7 @@ typedef enum PlanTag{
     T_NestLoop,
     T_SortMerge,    // sort merge join
     T_Sort,
+    T_Aggregate,
     T_Projection,
     T_Filter//添加filter plan显示表示
 } PlanTag;
@@ -151,6 +152,31 @@ class SortPlan : public Plan
         TabCol sel_col_;
         bool is_desc_;
         
+};
+
+class AggregatePlan : public Plan {
+   public:
+    AggregatePlan(std::shared_ptr<Plan> subplan,
+                  std::vector<SelectItem> select_items,
+                  std::vector<TabCol> group_bys,
+                  std::vector<HavingCond> havings,
+                  std::vector<OrderByItem> order_bys,
+                  int limit_num)
+        : subplan_(std::move(subplan)),
+          select_items_(std::move(select_items)),
+          group_bys_(std::move(group_bys)),
+          havings_(std::move(havings)),
+          order_bys_(std::move(order_bys)),
+          limit_num_(limit_num) {
+        Plan::tag = T_Aggregate;
+    }
+
+    std::shared_ptr<Plan> subplan_;
+    std::vector<SelectItem> select_items_;
+    std::vector<TabCol> group_bys_;
+    std::vector<HavingCond> havings_;
+    std::vector<OrderByItem> order_bys_;
+    int limit_num_;
 };
 
 // dml语句，包括insert; delete; update; select语句　

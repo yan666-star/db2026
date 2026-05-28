@@ -28,6 +28,12 @@ class Query{
     std::vector<Condition> conds;
     // 投影列
     std::vector<TabCol> cols;
+    std::vector<SelectItem> select_items;
+    std::vector<TabCol> group_bys;
+    std::vector<HavingCond> havings;
+    std::vector<OrderByItem> order_bys;
+    int limit_num = -1;
+    bool has_agg = false;
     // 表名
     std::vector<std::string> tables;
     // update 的set 值
@@ -66,5 +72,6 @@ private:
                   const std::map<std::string, std::string> &alias_to_table);
     Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val);
     CompOp convert_sv_comp_op(ast::SvCompOp op);
+    AggType convert_agg_type(ast::AggFuncType func_type);
 };
 

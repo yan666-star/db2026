@@ -28,6 +28,30 @@ struct TabCol {
     }
 };
 
+enum CompOp { OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE };
+
+enum AggType { AGG_NONE = 0, AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM, AGG_AVG };
+
+struct AggExpr {
+    AggType type = AGG_NONE;
+    TabCol col;
+    bool is_star = false;  // only valid for COUNT(*)
+};
+
+struct SelectItem {
+    bool is_agg = false;
+    TabCol col;
+    AggExpr agg;
+    std::string alias;
+};
+
+struct OrderByItem {
+    bool is_agg = false;
+    TabCol col;
+    AggExpr agg;
+    bool is_desc = false;
+};
+
 struct Value {
     bool from_float_literal = false; 
     ColType type;  // type of value
@@ -73,7 +97,11 @@ struct Value {
     }
 };
 
-enum CompOp { OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE };
+struct HavingCond {
+    AggExpr lhs;
+    CompOp op = OP_EQ;
+    Value rhs_val;
+};
 
 struct Condition {
     TabCol lhs_col;   // left-hand side column

@@ -91,6 +91,14 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "ANALYZE" { return ANALYZE; }
 "ON" { return ON; }
 "AS" { return AS; }
+"GROUP" { return GROUP; }
+"HAVING" { return HAVING; }
+"LIMIT" { return LIMIT; }
+"COUNT" { return COUNT; }
+"MAX" { return MAX; }
+"MIN" { return MIN; }
+"SUM" { return SUM; }
+"AVG" { return AVG; }
 "ENABLE_NESTLOOP" { return ENABLE_NESTLOOP; }
 "ENABLE_SORTMERGE" { return ENABLE_SORTMERGE; }
 "TRUE" { 
