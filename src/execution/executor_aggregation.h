@@ -193,10 +193,8 @@ class AggregationExecutor : public AbstractExecutor {
     bool pass_having(const GroupState &group) const {
         for (auto &h : plan_->havings_) {
             auto it = group.agg_states.find(agg_key(h.lhs));
-            if (it == group.agg_states.end()) {
-                return false;
-            }
-            auto lhs = agg_result(h.lhs, it->second);
+            AggState empty;
+            auto lhs = agg_result(h.lhs, it == group.agg_states.end() ? empty : it->second);
             auto rhs = value_to_bin(h.rhs_val);
             if (!eval_cmp(cmp_bin(lhs.first, lhs.second, rhs.first, rhs.second), h.op)) {
                 return false;
@@ -260,6 +258,19 @@ class AggregationExecutor : public AbstractExecutor {
         idx_ = 0;
         prev_->beginTuple();
 
+        // Merge SELECT/HAVING aggregates and update each aggregate once per input row.
+        // Otherwise duplicated aggregate expressions (e.g., same COUNT in multiple HAVING conditions)
+        // would be accumulated multiple times and produce incorrect results.
+        std::unordered_map<std::string, AggExpr> required_aggs;
+        for (auto &item : plan_->select_items_) {
+            if (item.is_agg) {
+                required_aggs.emplace(agg_key(item.agg), item.agg);
+            }
+        }
+        for (auto &h : plan_->havings_) {
+            required_aggs.emplace(agg_key(h.lhs), h.lhs);
+        }
+
         std::unordered_map<std::string, GroupState> groups;
         std::vector<std::string> group_order;
         while (!prev_->is_end()) {
@@ -276,12 +287,8 @@ class AggregationExecutor : public AbstractExecutor {
                 group_order.push_back(gk);
             }
             auto &st = groups[gk];
-            for (auto &item : plan_->select_items_) {
-                if (!item.is_agg) continue;
-                update_agg(item.agg, st.agg_states[agg_key(item.agg)], *rec);
-            }
-            for (auto &h : plan_->havings_) {
-                update_agg(h.lhs, st.agg_states[agg_key(h.lhs)], *rec);
+            for (auto &kv : required_aggs) {
+                update_agg(kv.second, st.agg_states[kv.first], *rec);
             }
             prev_->nextTuple();
         }
