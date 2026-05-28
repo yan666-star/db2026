@@ -189,8 +189,11 @@ std::shared_ptr<Plan> Planner::physical_optimization(std::shared_ptr<Query> quer
     
     // 其他物理优化
 
-    // 处理orderby
-    plan = generate_sort_plan(query, std::move(plan)); 
+    // 非聚合查询由 SortExecutor 处理 order by；
+    // 聚合查询在 AggregationExecutor 内部按分组结果排序，避免先排序后聚合导致语义偏差。
+    if (!(query->has_agg || !query->group_bys.empty() || !query->havings.empty())) {
+        plan = generate_sort_plan(query, std::move(plan));
+    }
 
     return plan;
 }

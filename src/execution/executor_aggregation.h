@@ -127,8 +127,24 @@ class AggregationExecutor : public AbstractExecutor {
                 return {TYPE_FLOAT, std::string(reinterpret_cast<const char *>(&x), sizeof(float))};
             }
             case AGG_MAX:
+                if (st.max_bin.empty()) {
+                    if (st.input_type == TYPE_FLOAT) {
+                        float x = 0.0f;
+                        return {TYPE_FLOAT, std::string(reinterpret_cast<const char *>(&x), sizeof(float))};
+                    }
+                    int x = 0;
+                    return {TYPE_INT, std::string(reinterpret_cast<const char *>(&x), sizeof(int))};
+                }
                 return {st.input_type, st.max_bin};
             case AGG_MIN:
+                if (st.min_bin.empty()) {
+                    if (st.input_type == TYPE_FLOAT) {
+                        float x = 0.0f;
+                        return {TYPE_FLOAT, std::string(reinterpret_cast<const char *>(&x), sizeof(float))};
+                    }
+                    int x = 0;
+                    return {TYPE_INT, std::string(reinterpret_cast<const char *>(&x), sizeof(int))};
+                }
                 return {st.input_type, st.min_bin};
             default:
                 throw RMDBError("failure");
@@ -287,6 +303,29 @@ class AggregationExecutor : public AbstractExecutor {
                 }
             }
             out_.push_back(std::move(row));
+        }
+
+        if (!plan_->order_bys_.empty()) {
+            auto ob = plan_->order_bys_[0];
+            int order_idx = -1;
+            for (size_t i = 0; i < plan_->select_items_.size(); i++) {
+                const auto &sel = plan_->select_items_[i];
+                if (!ob.is_agg && !sel.is_agg &&
+                    sel.col.tab_name == ob.col.tab_name &&
+                    sel.col.col_name == ob.col.col_name) {
+                    order_idx = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (order_idx >= 0) {
+                const auto c = cols_[order_idx];
+                std::sort(out_.begin(), out_.end(), [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
+                    std::string av(a->data + c.offset, c.len);
+                    std::string bv(b->data + c.offset, c.len);
+                    int cmp = cmp_bin(c.type, av, c.type, bv);
+                    return ob.is_desc ? (cmp > 0) : (cmp < 0);
+                });
+            }
         }
 
         if (plan_->limit_num_ >= 0 && static_cast<int>(out_.size()) > plan_->limit_num_) {
