@@ -546,16 +546,16 @@ union yyalloc
 /* YYFINAL -- State number of the termination state.  */
 #define YYFINAL  54
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   202
+#define YYLAST   206
 
 /* YYNTOKENS -- Number of terminals.  */
 #define YYNTOKENS  66
 /* YYNNTS -- Number of nonterminals.  */
 #define YYNNTS  40
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  102
+#define YYNRULES  103
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  203
+#define YYNSTATES  206
 
 /* YYMAXUTOK -- Last valid token kind.  */
 #define YYMAXUTOK   311
@@ -619,8 +619,8 @@ static const yytype_int16 yyrline[] =
      367,   374,   378,   382,   386,   393,   397,   401,   405,   412,
      413,   414,   415,   416,   417,   421,   425,   429,   436,   441,
      446,   451,   460,   461,   465,   466,   470,   471,   475,   476,
-     480,   484,   488,   492,   499,   500,   501,   505,   506,   510,
-     511,   514,   516
+     480,   484,   488,   492,   496,   505,   506,   507,   511,   512,
+     516,   517,   520,   522
 };
 #endif
 
@@ -667,7 +667,7 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
 
-#define YYTABLE_NINF (-102)
+#define YYTABLE_NINF (-103)
 
 #define yytable_value_is_error(Yyn) \
   0
@@ -695,8 +695,8 @@ static const yytype_int16 yypact[] =
       -8,  -139,   124,  -139,  -139,    18,  -139,  -139,    90,   109,
      104,   166,   129,   123,  -139,  -139,  -139,   125,    49,   159,
     -139,   169,   146,   141,  -139,   109,    18,   104,   109,   133,
-    -139,   166,  -139,  -139,  -139,    40,  -139,  -139,   146,  -139,
-    -139,  -139,  -139
+    -139,   166,  -139,  -139,  -139,    40,   128,  -139,   146,  -139,
+    -139,  -139,   109,  -139,    40,  -139
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -707,12 +707,12 @@ static const yytype_int8 yydefact[] =
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        4,     3,    11,    12,    13,    14,     0,     5,     0,     0,
        9,     6,    10,     7,     8,    15,     0,     0,     0,     0,
-       0,   101,    20,     0,     0,     0,    99,   100,     0,     0,
-       0,     0,     0,     0,   102,    61,    65,     0,    62,    63,
+       0,   102,    20,     0,     0,     0,   100,   101,     0,     0,
+       0,     0,     0,     0,   103,    61,    65,     0,    62,    63,
       67,     0,    48,     0,     1,     2,     0,     0,     0,    19,
        0,     0,    43,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,    16,     0,     0,     0,
-       0,     0,    24,   102,    43,    58,     0,    17,     0,     0,
+       0,     0,    24,   103,    43,    58,     0,    17,     0,     0,
        0,     0,     0,     0,    66,    78,    43,    75,    64,    68,
       47,     0,     0,    28,     0,     0,    30,     0,     0,    40,
       38,    39,    41,    55,    45,    44,    56,     0,    57,     0,
@@ -722,18 +722,18 @@ static const yytype_int8 yydefact[] =
       50,    51,     0,    59,    60,    80,    79,     0,    86,    77,
       43,    29,     0,    31,    23,     0,    46,    42,     0,     0,
        0,    92,    82,     0,    37,    81,    84,    83,     0,    87,
-      88,     0,    97,    86,    34,     0,     0,     0,     0,     0,
-      26,    92,    85,    90,    89,    96,    91,    98,    97,    95,
-      94,    93,    27
+      88,     0,    98,    86,    34,     0,     0,     0,     0,     0,
+      26,    92,    85,    90,    89,    97,    91,    99,    98,    96,
+      95,    93,     0,    27,    97,    94
 };
 
 /* YYPGOTO[NTERM-NUM].  */
 static const yytype_int16 yypgoto[] =
 {
-    -139,  -139,  -139,  -139,  -139,  -139,  -139,  -139,  -139,   114,
-      54,  -139,  -139,   -98,  -138,   -71,  -139,    -9,    13,    38,
-    -139,    75,   117,  -139,   126,    -7,    10,    62,    24,  -139,
-      14,  -139,    15,     8,  -139,  -139,     2,  -139,    -1,   -58
+    -139,  -139,  -139,  -139,  -139,  -139,  -139,  -139,  -139,   117,
+      55,  -139,  -139,   -98,  -138,   -71,  -139,    -9,    13,    42,
+    -139,    76,   122,  -139,   120,    -7,    10,    65,    27,  -139,
+      19,  -139,    14,    15,  -139,    -4,     5,  -139,    -1,   -58
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
@@ -760,7 +760,7 @@ static const yytype_int16 yytable[] =
       97,   109,   110,   111,   112,    64,     1,   104,     2,    63,
        3,     4,     5,   163,    65,     6,   140,   141,   193,   172,
       70,     7,     8,     9,   142,   141,   132,   146,   147,   148,
-      10,    11,    12,    13,    14,    15,    66,   149,  -101,    16,
+      10,    11,    12,    13,    14,    15,    66,   149,  -102,    16,
      164,   165,   150,   151,    39,    40,    41,    42,    43,   136,
      137,   138,    67,    44,    17,    68,    69,    97,    97,    71,
      159,    72,    97,    39,    40,    41,    42,    43,   155,   156,
@@ -768,9 +768,9 @@ static const yytype_int16 yytable[] =
       42,    43,    75,    77,    78,    79,    80,    81,    83,    87,
      176,    44,   122,   178,   108,   121,   133,   145,   123,   157,
      124,   125,   126,   127,   162,   168,   192,   169,   173,   195,
-     178,   181,   170,   184,   187,   188,   185,   197,   189,   161,
-     167,   186,   101,   107,   153,   160,   183,   191,    98,   198,
-     202,     0,   194
+     178,   181,   170,   184,   187,   188,   185,   197,   189,   202,
+     161,   186,    98,   204,   167,   153,   107,   101,   160,   183,
+     205,   194,   191,   203,     0,     0,   198
 };
 
 static const yytype_int16 yycheck[] =
@@ -793,9 +793,9 @@ static const yytype_int16 yycheck[] =
       46,    47,    20,    59,    59,    59,    11,    17,    52,    56,
      169,    52,    60,   170,    59,    58,    13,    25,    60,    40,
       60,    60,    60,    60,    59,    38,   185,    16,    54,   188,
-     187,    15,    41,    60,    25,    16,    61,    54,    42,   135,
-     152,   178,    75,    79,   119,   133,   172,   183,    72,   191,
-     198,    -1,   187
+     187,    15,    41,    60,    25,    16,    61,    54,    42,    61,
+     135,   178,    72,   202,   152,   119,    79,    75,   133,   172,
+     204,   187,   183,   198,    -1,    -1,   191
 };
 
 /* YYSTOS[STATE-NUM] -- The symbol kind of the accessing symbol of
@@ -822,7 +822,7 @@ static const yytype_int8 yystos[] =
       41,    96,    81,    54,    79,    80,    83,    95,    91,    97,
       98,    15,    99,    94,    60,    61,    84,    25,    16,    42,
      102,    96,    83,    79,    98,    83,   100,    54,    99,     8,
-      14,   101,   102
+      14,   101,    61,   102,    83,   101
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
@@ -837,8 +837,8 @@ static const yytype_int8 yyr1[] =
       87,    88,    88,    89,    89,    90,    90,    90,    90,    91,
       91,    91,    91,    91,    91,    92,    92,    92,    93,    93,
       93,    93,    94,    94,    95,    95,    96,    96,    97,    97,
-      98,    99,    99,   100,   101,   101,   101,   102,   102,   103,
-     103,   104,   105
+      98,    99,    99,   100,   100,   101,   101,   101,   102,   102,
+     103,   103,   104,   105
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
@@ -853,8 +853,8 @@ static const yytype_int8 yyr2[] =
        3,     1,     1,     1,     3,     1,     3,     1,     3,     4,
        4,     4,     4,     4,     4,     1,     2,     3,     1,     3,
        3,     5,     0,     3,     1,     3,     0,     2,     1,     3,
-       3,     3,     0,     2,     1,     1,     0,     0,     2,     1,
-       1,     1,     1
+       3,     3,     0,     2,     4,     1,     1,     0,     0,     2,
+       1,     1,     1,     1
 };
 
 
@@ -2379,50 +2379,60 @@ yyreduce:
 #line 2380 "/root/db2026/src/parser/yacc.tab.cpp"
     break;
 
-  case 94: /* opt_asc_desc: ASC  */
-#line 499 "/root/db2026/src/parser/yacc.y"
-                 { (yyval.sv_orderby_dir) = OrderBy_ASC;     }
-#line 2386 "/root/db2026/src/parser/yacc.tab.cpp"
+  case 94: /* order_clause: order_clause ',' col opt_asc_desc  */
+#line 497 "/root/db2026/src/parser/yacc.y"
+    {
+        // Keep the first order key for executor compatibility.
+        // This rule is mainly to accept multi-key ORDER BY syntax.
+        (yyval.sv_orderby) = (yyvsp[-3].sv_orderby);
+    }
+#line 2390 "/root/db2026/src/parser/yacc.tab.cpp"
     break;
 
-  case 95: /* opt_asc_desc: DESC  */
-#line 500 "/root/db2026/src/parser/yacc.y"
-                 { (yyval.sv_orderby_dir) = OrderBy_DESC;    }
-#line 2392 "/root/db2026/src/parser/yacc.tab.cpp"
-    break;
-
-  case 96: /* opt_asc_desc: %empty  */
-#line 501 "/root/db2026/src/parser/yacc.y"
-            { (yyval.sv_orderby_dir) = OrderBy_DEFAULT; }
-#line 2398 "/root/db2026/src/parser/yacc.tab.cpp"
-    break;
-
-  case 97: /* opt_limit_clause: %empty  */
+  case 95: /* opt_asc_desc: ASC  */
 #line 505 "/root/db2026/src/parser/yacc.y"
-                    { (yyval.sv_int) = -1; }
-#line 2404 "/root/db2026/src/parser/yacc.tab.cpp"
+                 { (yyval.sv_orderby_dir) = OrderBy_ASC;     }
+#line 2396 "/root/db2026/src/parser/yacc.tab.cpp"
     break;
 
-  case 98: /* opt_limit_clause: LIMIT VALUE_INT  */
+  case 96: /* opt_asc_desc: DESC  */
 #line 506 "/root/db2026/src/parser/yacc.y"
-                      { (yyval.sv_int) = (yyvsp[0].sv_int); }
-#line 2410 "/root/db2026/src/parser/yacc.tab.cpp"
+                 { (yyval.sv_orderby_dir) = OrderBy_DESC;    }
+#line 2402 "/root/db2026/src/parser/yacc.tab.cpp"
     break;
 
-  case 99: /* set_knob_type: ENABLE_NESTLOOP  */
-#line 510 "/root/db2026/src/parser/yacc.y"
-                    { (yyval.sv_setKnobType) = EnableNestLoop; }
-#line 2416 "/root/db2026/src/parser/yacc.tab.cpp"
+  case 97: /* opt_asc_desc: %empty  */
+#line 507 "/root/db2026/src/parser/yacc.y"
+            { (yyval.sv_orderby_dir) = OrderBy_DEFAULT; }
+#line 2408 "/root/db2026/src/parser/yacc.tab.cpp"
     break;
 
-  case 100: /* set_knob_type: ENABLE_SORTMERGE  */
+  case 98: /* opt_limit_clause: %empty  */
 #line 511 "/root/db2026/src/parser/yacc.y"
+                    { (yyval.sv_int) = -1; }
+#line 2414 "/root/db2026/src/parser/yacc.tab.cpp"
+    break;
+
+  case 99: /* opt_limit_clause: LIMIT VALUE_INT  */
+#line 512 "/root/db2026/src/parser/yacc.y"
+                      { (yyval.sv_int) = (yyvsp[0].sv_int); }
+#line 2420 "/root/db2026/src/parser/yacc.tab.cpp"
+    break;
+
+  case 100: /* set_knob_type: ENABLE_NESTLOOP  */
+#line 516 "/root/db2026/src/parser/yacc.y"
+                    { (yyval.sv_setKnobType) = EnableNestLoop; }
+#line 2426 "/root/db2026/src/parser/yacc.tab.cpp"
+    break;
+
+  case 101: /* set_knob_type: ENABLE_SORTMERGE  */
+#line 517 "/root/db2026/src/parser/yacc.y"
                          { (yyval.sv_setKnobType) = EnableSortMerge; }
-#line 2422 "/root/db2026/src/parser/yacc.tab.cpp"
+#line 2432 "/root/db2026/src/parser/yacc.tab.cpp"
     break;
 
 
-#line 2426 "/root/db2026/src/parser/yacc.tab.cpp"
+#line 2436 "/root/db2026/src/parser/yacc.tab.cpp"
 
       default: break;
     }
@@ -2651,5 +2661,5 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 517 "/root/db2026/src/parser/yacc.y"
+#line 523 "/root/db2026/src/parser/yacc.y"
 

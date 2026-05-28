@@ -493,6 +493,12 @@ order_clause:
     { 
         $$ = std::make_shared<OrderBy>($1, $2);
     }
+    | order_clause ',' col opt_asc_desc
+    {
+        // Keep the first order key for executor compatibility.
+        // This rule is mainly to accept multi-key ORDER BY syntax.
+        $$ = $1;
+    }
     ;   
 
 opt_asc_desc:
