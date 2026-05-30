@@ -61,7 +61,7 @@ GROUP HAVING LIMIT COUNT MAX MIN SUM AVG UNION
 %type <sv_cond> condition
 %type <sv_conds> whereClause optWhereClause
 %type <sv_orderbys> order_clause opt_order_clause
-%type <sv_node> union_query union_branch
+%type <sv_node> select_stmt select_branch
 %type <sv_orderby_dir> opt_asc_desc
 %type <sv_setKnobType> set_knob_type
 %type <sv_int> opt_limit_clause
@@ -171,45 +171,25 @@ dml:
     {
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
-    /* 此处为 explain analyze 的辅助扩展 */
-    |   SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause opt_order_clause opt_limit_clause
+    |   select_stmt opt_order_clause opt_limit_clause
     {
-        auto conds = $4.conds;
-        conds.insert(conds.end(), $5.begin(), $5.end());
-        std::shared_ptr<OrderBy> first_order = $8.empty() ? nullptr : $8[0];
-        auto stmt = std::make_shared<SelectStmt>($2, $4.tables, conds, $6, $7, first_order, $9);
-        stmt->orders = std::move($8);
-        stmt->has_sort = !stmt->orders.empty();
-        $$ = stmt;
-    }   
-    |   EXPLAIN ANALYZE SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause opt_order_clause opt_limit_clause
-    {
-        auto conds = $6.conds;
-        conds.insert(conds.end(), $7.begin(), $7.end());
-        std::shared_ptr<OrderBy> first_order = $10.empty() ? nullptr : $10[0];
-        auto stmt = std::make_shared<SelectStmt>($4, $6.tables, conds, $8, $9, first_order, $11);
-        stmt->orders = std::move($10);
-        stmt->has_sort = !stmt->orders.empty();
-        stmt->is_explain_analyze = true;
-        $$ = stmt;
-    }
-    |   union_query opt_order_clause opt_limit_clause
-    {
-        TableRef ref;
-        ref.is_subquery = true;
-        ref.alias = "_union_r";
-        ref.union_subquery = std::dynamic_pointer_cast<UnionStmt>($1);
-        std::shared_ptr<OrderBy> first_order = $2.empty() ? nullptr : $2[0];
-        auto stmt = std::make_shared<SelectStmt>(
-            std::vector<std::shared_ptr<SelectItem>>{},
-            std::vector<TableRef>{ref},
-            std::vector<std::shared_ptr<BinaryExpr>>{},
-            std::vector<std::shared_ptr<Col>>{},
-            std::vector<std::shared_ptr<HavingExpr>>{},
-            first_order,
-            $3);
+        auto stmt = std::dynamic_pointer_cast<SelectStmt>($1);
         stmt->orders = std::move($2);
         stmt->has_sort = !stmt->orders.empty();
+        stmt->order = stmt->orders.empty() ? nullptr : stmt->orders[0];
+        stmt->limit_num = $3;
+        stmt->has_limit = $3 >= 0;
+        $$ = stmt;
+    }
+    |   EXPLAIN ANALYZE select_stmt opt_order_clause opt_limit_clause
+    {
+        auto stmt = std::dynamic_pointer_cast<SelectStmt>($3);
+        stmt->is_explain_analyze = true;
+        stmt->orders = std::move($4);
+        stmt->has_sort = !stmt->orders.empty();
+        stmt->order = stmt->orders.empty() ? nullptr : stmt->orders[0];
+        stmt->limit_num = $5;
+        stmt->has_limit = $5 >= 0;
         $$ = stmt;
     }
     ;
@@ -444,7 +424,7 @@ agg_func:
     | AVG '(' col ')'          { $$ = std::make_shared<AggFunc>(AGG_AVG, false, $3); }
     ;
 // ex an改动原tablelist
-union_branch:
+select_branch:
         SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause
     {
         auto conds = $4.conds;
@@ -453,17 +433,32 @@ union_branch:
     }
     ;
 
-union_query:
-        union_branch
+select_stmt:
+        select_branch
     {
-        auto u = std::make_shared<UnionStmt>();
-        u->branches.push_back(std::dynamic_pointer_cast<SelectStmt>($1));
-        $$ = u;
+        $$ = $1;
     }
-    |   union_query UNION union_branch
+    |   select_stmt UNION select_branch
     {
-        auto u = std::dynamic_pointer_cast<UnionStmt>($1);
-        u->branches.push_back(std::dynamic_pointer_cast<SelectStmt>($3));
+        std::vector<std::shared_ptr<SelectStmt>> branches;
+        auto left = std::dynamic_pointer_cast<SelectStmt>($1);
+        auto right = std::dynamic_pointer_cast<SelectStmt>($3);
+        if (left->is_union) {
+            branches = left->union_branches;
+        } else {
+            branches.push_back(left);
+        }
+        branches.push_back(right);
+        auto u = std::make_shared<SelectStmt>(
+            std::vector<std::shared_ptr<SelectItem>>{},
+            std::vector<TableRef>{},
+            std::vector<std::shared_ptr<BinaryExpr>>{},
+            std::vector<std::shared_ptr<Col>>{},
+            std::vector<std::shared_ptr<HavingExpr>>{},
+            nullptr,
+            -1);
+        u->is_union = true;
+        u->union_branches = std::move(branches);
         $$ = u;
     }
     ;
@@ -481,20 +476,20 @@ tableRef:
     {
         $$ = TableRef($1, $3);
     }
-    |   '(' union_query ')' AS tbName
+    |   '(' select_stmt ')' AS tbName
     {
         TableRef ref;
         ref.is_subquery = true;
         ref.alias = $5;
-        ref.union_subquery = std::dynamic_pointer_cast<UnionStmt>($2);
+        ref.subquery = std::dynamic_pointer_cast<SelectStmt>($2);
         $$ = ref;
     }
-    |   '(' union_query ')' tbName
+    |   '(' select_stmt ')' tbName
     {
         TableRef ref;
         ref.is_subquery = true;
         ref.alias = $4;
-        ref.union_subquery = std::dynamic_pointer_cast<UnionStmt>($2);
+        ref.subquery = std::dynamic_pointer_cast<SelectStmt>($2);
         $$ = ref;
     }
     ;

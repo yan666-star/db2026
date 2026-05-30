@@ -36,27 +36,23 @@ class UnionExecutor : public AbstractExecutor {
         }
         if (src_col.type == TYPE_STRING && dst_col.type == TYPE_STRING) {
             memset(dst, 0, dst_col.len);
-            memcpy(dst, src, src_col.len);
+            size_t slen = 0;
+            while (slen < static_cast<size_t>(src_col.len) && src[slen] != '\0') {
+                slen++;
+            }
+            if (slen > 0) {
+                memcpy(dst, src, slen);
+            }
             return;
         }
         memcpy(dst, src, dst_col.len);
     }
 
-    static std::string build_dedup_key(const RmRecord &rec, const std::vector<ColMeta> &cols) {
-        std::string key;
-        for (const auto &col : cols) {
-            key += format_col_value(col, rec.data + col.offset);
-            key.push_back('\x1f');
-        }
-        return key;
-    }
-
     std::unique_ptr<RmRecord> unify_row(const RmRecord &rec, const std::vector<ColMeta> &src_cols) {
         auto unified = std::make_unique<RmRecord>(len_);
-        size_t dst_off = 0;
+        memset(unified->data, 0, len_);
         for (size_t i = 0; i < cols_.size(); i++) {
-            convert_value(unified->data + dst_off, cols_[i], rec.data + src_cols[i].offset, src_cols[i]);
-            dst_off += cols_[i].len;
+            convert_value(unified->data + cols_[i].offset, cols_[i], rec.data + src_cols[i].offset, src_cols[i]);
         }
         return unified;
     }
@@ -82,7 +78,7 @@ class UnionExecutor : public AbstractExecutor {
                     continue;
                 }
                 auto unified = unify_row(*rec, src_cols);
-                std::string key = build_dedup_key(*unified, cols_);
+                std::string key(unified->data, len_);
                 if (seen.insert(key).second) {
                     tuples_.push_back(std::move(unified));
                 }

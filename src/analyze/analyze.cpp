@@ -86,15 +86,15 @@ std::vector<ColMeta> Analyze::get_branch_output_cols(const std::shared_ptr<Query
     return out;
 }
 
-DerivedTableInfo Analyze::analyze_union(const std::shared_ptr<ast::UnionStmt> &union_stmt, const std::string &alias) {
-    if (union_stmt->branches.size() < 2) {
+DerivedTableInfo Analyze::analyze_union_branches(const std::vector<std::shared_ptr<ast::SelectStmt>> &branches,
+                                                 const std::string &alias) {
+    if (branches.size() < 2) {
         throw RMDBError("failure");
     }
 
     DerivedTableInfo info;
-    info.union_stmt = union_stmt;
     std::vector<std::vector<ColMeta>> branch_cols;
-    for (auto &branch : union_stmt->branches) {
+    for (auto &branch : branches) {
         if (!branch->group_bys.empty() || !branch->havings.empty()) {
             throw RMDBError("failure");
         }
@@ -121,6 +121,8 @@ DerivedTableInfo Analyze::analyze_union(const std::shared_ptr<ast::UnionStmt> &u
         }
     }
 
+    info.cols.clear();
+    size_t current_offset = 0;
     for (size_t j = 0; j < ncols; j++) {
         ColMeta promoted = branch_cols[0][j];
         for (size_t i = 1; i < branch_cols.size(); i++) {
@@ -128,10 +130,69 @@ DerivedTableInfo Analyze::analyze_union(const std::shared_ptr<ast::UnionStmt> &u
         }
         promoted.name = branch_cols[0][j].name;
         promoted.tab_name = alias;
+        promoted.offset = static_cast<int>(current_offset);
+        current_offset += promoted.len;
         info.cols.push_back(promoted);
     }
-    assign_col_offsets(info.cols);
     return info;
+}
+
+std::shared_ptr<Query> Analyze::analyze_top_level_union(std::shared_ptr<ast::SelectStmt> x) {
+    static const std::string kUnionAlias = "__union_output__";
+    std::shared_ptr<Query> query = std::make_shared<Query>();
+    query->is_select_all = true;
+
+    query->derived_tables[kUnionAlias] = analyze_union_branches(x->union_branches, kUnionAlias);
+    query->tables.push_back(kUnionAlias);
+    query->alias_to_table[kUnionAlias] = kUnionAlias;
+    query->table_to_alias[kUnionAlias] = kUnionAlias;
+
+    std::vector<ColMeta> all_cols;
+    get_query_cols(query, all_cols);
+    for (auto &col : all_cols) {
+        TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+        query->cols.push_back(sel_col);
+        SelectItem item;
+        item.is_agg = false;
+        item.col = sel_col;
+        query->select_items.push_back(item);
+    }
+    query->limit_num = x->limit_num;
+
+    const auto &order_list = x->orders;
+    if (!order_list.empty()) {
+        for (auto &sv_order : order_list) {
+            OrderByItem ob;
+            ob.is_desc = sv_order->orderby_dir == ast::OrderBy_DESC;
+            ob.is_agg = false;
+            try {
+                ob.col = check_column(all_cols,
+                                      {.tab_name = sv_order->cols->tab_name, .col_name = sv_order->cols->col_name},
+                                      query->alias_to_table);
+            } catch (ColumnNotFoundError &) {
+                throw RMDBError("failure");
+            } catch (AmbiguousColumnError &) {
+                throw RMDBError("failure");
+            }
+            query->order_bys.push_back(ob);
+        }
+    } else if (x->has_sort && x->order) {
+        OrderByItem ob;
+        ob.is_desc = x->order->orderby_dir == ast::OrderBy_DESC;
+        ob.is_agg = false;
+        try {
+            ob.col = check_column(all_cols, {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name},
+                                  query->alias_to_table);
+        } catch (ColumnNotFoundError &) {
+            throw RMDBError("failure");
+        } catch (AmbiguousColumnError &) {
+            throw RMDBError("failure");
+        }
+        query->order_bys.push_back(ob);
+    }
+
+    query->parse = x;
+    return query;
 }
 
 void Analyze::get_query_cols(const std::shared_ptr<Query> &query, std::vector<ColMeta> &all_cols) {
@@ -147,6 +208,13 @@ void Analyze::get_query_cols(const std::shared_ptr<Query> &query, std::vector<Co
 }
 
 std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> x, bool allow_derived) {
+    if (x->is_union) {
+        if (!allow_derived) {
+            throw RMDBError("failure");
+        }
+        return analyze_top_level_union(x);
+    }
+
     std::shared_ptr<Query> query = std::make_shared<Query>();
     query->is_explain_analyze = x->is_explain_analyze;
     query->is_select_all = x->is_select_all;
@@ -159,7 +227,10 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
             if (ref.alias.empty()) {
                 throw RMDBError("failure");
             }
-            query->derived_tables[ref.alias] = analyze_union(ref.union_subquery, ref.alias);
+            if (!ref.subquery || !ref.subquery->is_union) {
+                throw RMDBError("failure");
+            }
+            query->derived_tables[ref.alias] = analyze_union_branches(ref.subquery->union_branches, ref.alias);
             query->tables.push_back(ref.alias);
             query->alias_to_table[ref.alias] = ref.alias;
             query->alias_to_table[ref.tab_name] = ref.alias;
@@ -410,13 +481,7 @@ TabCol Analyze::check_column(const std::vector<ColMeta> &all_cols,
             }
         }
         if (!found) {
-            if (!sm_manager_->db_.is_table(target.tab_name)) {
-                throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);
-            }
-            TabMeta &tab = sm_manager_->db_.get_table(target.tab_name);
-            if (!tab.is_col(target.col_name)) {
-                throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);
-            }
+            throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);
         }
     }
 

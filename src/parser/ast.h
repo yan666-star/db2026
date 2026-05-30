@@ -205,16 +205,11 @@ struct BinaryExpr : public TreeNode {
 
 struct SelectStmt;
 
-struct UnionStmt : public TreeNode {
-    std::vector<std::shared_ptr<SelectStmt>> branches;
-};
-
-// 增加关于ex an的表引用结构
 struct TableRef {
     std::string tab_name;
     std::string alias;
     bool is_subquery = false;
-    std::shared_ptr<UnionStmt> union_subquery;
+    std::shared_ptr<SelectStmt> subquery;
 
     TableRef() = default;
 
@@ -288,6 +283,8 @@ struct SelectStmt : public TreeNode {
     std::vector<TableRef> tabs;
     bool is_explain_analyze = false;
     bool is_select_all = false;
+    bool is_union = false;
+    std::vector<std::shared_ptr<SelectStmt>> union_branches;
     //std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
