@@ -252,10 +252,7 @@ static std::string value_to_string(const Value &val) {
         if (val.from_float_literal) {
             return std::to_string(val.float_val);
         }
-
-        std::ostringstream oss;
-        oss << val.float_val;
-        return oss.str();
+        return format_float_output(val.float_val, false);
     }
     return "'" + val.str_val + "'";
 }

@@ -23,6 +23,7 @@ See the Mulan PSL v2 for more details. */
 class Query;
 
 struct DerivedTableInfo {
+    bool is_union_table = false;
     std::vector<ColMeta> cols;
     std::vector<std::shared_ptr<Query>> branch_queries;
 };
@@ -80,6 +81,8 @@ private:
     std::vector<ColMeta> get_branch_output_cols(const std::shared_ptr<Query> &query);
     DerivedTableInfo analyze_union_branches(const std::vector<std::shared_ptr<ast::SelectStmt>> &branches,
                                             const std::string &alias);
+    DerivedTableInfo analyze_derived_subquery(const std::shared_ptr<ast::SelectStmt> &subquery,
+                                              const std::string &alias);
     std::shared_ptr<Query> analyze_top_level_union(std::shared_ptr<ast::SelectStmt> x);
     static bool union_compatible(ColType a, ColType b);
     static ColMeta promote_union_col(const ColMeta &a, const ColMeta &b);

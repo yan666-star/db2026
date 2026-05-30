@@ -268,6 +268,13 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
     for (size_t i = 0; i < tables.size(); i++) {
     if (query->derived_tables.count(tables[i])) {
         auto &info = query->derived_tables.at(tables[i]);
+        if (!info.is_union_table) {
+            if (info.branch_queries.size() != 1) {
+                throw InternalError("Unexpected derived subquery plan");
+            }
+            table_scan_executors[i] = generate_subquery_plan(info.branch_queries[0]);
+            continue;
+        }
         std::vector<std::shared_ptr<Plan>> branch_plans;
         for (auto &branch_query : info.branch_queries) {
             branch_plans.push_back(generate_subquery_plan(branch_query));

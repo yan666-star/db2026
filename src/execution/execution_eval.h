@@ -9,6 +9,19 @@
 #include "common/common.h"
 #include "record/rm_defs.h"
 
+inline std::string trim_trailing_zeros(std::string s) {
+    if (s.find('.') == std::string::npos) {
+        return s;
+    }
+    while (!s.empty() && s.back() == '0') {
+        s.pop_back();
+    }
+    if (!s.empty() && s.back() == '.') {
+        s.pop_back();
+    }
+    return s;
+}
+
 inline std::string format_float_output(float f, bool agg_float_fixed) {
     char buf[64];
     if (agg_float_fixed) {
@@ -16,7 +29,12 @@ inline std::string format_float_output(float f, bool agg_float_fixed) {
         return std::string(buf);
     }
     std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(f));
-    return std::string(buf);
+    std::string s(buf);
+    if (s.find('e') == std::string::npos && s.find('E') == std::string::npos) {
+        return s;
+    }
+    std::snprintf(buf, sizeof(buf), "%.10f", static_cast<double>(f));
+    return trim_trailing_zeros(std::string(buf));
 }
 
 inline std::string format_col_value(const ColMeta &col, const char *rec_buf, bool agg_float_fixed = false) {

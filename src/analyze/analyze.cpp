@@ -93,6 +93,7 @@ DerivedTableInfo Analyze::analyze_union_branches(const std::vector<std::shared_p
     }
 
     DerivedTableInfo info;
+    info.is_union_table = true;
     std::vector<std::vector<ColMeta>> branch_cols;
     for (auto &branch : branches) {
         if (!branch->group_bys.empty() || !branch->havings.empty()) {
@@ -133,6 +134,37 @@ DerivedTableInfo Analyze::analyze_union_branches(const std::vector<std::shared_p
         promoted.offset = static_cast<int>(current_offset);
         current_offset += promoted.len;
         info.cols.push_back(promoted);
+    }
+    return info;
+}
+
+DerivedTableInfo Analyze::analyze_derived_subquery(const std::shared_ptr<ast::SelectStmt> &subquery,
+                                                   const std::string &alias) {
+    if (subquery == nullptr) {
+        throw RMDBError("failure");
+    }
+    if (subquery->is_union) {
+        return analyze_union_branches(subquery->union_branches, alias);
+    }
+
+    if (!subquery->group_bys.empty() || !subquery->havings.empty()) {
+        throw RMDBError("failure");
+    }
+    auto sub_q = analyze_select(subquery, true);
+    if (sub_q->has_agg || !sub_q->group_bys.empty() || !sub_q->havings.empty()) {
+        throw RMDBError("failure");
+    }
+
+    DerivedTableInfo info;
+    info.is_union_table = false;
+    info.branch_queries.push_back(sub_q);
+    std::vector<ColMeta> out_cols = get_branch_output_cols(sub_q);
+    size_t current_offset = 0;
+    for (auto &col : out_cols) {
+        col.tab_name = alias;
+        col.offset = static_cast<int>(current_offset);
+        current_offset += col.len;
+        info.cols.push_back(col);
     }
     return info;
 }
@@ -227,10 +259,10 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
             if (ref.alias.empty()) {
                 throw RMDBError("failure");
             }
-            if (!ref.subquery || !ref.subquery->is_union) {
+            if (!ref.subquery) {
                 throw RMDBError("failure");
             }
-            query->derived_tables[ref.alias] = analyze_union_branches(ref.subquery->union_branches, ref.alias);
+            query->derived_tables[ref.alias] = analyze_derived_subquery(ref.subquery, ref.alias);
             query->tables.push_back(ref.alias);
             query->alias_to_table[ref.alias] = ref.alias;
             query->alias_to_table[ref.tab_name] = ref.alias;
