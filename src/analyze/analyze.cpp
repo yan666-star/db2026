@@ -256,16 +256,25 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
             OrderByItem ob;
             ob.is_desc = sv_order->orderby_dir == ast::OrderBy_DESC;
             ob.is_agg = false;
-            ob.col = check_column(all_cols, {.tab_name = sv_order->cols->tab_name, .col_name = sv_order->cols->col_name},
-                                  query->alias_to_table);
+            try {
+                ob.col = check_column(all_cols,
+                                      {.tab_name = sv_order->cols->tab_name, .col_name = sv_order->cols->col_name},
+                                      query->alias_to_table);
+            } catch (ColumnNotFoundError &) {
+                throw RMDBError("failure");
+            }
             query->order_bys.push_back(ob);
         }
     } else if (x->has_sort && x->order) {
         OrderByItem ob;
         ob.is_desc = x->order->orderby_dir == ast::OrderBy_DESC;
         ob.is_agg = false;
-        ob.col = check_column(all_cols, {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name},
-                              query->alias_to_table);
+        try {
+            ob.col = check_column(all_cols, {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name},
+                                  query->alias_to_table);
+        } catch (ColumnNotFoundError &) {
+            throw RMDBError("failure");
+        }
         query->order_bys.push_back(ob);
     }
 

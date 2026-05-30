@@ -193,6 +193,25 @@ dml:
         stmt->is_explain_analyze = true;
         $$ = stmt;
     }
+    |   union_query opt_order_clause opt_limit_clause
+    {
+        TableRef ref;
+        ref.is_subquery = true;
+        ref.alias = "_union_r";
+        ref.union_subquery = std::dynamic_pointer_cast<UnionStmt>($1);
+        std::shared_ptr<OrderBy> first_order = $2.empty() ? nullptr : $2[0];
+        auto stmt = std::make_shared<SelectStmt>(
+            std::vector<std::shared_ptr<SelectItem>>{},
+            std::vector<TableRef>{ref},
+            std::vector<std::shared_ptr<BinaryExpr>>{},
+            std::vector<std::shared_ptr<Col>>{},
+            std::vector<std::shared_ptr<HavingExpr>>{},
+            first_order,
+            $3);
+        stmt->orders = std::move($2);
+        stmt->has_sort = !stmt->orders.empty();
+        $$ = stmt;
+    }
     ;
 
 fieldList:

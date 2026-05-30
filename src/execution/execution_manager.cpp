@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <iomanip>
 #include <set>
 #include <sstream>
+#include "executor_aggregation.h"
 #include "executor_delete.h"
 #include "executor_index_scan.h"
 #include "executor_insert.h"
@@ -155,13 +156,18 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
 }
 
 // 执行select语句，select语句的输出除了需要返回客户端外，还需要写入output.txt文件中
-static std::string format_output_value(const ColMeta &col, char *rec_buf) {
+static std::string format_output_value(const ColMeta &col, char *rec_buf, bool agg_float_fixed) {
     if (col.type == TYPE_INT) {
         return std::to_string(*(int *)rec_buf);
     }
     if (col.type == TYPE_FLOAT) {
+        float f = *(float *)rec_buf;
         std::ostringstream oss;
-        oss << std::fixed << std::setprecision(6) << *(float *)rec_buf;
+        if (agg_float_fixed) {
+            oss << std::fixed << std::setprecision(6) << f;
+        } else {
+            oss << f;
+        }
         return oss.str();
     }
     if (col.type == TYPE_STRING) {
@@ -174,6 +180,7 @@ static std::string format_output_value(const ColMeta &col, char *rec_buf) {
 
 void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, std::vector<TabCol> sel_cols, 
                             Context *context) {
+    const bool agg_float_fixed = dynamic_cast<AggregationExecutor *>(executorTreeRoot.get()) != nullptr;
     std::vector<std::string> captions;
     captions.reserve(sel_cols.size());
     for (auto &sel_col : sel_cols) {
@@ -201,7 +208,7 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
         auto Tuple = executorTreeRoot->Next();
         std::vector<std::string> columns;
         for (auto &col : executorTreeRoot->cols()) {
-            std::string col_str = format_output_value(col, Tuple->data + col.offset);
+            std::string col_str = format_output_value(col, Tuple->data + col.offset, agg_float_fixed);
             columns.push_back(col_str);
         }
         // print record into buffer

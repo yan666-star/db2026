@@ -42,6 +42,26 @@ class UnionExecutor : public AbstractExecutor {
         memcpy(dst, src, dst_col.len);
     }
 
+    static std::string build_dedup_key(const RmRecord &rec, const std::vector<ColMeta> &cols) {
+        std::string key;
+        for (const auto &col : cols) {
+            const char *p = rec.data + col.offset;
+            if (col.type == TYPE_INT) {
+                key.append(p, sizeof(int));
+            } else if (col.type == TYPE_FLOAT) {
+                key.append(p, sizeof(float));
+            } else if (col.type == TYPE_STRING) {
+                size_t slen = 0;
+                while (slen < static_cast<size_t>(col.len) && p[slen] != '\0') {
+                    slen++;
+                }
+                key.append(p, slen);
+                key.push_back('\x1f');
+            }
+        }
+        return key;
+    }
+
     std::unique_ptr<RmRecord> unify_row(const RmRecord &rec, const std::vector<ColMeta> &src_cols) {
         auto unified = std::make_unique<RmRecord>(len_);
         size_t dst_off = 0;
@@ -73,7 +93,7 @@ class UnionExecutor : public AbstractExecutor {
                     continue;
                 }
                 auto unified = unify_row(*rec, src_cols);
-                std::string key(unified->data, len_);
+                std::string key = build_dedup_key(*unified, cols_);
                 if (seen.insert(key).second) {
                     tuples_.push_back(std::move(unified));
                 }
