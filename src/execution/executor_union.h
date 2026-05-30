@@ -45,19 +45,8 @@ class UnionExecutor : public AbstractExecutor {
     static std::string build_dedup_key(const RmRecord &rec, const std::vector<ColMeta> &cols) {
         std::string key;
         for (const auto &col : cols) {
-            const char *p = rec.data + col.offset;
-            if (col.type == TYPE_INT) {
-                key.append(p, sizeof(int));
-            } else if (col.type == TYPE_FLOAT) {
-                key.append(p, sizeof(float));
-            } else if (col.type == TYPE_STRING) {
-                size_t slen = 0;
-                while (slen < static_cast<size_t>(col.len) && p[slen] != '\0') {
-                    slen++;
-                }
-                key.append(p, slen);
-                key.push_back('\x1f');
-            }
+            key += format_col_value(col, rec.data + col.offset);
+            key.push_back('\x1f');
         }
         return key;
     }

@@ -1,11 +1,43 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "common/common.h"
 #include "record/rm_defs.h"
+
+inline std::string format_float_output(float f, bool agg_float_fixed) {
+    char buf[64];
+    if (agg_float_fixed) {
+        std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(f));
+        return std::string(buf);
+    }
+    std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(f));
+    return std::string(buf);
+}
+
+inline std::string format_col_value(const ColMeta &col, const char *rec_buf, bool agg_float_fixed = false) {
+    if (col.type == TYPE_INT) {
+        return std::to_string(*(const int *)rec_buf);
+    }
+    if (col.type == TYPE_FLOAT) {
+        return format_float_output(*(const float *)rec_buf, agg_float_fixed);
+    }
+    if (col.type == TYPE_STRING) {
+        std::string col_str((const char *)rec_buf, col.len);
+        size_t end_pos = col_str.find_last_not_of('\0');
+        if (end_pos != std::string::npos) {
+            col_str.resize(end_pos + 1);
+        } else {
+            col_str.clear();
+        }
+        return col_str;
+    }
+    return "";
+}
 
 inline int compare_string_value(const char *a, const char *b, int col_len) {
     std::string sa(a, col_len);
@@ -69,7 +101,7 @@ inline const ColMeta *find_col(const std::vector<ColMeta> &cols, const TabCol &t
     auto pos = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &col) {
         return col.tab_name == target.tab_name && col.name == target.col_name;
     });
-    if (pos == cols.end() && target.tab_name.empty()) {
+    if (pos == cols.end()) {
         pos = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &col) {
             return col.name == target.col_name;
         });
