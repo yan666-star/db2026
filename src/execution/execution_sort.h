@@ -28,10 +28,35 @@ class SortExecutor : public AbstractExecutor {
     std::vector<std::unique_ptr<RmRecord>> tuples_;
     size_t cursor_ = 0;
 
+    static int compare_string_col(const char *a, const char *b, int col_len) {
+        std::string sa(a, col_len);
+        std::string sb(b, col_len);
+        size_t null_pos_a = sa.find('\0');
+        if (null_pos_a != std::string::npos) {
+            sa.erase(null_pos_a);
+        }
+        size_t null_pos_b = sb.find('\0');
+        if (null_pos_b != std::string::npos) {
+            sb.erase(null_pos_b);
+        }
+        if (sa < sb) {
+            return -1;
+        }
+        if (sa > sb) {
+            return 1;
+        }
+        return 0;
+    }
+
     int compare_records(const RmRecord &a, const RmRecord &b) const {
         for (size_t i = 0; i < sort_cols_.size(); i++) {
             const auto &col = sort_cols_[i];
-            int cmp = compare_col_value(a.data + col.offset, b.data + col.offset, col.type, col.len);
+            int cmp;
+            if (col.type == TYPE_STRING) {
+                cmp = compare_string_col(a.data + col.offset, b.data + col.offset, col.len);
+            } else {
+                cmp = compare_col_value(a.data + col.offset, b.data + col.offset, col.type, col.len);
+            }
             if (cmp != 0) {
                 return is_descs_[i] ? -cmp : cmp;
             }
@@ -49,13 +74,10 @@ class SortExecutor : public AbstractExecutor {
 
     SortExecutor(std::unique_ptr<AbstractExecutor> prev, SortPlan *plan)
         : prev_(std::move(prev)), plan_(plan) {
-        const auto &prev_cols = prev_->cols();
         for (size_t i = 0; i < plan_->sort_cols_.size(); i++) {
-            auto col = prev_->get_col_offset(plan_->sort_cols_[i]);
-            sort_cols_.push_back(col);
+            sort_cols_.push_back(prev_->get_col_offset(plan_->sort_cols_[i]));
             is_descs_.push_back(plan_->is_descs_[i]);
         }
-        (void)prev_cols;
     }
 
     void beginTuple() override {

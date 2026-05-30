@@ -172,7 +172,12 @@ static std::string format_output_value(const ColMeta &col, char *rec_buf, bool a
     }
     if (col.type == TYPE_STRING) {
         std::string col_str = std::string((char *)rec_buf, col.len);
-        col_str.resize(strlen(col_str.c_str()));
+        size_t end_pos = col_str.find_last_not_of('\0');
+        if (end_pos != std::string::npos) {
+            col_str.resize(end_pos + 1);
+        } else {
+            col_str.clear();
+        }
         return col_str;
     }
     return "";

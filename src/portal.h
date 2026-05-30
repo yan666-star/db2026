@@ -254,17 +254,9 @@ class Portal
                                 x.get());
             return join;
         } else if(auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
-            if (x->sort_cols_.size() > 1) {
-                return std::make_unique<SortExecutor>(
-                    convert_plan_executor(x->subplan_, context, filter_plan),
-                    x.get());
-            }
             return std::make_unique<SortExecutor>(
-                    convert_plan_executor(x->subplan_, context, filter_plan),
-                    x->sel_col_,
-                    x->is_desc_,
-                    x.get()
-                );
+                convert_plan_executor(x->subplan_, context, filter_plan),
+                x.get());
         } else if (auto x = std::dynamic_pointer_cast<UnionPlan>(plan)) {
             std::vector<std::unique_ptr<AbstractExecutor>> branch_execs;
             branch_execs.reserve(x->branches_.size());

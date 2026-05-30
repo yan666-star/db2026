@@ -50,6 +50,11 @@ class AbstractExecutor {
         auto pos = std::find_if(rec_cols.begin(), rec_cols.end(), [&](const ColMeta &col) {
             return col.tab_name == target.tab_name && col.name == target.col_name;
         });
+        if (pos == rec_cols.end() && target.tab_name.empty()) {
+            pos = std::find_if(rec_cols.begin(), rec_cols.end(), [&](const ColMeta &col) {
+                return col.name == target.col_name;
+            });
+        }
         if (pos == rec_cols.end()) {
             throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);
         }

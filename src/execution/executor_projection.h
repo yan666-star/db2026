@@ -26,6 +26,7 @@ class ProjectionExecutor : public AbstractExecutor {
     std::vector<size_t> sel_idxs_;
     int limit_;
     int result_idx_ = 0;
+    bool is_sel_all_ = false;
 
    public:
     ProjectionExecutor(std::unique_ptr<AbstractExecutor> prev,
@@ -38,6 +39,8 @@ class ProjectionExecutor : public AbstractExecutor {
             limit_ = std::numeric_limits<int>::max();
         }
 
+        is_sel_all_ = plan != nullptr && plan_->display_all_;
+
         size_t curr_offset = 0;
         auto &prev_cols = prev_->cols();
         for (auto &sel_col : sel_cols) {
@@ -49,6 +52,16 @@ class ProjectionExecutor : public AbstractExecutor {
             cols_.push_back(col);
         }
         len_ = curr_offset;
+
+        if (!is_sel_all_ && sel_idxs_.size() == prev_cols.size()) {
+            is_sel_all_ = true;
+            for (size_t i = 0; i < sel_idxs_.size(); i++) {
+                if (sel_idxs_[i] != i) {
+                    is_sel_all_ = false;
+                    break;
+                }
+            }
+        }
     }
 
     size_t tupleLen() const override { return len_; }
@@ -86,6 +99,9 @@ class ProjectionExecutor : public AbstractExecutor {
         auto rec = prev_->Next();
         if (rec == nullptr) {
             return nullptr;
+        }
+        if (is_sel_all_) {
+            return rec;
         }
 
         auto &prev_cols = prev_->cols();
