@@ -24,6 +24,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_delete.h"
 #include "execution/execution_sort.h"
 #include "execution/executor_aggregation.h"
+#include "execution/executor_union.h"
 #include "common/common.h"
 
 typedef enum portalTag{
@@ -73,6 +74,13 @@ class Portal
         }
         if (auto s = std::dynamic_pointer_cast<SortPlan>(plan)) {
             return collect_output_cols(s->subplan_);
+        }
+        if (auto u = std::dynamic_pointer_cast<UnionPlan>(plan)) {
+            std::vector<TabCol> out_cols;
+            for (auto &col : u->out_cols_) {
+                out_cols.push_back({col.tab_name, col.name});
+            }
+            return out_cols;
         }
         return {};
     }
@@ -246,12 +254,24 @@ class Portal
                                 x.get());
             return join;
         } else if(auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
+            if (x->sort_cols_.size() > 1) {
+                return std::make_unique<SortExecutor>(
+                    convert_plan_executor(x->subplan_, context, filter_plan),
+                    x.get());
+            }
             return std::make_unique<SortExecutor>(
                     convert_plan_executor(x->subplan_, context, filter_plan),
                     x->sel_col_,
                     x->is_desc_,
                     x.get()
                 );
+        } else if (auto x = std::dynamic_pointer_cast<UnionPlan>(plan)) {
+            std::vector<std::unique_ptr<AbstractExecutor>> branch_execs;
+            branch_execs.reserve(x->branches_.size());
+            for (auto &branch : x->branches_) {
+                branch_execs.push_back(convert_plan_executor(branch, context, filter_plan));
+            }
+            return std::make_unique<UnionExecutor>(std::move(branch_execs), x.get());
         } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
             return std::make_unique<AggregationExecutor>(
                 convert_plan_executor(x->subplan_, context, filter_plan),

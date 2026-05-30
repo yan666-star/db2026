@@ -24,7 +24,7 @@ using namespace ast;
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY ENABLE_NESTLOOP ENABLE_SORTMERGE
 EXPLAIN ANALYZE ON AS
-GROUP HAVING LIMIT COUNT MAX MIN SUM AVG
+GROUP HAVING LIMIT COUNT MAX MIN SUM AVG UNION
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
@@ -60,7 +60,8 @@ GROUP HAVING LIMIT COUNT MAX MIN SUM AVG
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
 %type <sv_conds> whereClause optWhereClause
-%type <sv_orderby>  order_clause opt_order_clause
+%type <sv_orderbys> order_clause opt_order_clause
+%type <sv_node> union_query union_branch
 %type <sv_orderby_dir> opt_asc_desc
 %type <sv_setKnobType> set_knob_type
 %type <sv_int> opt_limit_clause
@@ -175,13 +176,20 @@ dml:
     {
         auto conds = $4.conds;
         conds.insert(conds.end(), $5.begin(), $5.end());
-        $$ = std::make_shared<SelectStmt>($2, $4.tables, conds, $6, $7, $8, $9);
+        std::shared_ptr<OrderBy> first_order = $8.empty() ? nullptr : $8[0];
+        auto stmt = std::make_shared<SelectStmt>($2, $4.tables, conds, $6, $7, first_order, $9);
+        stmt->orders = std::move($8);
+        stmt->has_sort = !stmt->orders.empty();
+        $$ = stmt;
     }   
     |   EXPLAIN ANALYZE SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause opt_order_clause opt_limit_clause
     {
         auto conds = $6.conds;
         conds.insert(conds.end(), $7.begin(), $7.end());
-        auto stmt = std::make_shared<SelectStmt>($4, $6.tables, conds, $8, $9, $10, $11);
+        std::shared_ptr<OrderBy> first_order = $10.empty() ? nullptr : $10[0];
+        auto stmt = std::make_shared<SelectStmt>($4, $6.tables, conds, $8, $9, first_order, $11);
+        stmt->orders = std::move($10);
+        stmt->has_sort = !stmt->orders.empty();
         stmt->is_explain_analyze = true;
         $$ = stmt;
     }
@@ -417,6 +425,30 @@ agg_func:
     | AVG '(' col ')'          { $$ = std::make_shared<AggFunc>(AGG_AVG, false, $3); }
     ;
 // ex an改动原tablelist
+union_branch:
+        SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause
+    {
+        auto conds = $4.conds;
+        conds.insert(conds.end(), $5.begin(), $5.end());
+        $$ = std::make_shared<SelectStmt>($2, $4.tables, conds, $6, $7, nullptr, -1);
+    }
+    ;
+
+union_query:
+        union_branch
+    {
+        auto u = std::make_shared<UnionStmt>();
+        u->branches.push_back(std::dynamic_pointer_cast<SelectStmt>($1));
+        $$ = u;
+    }
+    |   union_query UNION union_branch
+    {
+        auto u = std::dynamic_pointer_cast<UnionStmt>($1);
+        u->branches.push_back(std::dynamic_pointer_cast<SelectStmt>($3));
+        $$ = u;
+    }
+    ;
+
 tableRef:
         tbName
     {
@@ -429,6 +461,22 @@ tableRef:
     |   tbName AS tbName
     {
         $$ = TableRef($1, $3);
+    }
+    |   '(' union_query ')' AS tbName
+    {
+        TableRef ref;
+        ref.is_subquery = true;
+        ref.alias = $5;
+        ref.union_subquery = std::dynamic_pointer_cast<UnionStmt>($2);
+        $$ = ref;
+    }
+    |   '(' union_query ')' tbName
+    {
+        TableRef ref;
+        ref.is_subquery = true;
+        ref.alias = $4;
+        ref.union_subquery = std::dynamic_pointer_cast<UnionStmt>($2);
+        $$ = ref;
     }
     ;
 
@@ -481,22 +529,21 @@ having_condition:
     ;
 
 opt_order_clause:
-    ORDER BY order_clause      
-    { 
-        $$ = $3; 
+    ORDER BY order_clause
+    {
+        $$ = $3;
     }
-    |   /* epsilon */ { /* ignore*/ }
+    |   /* epsilon */ { $$ = {}; }
     ;
 
 order_clause:
-      col  opt_asc_desc 
-    { 
-        $$ = std::make_shared<OrderBy>($1, $2);
+      col opt_asc_desc
+    {
+        $$ = {std::make_shared<OrderBy>($1, $2)};
     }
     | order_clause ',' col opt_asc_desc
     {
-        // Keep the first order key for executor compatibility.
-        // This rule is mainly to accept multi-key ORDER BY syntax.
+        $1.push_back(std::make_shared<OrderBy>($3, $4));
         $$ = $1;
     }
     ;   

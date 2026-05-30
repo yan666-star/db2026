@@ -241,6 +241,10 @@ static void reset_plan_rows(std::shared_ptr<Plan> plan) {
         reset_plan_rows(x->subplan_);
     } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
         reset_plan_rows(x->subplan_);
+    } else if (auto x = std::dynamic_pointer_cast<UnionPlan>(plan)) {
+        for (auto &branch : x->branches_) {
+            reset_plan_rows(branch);
+        }
     }
 }
 //操作符格式化
@@ -455,6 +459,14 @@ static void append_plan_tree(std::ostringstream &out, std::shared_ptr<Plan> plan
             << x->rows_
             << ")\n";
         append_plan_tree(out, x->subplan_, depth + 1, table_to_alias);
+        return;
+    }
+
+    if (auto x = std::dynamic_pointer_cast<UnionPlan>(plan)) {
+        out << indent << "Union(branches=" << x->branches_.size() << ", rows=" << x->rows_ << ")\n";
+        for (auto &branch : x->branches_) {
+            append_plan_tree(out, branch, depth + 1, table_to_alias);
+        }
         return;
     }
 }

@@ -203,10 +203,18 @@ struct BinaryExpr : public TreeNode {
             lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
 };
 
+struct SelectStmt;
+
+struct UnionStmt : public TreeNode {
+    std::vector<std::shared_ptr<SelectStmt>> branches;
+};
+
 // 增加关于ex an的表引用结构
 struct TableRef {
     std::string tab_name;
     std::string alias;
+    bool is_subquery = false;
+    std::shared_ptr<UnionStmt> union_subquery;
 
     TableRef() = default;
 
@@ -291,6 +299,7 @@ struct SelectStmt : public TreeNode {
     
     bool has_sort;
     std::shared_ptr<OrderBy> order;
+    std::vector<std::shared_ptr<OrderBy>> orders;
 
 
     SelectStmt(std::vector<std::shared_ptr<SelectItem>> select_items_,
@@ -358,6 +367,7 @@ struct SemValue {
     std::vector<std::shared_ptr<BinaryExpr>> sv_conds;
 
     std::shared_ptr<OrderBy> sv_orderby;
+    std::vector<std::shared_ptr<OrderBy>> sv_orderbys;
     std::vector<std::shared_ptr<Col>> sv_group_bys;
 
     SetKnobType sv_setKnobType;

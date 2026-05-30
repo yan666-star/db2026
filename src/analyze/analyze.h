@@ -20,6 +20,14 @@ See the Mulan PSL v2 for more details. */
 #include "system/sm.h"
 #include "common/common.h"
 
+class Query;
+
+struct DerivedTableInfo {
+    std::shared_ptr<ast::UnionStmt> union_stmt;
+    std::vector<ColMeta> cols;
+    std::vector<std::shared_ptr<Query>> branch_queries;
+};
+
 class Query{
     public:
     std::shared_ptr<ast::TreeNode> parse;
@@ -46,6 +54,7 @@ class Query{
 
     std::map<std::string, std::string> alias_to_table;
     std::map<std::string, std::string> table_to_alias;
+    std::map<std::string, DerivedTableInfo> derived_tables;
     Query(){}
 
 };
@@ -60,14 +69,21 @@ public:
 
     std::shared_ptr<Query> do_analyze(std::shared_ptr<ast::TreeNode> root);
 
+    std::shared_ptr<Query> analyze_select(std::shared_ptr<ast::SelectStmt> x, bool allow_derived);
+
 private:
     //改 check_column，check_clause 支持别名换回真实表名
     TabCol check_column(const std::vector<ColMeta> &all_cols,
                     TabCol target,
                     const std::map<std::string, std::string> &alias_to_table);
     void get_all_cols(const std::vector<std::string> &tab_names, std::vector<ColMeta> &all_cols);
+    void get_query_cols(const std::shared_ptr<Query> &query, std::vector<ColMeta> &all_cols);
+    std::vector<ColMeta> get_branch_output_cols(const std::shared_ptr<Query> &query);
+    DerivedTableInfo analyze_union(const std::shared_ptr<ast::UnionStmt> &union_stmt, const std::string &alias);
+    static bool union_compatible(ColType a, ColType b);
+    static ColMeta promote_union_col(const ColMeta &a, const ColMeta &b);
     void get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv_conds, std::vector<Condition> &conds);
-    void check_clause(const std::vector<std::string> &tab_names,
+    void check_clause(const std::shared_ptr<Query> &query,
                   std::vector<Condition> &conds,
                   const std::map<std::string, std::string> &alias_to_table);
     Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val);

@@ -112,6 +112,15 @@ int push_conds(Condition *cond, std::shared_ptr<Plan> plan)
     {
         return push_conds(cond, x->subplan_);
     }
+    else if(auto x = std::dynamic_pointer_cast<UnionPlan>(plan))
+    {
+        for (auto &branch : x->branches_) {
+            if (push_conds(cond, branch) != 0) {
+                return 0;
+            }
+        }
+        return 0;
+    }
     else if(auto x = std::dynamic_pointer_cast<JoinPlan>(plan))
     {
         int left_res = push_conds(cond, x->left_);
@@ -153,6 +162,9 @@ std::string get_plan_table_name(std::shared_ptr<Plan> plan) {
     }
     if (auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)) {
         return get_plan_table_name(x->subplan_);
+    }
+    if (auto x = std::dynamic_pointer_cast<UnionPlan>(plan)) {
+        return "";
     }
     return "";
 }
@@ -200,6 +212,15 @@ std::shared_ptr<Plan> Planner::physical_optimization(std::shared_ptr<Query> quer
 
 
 
+std::shared_ptr<Plan> Planner::generate_subquery_plan(std::shared_ptr<Query> query) {
+    std::shared_ptr<Plan> plan = make_one_rel(query);
+    if (query->has_agg || !query->group_bys.empty() || !query->havings.empty()) {
+        throw RMDBError("failure");
+    }
+    return std::make_shared<ProjectionPlan>(
+        T_Projection, std::move(plan), query->cols, query->is_select_all, -1);
+}
+
 std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
 {
     
@@ -245,6 +266,16 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
     // // Scan table , 生成表算子列表tab_nodes
     std::vector<std::shared_ptr<Plan>> table_scan_executors(tables.size());
     for (size_t i = 0; i < tables.size(); i++) {
+    if (query->derived_tables.count(tables[i])) {
+        auto &info = query->derived_tables.at(tables[i]);
+        std::vector<std::shared_ptr<Plan>> branch_plans;
+        for (auto &branch_query : info.branch_queries) {
+            branch_plans.push_back(generate_subquery_plan(branch_query));
+        }
+        table_scan_executors[i] = std::make_shared<UnionPlan>(std::move(branch_plans), info.cols);
+        continue;
+    }
+
     auto curr_conds = pop_conds(query->conds, tables[i]);
 
     std::vector<std::string> index_col_names;
@@ -347,24 +378,16 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
 
 std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, std::shared_ptr<Plan> plan)
 {
-    auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse);
-    if(!x->has_sort) {
+    if (query->order_bys.empty()) {
         return plan;
     }
-    std::vector<std::string> tables = query->tables;
-    std::vector<ColMeta> all_cols;
-    for (auto &sel_tab_name : tables) {
-        // 这里db_不能写成get_db(), 注意要传指针
-        const auto &sel_tab_cols = sm_manager_->db_.get_table(sel_tab_name).cols;
-        all_cols.insert(all_cols.end(), sel_tab_cols.begin(), sel_tab_cols.end());
+    std::vector<TabCol> sort_cols;
+    std::vector<bool> is_desc;
+    for (auto &ob : query->order_bys) {
+        sort_cols.push_back(ob.col);
+        is_desc.push_back(ob.is_desc);
     }
-    TabCol sel_col;
-    for (auto &col : all_cols) {
-        if(col.name.compare(x->order->cols->col_name) == 0 )
-        sel_col = {.tab_name = col.tab_name, .col_name = col.name};
-    }
-    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sel_col, 
-                                    x->order->orderby_dir == ast::OrderBy_DESC);
+    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sort_cols, is_desc);
 }
 
 

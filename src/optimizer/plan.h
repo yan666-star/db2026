@@ -45,7 +45,8 @@ typedef enum PlanTag{
     T_Sort,
     T_Aggregate,
     T_Projection,
-    T_Filter//添加filter plan显示表示
+    T_Filter,//添加filter plan显示表示
+    T_Union
 } PlanTag;
 
 // 查询执行计划
@@ -149,12 +150,47 @@ class SortPlan : public Plan
             subplan_ = std::move(subplan);
             sel_col_ = sel_col;
             is_desc_ = is_desc;
+            sort_cols_.push_back(sel_col);
+            is_descs_.push_back(is_desc);
+        }
+
+        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan,
+                 std::vector<TabCol> sort_cols, std::vector<bool> is_descs)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            sort_cols_ = std::move(sort_cols);
+            is_descs_ = std::move(is_descs);
+            if (!sort_cols_.empty()) {
+                sel_col_ = sort_cols_[0];
+                is_desc_ = is_descs_[0];
+            }
         }
         ~SortPlan(){}
         std::shared_ptr<Plan> subplan_;
         TabCol sel_col_;
         bool is_desc_;
+        std::vector<TabCol> sort_cols_;
+        std::vector<bool> is_descs_;
         
+};
+
+class UnionPlan : public Plan {
+   public:
+    UnionPlan(std::vector<std::shared_ptr<Plan>> branches, std::vector<ColMeta> out_cols)
+        : branches_(std::move(branches)), out_cols_(std::move(out_cols)) {
+        Plan::tag = T_Union;
+        size_t off = 0;
+        for (auto &col : out_cols_) {
+            col.offset = off;
+            off += col.len;
+        }
+        len_ = off;
+    }
+
+    std::vector<std::shared_ptr<Plan>> branches_;
+    std::vector<ColMeta> out_cols_;
+    size_t len_ = 0;
 };
 
 class AggregatePlan : public Plan {

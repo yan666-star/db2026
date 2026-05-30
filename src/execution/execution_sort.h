@@ -17,25 +17,48 @@ See the Mulan PSL v2 for more details. */
 #include "execution_eval.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "optimizer/plan.h"
 
 class SortExecutor : public AbstractExecutor {
    private:
     std::unique_ptr<AbstractExecutor> prev_;
     SortPlan *plan_ = nullptr;
-    ColMeta cols_;                              // 框架中只支持一个键排序，需要自行修改数据结构支持多个键排序
+    std::vector<ColMeta> sort_cols_;
+    std::vector<bool> is_descs_;
     std::vector<std::unique_ptr<RmRecord>> tuples_;
     size_t cursor_ = 0;
-    bool is_desc_;
+
+    int compare_records(const RmRecord &a, const RmRecord &b) const {
+        for (size_t i = 0; i < sort_cols_.size(); i++) {
+            const auto &col = sort_cols_[i];
+            int cmp = compare_col_value(a.data + col.offset, b.data + col.offset, col.type, col.len);
+            if (cmp != 0) {
+                return is_descs_[i] ? -cmp : cmp;
+            }
+        }
+        return 0;
+    }
 
    public:
     SortExecutor(std::unique_ptr<AbstractExecutor> prev, TabCol sel_cols, bool is_desc, SortPlan *plan = nullptr) {
         prev_ = std::move(prev);
         plan_ = plan;
-        cols_ = prev_->get_col_offset(sel_cols);
-        is_desc_ = is_desc;
+        sort_cols_.push_back(prev_->get_col_offset(sel_cols));
+        is_descs_.push_back(is_desc);
     }
 
-    void beginTuple() override { 
+    SortExecutor(std::unique_ptr<AbstractExecutor> prev, SortPlan *plan)
+        : prev_(std::move(prev)), plan_(plan) {
+        const auto &prev_cols = prev_->cols();
+        for (size_t i = 0; i < plan_->sort_cols_.size(); i++) {
+            auto col = prev_->get_col_offset(plan_->sort_cols_[i]);
+            sort_cols_.push_back(col);
+            is_descs_.push_back(plan_->is_descs_[i]);
+        }
+        (void)prev_cols;
+    }
+
+    void beginTuple() override {
         tuples_.clear();
         cursor_ = 0;
         prev_->beginTuple();
@@ -46,8 +69,7 @@ class SortExecutor : public AbstractExecutor {
             }
         }
         std::sort(tuples_.begin(), tuples_.end(), [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
-            int cmp = compare_col_value(a->data + cols_.offset, b->data + cols_.offset, cols_.type, cols_.len);
-            return is_desc_ ? (cmp > 0) : (cmp < 0);
+            return compare_records(*a, *b) < 0;
         });
         if (plan_ != nullptr) {
             plan_->rows_ = tuples_.size();
