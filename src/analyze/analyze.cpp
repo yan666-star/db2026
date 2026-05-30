@@ -95,7 +95,13 @@ DerivedTableInfo Analyze::analyze_union(const std::shared_ptr<ast::UnionStmt> &u
     info.union_stmt = union_stmt;
     std::vector<std::vector<ColMeta>> branch_cols;
     for (auto &branch : union_stmt->branches) {
+        if (!branch->group_bys.empty() || !branch->havings.empty()) {
+            throw RMDBError("failure");
+        }
         auto branch_query = analyze_select(branch, false);
+        if (branch_query->has_agg || !branch_query->group_bys.empty() || !branch_query->havings.empty()) {
+            throw RMDBError("failure");
+        }
         info.branch_queries.push_back(branch_query);
         branch_cols.push_back(get_branch_output_cols(branch_query));
     }
@@ -107,6 +113,11 @@ DerivedTableInfo Analyze::analyze_union(const std::shared_ptr<ast::UnionStmt> &u
     for (size_t i = 1; i < branch_cols.size(); i++) {
         if (branch_cols[i].size() != ncols) {
             throw RMDBError("failure");
+        }
+        for (size_t j = 0; j < ncols; j++) {
+            if (!union_compatible(branch_cols[0][j].type, branch_cols[i][j].type)) {
+                throw RMDBError("failure");
+            }
         }
     }
 
@@ -262,6 +273,8 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
                                       query->alias_to_table);
             } catch (ColumnNotFoundError &) {
                 throw RMDBError("failure");
+            } catch (AmbiguousColumnError &) {
+                throw RMDBError("failure");
             }
             query->order_bys.push_back(ob);
         }
@@ -273,6 +286,8 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
             ob.col = check_column(all_cols, {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name},
                                   query->alias_to_table);
         } catch (ColumnNotFoundError &) {
+            throw RMDBError("failure");
+        } catch (AmbiguousColumnError &) {
             throw RMDBError("failure");
         }
         query->order_bys.push_back(ob);
@@ -395,6 +410,9 @@ TabCol Analyze::check_column(const std::vector<ColMeta> &all_cols,
             }
         }
         if (!found) {
+            if (!sm_manager_->db_.is_table(target.tab_name)) {
+                throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);
+            }
             TabMeta &tab = sm_manager_->db_.get_table(target.tab_name);
             if (!tab.is_col(target.col_name)) {
                 throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);

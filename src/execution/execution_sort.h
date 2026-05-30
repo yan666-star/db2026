@@ -90,7 +90,7 @@ class SortExecutor : public AbstractExecutor {
                 tuples_.push_back(std::move(rec));
             }
         }
-        std::sort(tuples_.begin(), tuples_.end(), [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
+        std::stable_sort(tuples_.begin(), tuples_.end(), [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
             return compare_records(*a, *b) < 0;
         });
         if (plan_ != nullptr) {

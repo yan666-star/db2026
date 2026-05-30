@@ -155,20 +155,33 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
     }
 }
 
+static std::string format_float_output(float f, bool agg_float_fixed) {
+    if (agg_float_fixed) {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(6) << f;
+        return oss.str();
+    }
+    std::ostringstream oss;
+    oss << f;
+    std::string s = oss.str();
+    if (auto dot = s.find('.'); dot != std::string::npos) {
+        while (s.size() > dot + 1 && s.back() == '0') {
+            s.pop_back();
+        }
+        if (!s.empty() && s.back() == '.') {
+            s.pop_back();
+        }
+    }
+    return s;
+}
+
 // 执行select语句，select语句的输出除了需要返回客户端外，还需要写入output.txt文件中
 static std::string format_output_value(const ColMeta &col, char *rec_buf, bool agg_float_fixed) {
     if (col.type == TYPE_INT) {
         return std::to_string(*(int *)rec_buf);
     }
     if (col.type == TYPE_FLOAT) {
-        float f = *(float *)rec_buf;
-        std::ostringstream oss;
-        if (agg_float_fixed) {
-            oss << std::fixed << std::setprecision(6) << f;
-        } else {
-            oss << f;
-        }
-        return oss.str();
+        return format_float_output(*(float *)rec_buf, agg_float_fixed);
     }
     if (col.type == TYPE_STRING) {
         std::string col_str = std::string((char *)rec_buf, col.len);

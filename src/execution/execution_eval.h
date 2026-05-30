@@ -7,6 +7,26 @@
 #include "common/common.h"
 #include "record/rm_defs.h"
 
+inline int compare_string_value(const char *a, const char *b, int col_len) {
+    std::string sa(a, col_len);
+    std::string sb(b, col_len);
+    size_t null_pos_a = sa.find('\0');
+    if (null_pos_a != std::string::npos) {
+        sa.erase(null_pos_a);
+    }
+    size_t null_pos_b = sb.find('\0');
+    if (null_pos_b != std::string::npos) {
+        sb.erase(null_pos_b);
+    }
+    if (sa < sb) {
+        return -1;
+    }
+    if (sa > sb) {
+        return 1;
+    }
+    return 0;
+}
+
 inline int compare_col_value(const char *a, const char *b, ColType type, int col_len) {
     switch (type) {
         case TYPE_INT: {
@@ -20,7 +40,7 @@ inline int compare_col_value(const char *a, const char *b, ColType type, int col
             return (fa < fb) ? -1 : ((fa > fb) ? 1 : 0);
         }
         case TYPE_STRING:
-            return memcmp(a, b, col_len);
+            return compare_string_value(a, b, col_len);
         default:
             throw InternalError("Unexpected data type");
     }
@@ -49,6 +69,11 @@ inline const ColMeta *find_col(const std::vector<ColMeta> &cols, const TabCol &t
     auto pos = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &col) {
         return col.tab_name == target.tab_name && col.name == target.col_name;
     });
+    if (pos == cols.end() && target.tab_name.empty()) {
+        pos = std::find_if(cols.begin(), cols.end(), [&](const ColMeta &col) {
+            return col.name == target.col_name;
+        });
+    }
     if (pos == cols.end()) {
         throw ColumnNotFoundError(target.tab_name + '.' + target.col_name);
     }

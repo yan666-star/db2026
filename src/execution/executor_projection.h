@@ -39,8 +39,6 @@ class ProjectionExecutor : public AbstractExecutor {
             limit_ = std::numeric_limits<int>::max();
         }
 
-        is_sel_all_ = plan != nullptr && plan_->display_all_;
-
         size_t curr_offset = 0;
         auto &prev_cols = prev_->cols();
         for (auto &sel_col : sel_cols) {
@@ -53,8 +51,10 @@ class ProjectionExecutor : public AbstractExecutor {
         }
         len_ = curr_offset;
 
-        if (!is_sel_all_ && sel_idxs_.size() == prev_cols.size()) {
-            is_sel_all_ = true;
+        is_sel_all_ = true;
+        if (sel_idxs_.size() != prev_cols.size()) {
+            is_sel_all_ = false;
+        } else {
             for (size_t i = 0; i < sel_idxs_.size(); i++) {
                 if (sel_idxs_[i] != i) {
                     is_sel_all_ = false;
