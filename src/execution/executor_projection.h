@@ -45,6 +45,8 @@ class ProjectionExecutor : public AbstractExecutor {
             auto pos = get_col(prev_cols, sel_col);
             sel_idxs_.push_back(pos - prev_cols.begin());
             auto col = *pos;
+            col.name = sel_col.col_name;
+            col.tab_name = sel_col.tab_name;
             col.offset = curr_offset;
             curr_offset += col.len;
             cols_.push_back(col);

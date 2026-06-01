@@ -310,8 +310,9 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
             item.alias = sv_item->alias;
             if (auto sv_col = std::dynamic_pointer_cast<ast::Col>(sv_item->expr)) {
                 item.is_agg = false;
+
                 item.col = check_column(all_cols, {.tab_name = sv_col->tab_name, .col_name = sv_col->col_name},
-                                        query->alias_to_table);
+                        query->alias_to_table);
                 query->cols.push_back(item.col);
             } else if (auto sv_agg = std::dynamic_pointer_cast<ast::AggFunc>(sv_item->expr)) {
                 item.is_agg = true;
