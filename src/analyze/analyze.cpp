@@ -75,11 +75,19 @@ std::vector<ColMeta> Analyze::get_branch_output_cols(const std::shared_ptr<Query
     if (query->is_select_all) {
         return all_cols;
     }
+
     std::vector<ColMeta> out;
-    for (auto &tc : query->cols) {
+    for (size_t i = 0; i < query->cols.size(); i++) {
+        auto &tc = query->cols[i];
         auto it = find_col_meta(all_cols, tc);
         ColMeta col = *it;
-        col.name = tc.col_name;
+
+        if (i < query->select_items.size() && !query->select_items[i].alias.empty()) {
+            col.name = query->select_items[i].alias;
+        } else {
+            col.name = tc.col_name;
+        }
+
         out.push_back(col);
     }
     assign_col_offsets(out);
