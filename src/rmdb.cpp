@@ -47,11 +47,15 @@ auto analyze = std::make_unique<Analyze>(sm_manager.get());
 pthread_mutex_t *buffer_mutex;
 pthread_mutex_t *sockfd_mutex;
 
+static constexpr bool kVerboseServerLog = false;
+
 static jmp_buf jmpbuf;
 void sigint_handler(int signo) {
     should_exit = true;
     log_manager->flush_log_to_disk();
-    std::cout << "The Server receive Crtl+C, will been closed\n";
+    if (kVerboseServerLog) {
+        std::cout << "The Server receive Crtl+C, will been closed\n";
+    }
     longjmp(jmpbuf, 1);
 }
 
@@ -81,41 +85,58 @@ void *client_handler(void *sock_fd) {
     txn_id_t txn_id = INVALID_TXN_ID;
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
-    std::cout << output;
+    if (kVerboseServerLog) {
+        std::cout << output;
+    }
 
     while (true) {
-        std::cout << "Waiting for request..." << std::endl;
+        if (kVerboseServerLog) {
+            std::cout << "Waiting for request..." << std::endl;
+        }
         memset(data_recv, 0, BUFFER_LENGTH);
 
         i_recvBytes = read(fd, data_recv, BUFFER_LENGTH);
 
         if (i_recvBytes == 0) {
-            std::cout << "Maybe the client has closed" << std::endl;
+            if (kVerboseServerLog) {
+                std::cout << "Maybe the client has closed" << std::endl;
+            }
             break;
         }
         if (i_recvBytes == -1) {
-            std::cout << "Client read error!" << std::endl;
+            if (kVerboseServerLog) {
+                std::cout << "Client read error!" << std::endl;
+            }
             break;
         }
-        
-        printf("i_recvBytes: %d \n ", i_recvBytes);
+
+        if (kVerboseServerLog) {
+            printf("i_recvBytes: %d \n ", i_recvBytes);
+        }
 
         if (strcmp(data_recv, "exit") == 0) {
-            std::cout << "Client exit." << std::endl;
+            if (kVerboseServerLog) {
+                std::cout << "Client exit." << std::endl;
+            }
             break;
         }
         if (strcmp(data_recv, "crash") == 0) {
-            std::cout << "Server crash" << std::endl;
+            if (kVerboseServerLog) {
+                std::cout << "Server crash" << std::endl;
+            }
             exit(1);
         }
 
-        std::cout << "Read from client " << fd << ": " << data_recv << std::endl;
+        if (kVerboseServerLog) {
+            std::cout << "Read from client " << fd << ": " << data_recv << std::endl;
+        }
 
         memset(data_send, '\0', BUFFER_LENGTH);
         offset = 0;
 
         // 开启事务，初始化系统所需的上下文信息（包括事务对象指针、锁管理器指针、日志管理器指针、存放结果的buffer、记录结果长度的变量）
-        Context *context = new Context(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
+        auto context_holder = std::make_unique<Context>(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
+        Context *context = context_holder.get();
         SetTransaction(&txn_id, context);
 
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
@@ -145,7 +166,9 @@ void *client_handler(void *sock_fd) {
 
                     // 回滚事务
                     txn_manager->abort(context->txn_, log_manager.get());
-                    std::cout << e.GetInfo() << std::endl;
+                    if (kVerboseServerLog) {
+                        std::cout << e.GetInfo() << std::endl;
+                    }
 
                     std::fstream outfile;
                     outfile.open("output.txt", std::ios::out | std::ios::app);
@@ -153,12 +176,15 @@ void *client_handler(void *sock_fd) {
                     outfile.close();
                 } catch (RMDBError &e) {
                     // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
-                    std::cerr << e.what() << std::endl;
+                    if (kVerboseServerLog) {
+                        std::cerr << e.what() << std::endl;
+                    }
 
-                    memcpy(data_send, e.what(), e.get_msg_len());
-                    data_send[e.get_msg_len()] = '\n';
-                    data_send[e.get_msg_len() + 1] = '\0';
-                    offset = e.get_msg_len() + 1;
+                    std::string client_msg = "failure";
+                    memcpy(data_send, client_msg.c_str(), client_msg.length());
+                    data_send[client_msg.length()] = '\n';
+                    data_send[client_msg.length() + 1] = '\0';
+                    offset = client_msg.length() + 1;
 
                     // 将报错信息写入output.txt
                     std::fstream outfile;
@@ -168,6 +194,12 @@ void *client_handler(void *sock_fd) {
                 }
             }
         } else {
+            std::string client_msg = "failure";
+            memcpy(data_send, client_msg.c_str(), client_msg.length());
+            data_send[client_msg.length()] = '\n';
+            data_send[client_msg.length() + 1] = '\0';
+            offset = client_msg.length() + 1;
+
             std::fstream outfile;
             outfile.open("output.txt", std::ios::out | std::ios::app);
             outfile << "failure\n";
@@ -190,7 +222,10 @@ void *client_handler(void *sock_fd) {
     }
 
     // Clear
-    std::cout << "Terminating current client_connection..." << std::endl;
+    if (kVerboseServerLog) {
+        std::cout << "Terminating current client_connection..." << std::endl;
+    }
+    delete[] data_send;
     close(fd);           // close a file descriptor.
     pthread_exit(NULL);  // terminate calling thread!
 }
@@ -219,24 +254,32 @@ void start_server() {
     s_addr_in.sin_port = htons(SOCK_PORT);
     fd_temp = bind(sockfd_server, (struct sockaddr *)(&s_addr_in), sizeof(s_addr_in));
     if (fd_temp == -1) {
-        std::cout << "Bind error!" << std::endl;
+        if (kVerboseServerLog) {
+            std::cout << "Bind error!" << std::endl;
+        }
         exit(1);
     }
 
     fd_temp = listen(sockfd_server, MAX_CONN_LIMIT);
     if (fd_temp == -1) {
-        std::cout << "Listen error!" << std::endl;
+        if (kVerboseServerLog) {
+            std::cout << "Listen error!" << std::endl;
+        }
         exit(1);
     }
 
     while (!should_exit) {
-        std::cout << "Waiting for new connection..." << std::endl;
+        if (kVerboseServerLog) {
+            std::cout << "Waiting for new connection..." << std::endl;
+        }
         pthread_t thread_id;
         struct sockaddr_in s_addr_client {};
         int client_length = sizeof(s_addr_client);
 
         if (setjmp(jmpbuf)) {
-            std::cout << "Break from Server Listen Loop\n";
+            if (kVerboseServerLog) {
+                std::cout << "Break from Server Listen Loop\n";
+            }
             break;
         }
 
@@ -244,26 +287,34 @@ void start_server() {
         pthread_mutex_lock(sockfd_mutex);
         int sockfd = accept(sockfd_server, (struct sockaddr *)(&s_addr_client), (socklen_t *)(&client_length));
         if (sockfd == -1) {
-            std::cout << "Accept error!" << std::endl;
+            if (kVerboseServerLog) {
+                std::cout << "Accept error!" << std::endl;
+            }
             continue;  // ignore current socket ,continue while loop.
         }
         
         // 和客户端建立连接，并开启一个线程负责处理客户端请求
         if (pthread_create(&thread_id, nullptr, &client_handler, (void *)(&sockfd)) != 0) {
-            std::cout << "Create thread fail!" << std::endl;
+            if (kVerboseServerLog) {
+                std::cout << "Create thread fail!" << std::endl;
+            }
             break;  // break while loop
         }
 
     }
 
     // Clear
-    std::cout << " Try to close all client-connection.\n";
+    if (kVerboseServerLog) {
+        std::cout << " Try to close all client-connection.\n";
+    }
     int ret = shutdown(sockfd_server, SHUT_WR);  // shut down the all or part of a full-duplex connection.
-    if(ret == -1) { printf("%s\n", strerror(errno)); }
+    if(ret == -1 && kVerboseServerLog) { printf("%s\n", strerror(errno)); }
 //    assert(ret != -1);
     sm_manager->close_db();
-    std::cout << " DB has been closed.\n";
-    std::cout << "Server shuts down." << std::endl;
+    if (kVerboseServerLog) {
+        std::cout << " DB has been closed.\n";
+        std::cout << "Server shuts down." << std::endl;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -275,17 +326,19 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, sigint_handler);
     try {
-        std::cout << "\n"
-                     "  _____  __  __ _____  ____  \n"
-                     " |  __ \\|  \\/  |  __ \\|  _ \\ \n"
-                     " | |__) | \\  / | |  | | |_) |\n"
-                     " |  _  /| |\\/| | |  | |  _ < \n"
-                     " | | \\ \\| |  | | |__| | |_) |\n"
-                     " |_|  \\_\\_|  |_|_____/|____/ \n"
-                     "\n"
-                     "Welcome to RMDB!\n"
-                     "Type 'help;' for help.\n"
-                     "\n";
+        if (kVerboseServerLog) {
+            std::cout << "\n"
+                         "  _____  __  __ _____  ____  \n"
+                         " |  __ \\|  \\/  |  __ \\|  _ \\ \n"
+                         " | |__) | \\  / | |  | | |_) |\n"
+                         " |  _  /| |\\/| | |  | |  _ < \n"
+                         " | | \\ \\| |  | | |__| | |_) |\n"
+                         " |_|  \\_\\_|  |_|_____/|____/ \n"
+                         "\n"
+                         "Welcome to RMDB!\n"
+                         "Type 'help;' for help.\n"
+                         "\n";
+        }
         // Database name is passed by args
         std::string db_name = argv[1];
         if (!sm_manager->is_dir(db_name)) {
@@ -303,7 +356,9 @@ int main(int argc, char **argv) {
         // 开启服务端，开始接受客户端连接
         start_server();
     } catch (RMDBError &e) {
-        std::cerr << e.what() << std::endl;
+        if (kVerboseServerLog) {
+            std::cerr << e.what() << std::endl;
+        }
         exit(1);
     }
     return 0;
