@@ -231,7 +231,7 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
         throw TableNotFoundError(tab_name);
     }
 
-    TabMeta &tab = db_.get_table(tab_name);
+    TabMeta tab = db_.get_table(tab_name);
     for (auto &index : tab.indexes) {
         std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
         auto it = ihs_.find(ix_name);
@@ -239,14 +239,21 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
             ix_manager_->close_index(it->second.get());
             ihs_.erase(it);
         }
-        ix_manager_->destroy_index(tab_name, index.cols);
     }
 
-    rm_manager_->close_file(fhs_.at(tab_name).get());
-    fhs_.erase(tab_name);
-    rm_manager_->destroy_file(tab_name);
+    auto fh_it = fhs_.find(tab_name);
+    if (fh_it != fhs_.end()) {
+        rm_manager_->close_file(fh_it->second.get());
+        fhs_.erase(fh_it);
+    }
+
     db_.tabs_.erase(tab_name);
     flush_meta();
+
+    for (auto &index : tab.indexes) {
+        ix_manager_->destroy_index(tab_name, index.cols);
+    }
+    rm_manager_->destroy_file(tab_name);
 }
 
 /**
