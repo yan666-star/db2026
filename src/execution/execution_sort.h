@@ -39,6 +39,12 @@ class SortExecutor : public AbstractExecutor {
         if (null_pos_b != std::string::npos) {
             sb.erase(null_pos_b);
         }
+        while (!sa.empty() && sa.back() == ' ') {
+            sa.pop_back();
+        }
+        while (!sb.empty() && sb.back() == ' ') {
+            sb.pop_back();
+        }
         if (sa < sb) {
             return -1;
         }

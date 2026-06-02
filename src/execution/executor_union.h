@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -53,18 +54,33 @@ class UnionExecutor : public AbstractExecutor {
         key.reserve(64);
         for (const auto &col : cols) {
             const char *p = rec.data + col.offset;
+            std::string part;
             if (col.type == TYPE_INT) {
-                key.append(p, sizeof(int));
+                int v = *(const int *)p;
+                part.assign(reinterpret_cast<const char *>(&v), sizeof(int));
             } else if (col.type == TYPE_FLOAT) {
-                key.append(p, sizeof(float));
+                float v = *(const float *)p;
+                if (v == 0.0f) {
+                    v = 0.0f;
+                }
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%.9g", static_cast<double>(v));
+                part = buf;
             } else if (col.type == TYPE_STRING) {
                 size_t slen = 0;
                 while (slen < static_cast<size_t>(col.len) && p[slen] != '\0') {
                     slen++;
                 }
-                key.append(p, slen);
+                part.assign(p, slen);
+                while (!part.empty() && part.back() == ' ') {
+                    part.pop_back();
+                }
             }
-            key.push_back('\x1f');
+            key.push_back(static_cast<char>(col.type));
+            key.append(std::to_string(part.size()));
+            key.push_back(':');
+            key.append(part);
+            key.push_back('|');
         }
         return key;
     }

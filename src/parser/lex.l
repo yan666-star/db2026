@@ -99,7 +99,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "MIN" { return MIN; }
 "SUM" { return SUM; }
 "AVG" { return AVG; }
-"UNION" { return UNION; }
+[Uu][Nn][Ii][Oo][Nn] { return UNION; }
 "ENABLE_NESTLOOP" { return ENABLE_NESTLOOP; }
 "ENABLE_SORTMERGE" { return ENABLE_SORTMERGE; }
 "TRUE" { 
@@ -119,6 +119,15 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 {single_op} { return yytext[0]; }
     /* id */
 {identifier} {
+    std::string ident = yytext;
+    if (ident.size() == 5 &&
+        (ident[0] == 'u' || ident[0] == 'U') &&
+        (ident[1] == 'n' || ident[1] == 'N') &&
+        (ident[2] == 'i' || ident[2] == 'I') &&
+        (ident[3] == 'o' || ident[3] == 'O') &&
+        (ident[4] == 'n' || ident[4] == 'N')) {
+        return UNION;
+    }
     yylval->sv_str = yytext;
     return IDENTIFIER;
 }

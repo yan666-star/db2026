@@ -52,6 +52,9 @@ inline std::string format_col_value(const ColMeta &col, const char *rec_buf, boo
         } else {
             col_str.clear();
         }
+        while (!col_str.empty() && col_str.back() == ' ') {
+            col_str.pop_back();
+        }
         return col_str;
     }
     return "";
@@ -67,6 +70,12 @@ inline int compare_string_value(const char *a, const char *b, int col_len) {
     size_t null_pos_b = sb.find('\0');
     if (null_pos_b != std::string::npos) {
         sb.erase(null_pos_b);
+    }
+    while (!sa.empty() && sa.back() == ' ') {
+        sa.pop_back();
+    }
+    while (!sb.empty() && sb.back() == ' ') {
+        sb.pop_back();
     }
     if (sa < sb) {
         return -1;

@@ -77,34 +77,15 @@ std::vector<ColMeta> Analyze::get_branch_output_cols(const std::shared_ptr<Query
     }
 
     std::vector<ColMeta> out;
-    for (const auto &item : query->select_items) {
-        ColMeta col{};
-        if (!item.is_agg) {
-            auto it = find_col_meta(all_cols, item.col);
-            col = *it;
-            col.name = item.alias.empty() ? item.col.col_name : item.alias;
+    for (size_t i = 0; i < query->cols.size(); i++) {
+        auto &tc = query->cols[i];
+        auto it = find_col_meta(all_cols, tc);
+        ColMeta col = *it;
+
+        if (i < query->select_items.size() && !query->select_items[i].alias.empty()) {
+            col.name = query->select_items[i].alias;
         } else {
-            col.tab_name = "";
-            col.name = item.alias.empty() ? "agg" : item.alias;
-            if (item.agg.type == AGG_COUNT) {
-                col.type = TYPE_INT;
-                col.len = static_cast<int>(sizeof(int));
-            } else if (item.agg.type == AGG_AVG) {
-                col.type = TYPE_FLOAT;
-                col.len = static_cast<int>(sizeof(float));
-            } else {
-                auto it = find_col_meta(all_cols, item.agg.col);
-                if (item.agg.type == AGG_SUM && it->type == TYPE_INT) {
-                    col.type = TYPE_INT;
-                    col.len = static_cast<int>(sizeof(int));
-                } else if (item.agg.type == AGG_SUM) {
-                    col.type = TYPE_FLOAT;
-                    col.len = static_cast<int>(sizeof(float));
-                } else {
-                    col.type = it->type;
-                    col.len = it->len;
-                }
-            }
+            col.name = tc.col_name;
         }
 
         out.push_back(col);
@@ -123,7 +104,13 @@ DerivedTableInfo Analyze::analyze_union_branches(const std::vector<std::shared_p
     info.is_union_table = true;
     std::vector<std::vector<ColMeta>> branch_cols;
     for (auto &branch : branches) {
+        if (!branch->group_bys.empty() || !branch->havings.empty()) {
+            throw RMDBError("failure");
+        }
         auto branch_query = analyze_select(branch, false);
+        if (branch_query->has_agg || !branch_query->group_bys.empty() || !branch_query->havings.empty()) {
+            throw RMDBError("failure");
+        }
         info.branch_queries.push_back(branch_query);
         branch_cols.push_back(get_branch_output_cols(branch_query));
     }

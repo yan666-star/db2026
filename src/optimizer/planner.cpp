@@ -215,13 +215,7 @@ std::shared_ptr<Plan> Planner::physical_optimization(std::shared_ptr<Query> quer
 std::shared_ptr<Plan> Planner::generate_subquery_plan(std::shared_ptr<Query> query) {
     std::shared_ptr<Plan> plan = make_one_rel(query);
     if (query->has_agg || !query->group_bys.empty() || !query->havings.empty()) {
-        return std::make_shared<AggregatePlan>(
-            std::move(plan),
-            query->select_items,
-            query->group_bys,
-            query->havings,
-            query->order_bys,
-            query->limit_num);
+        throw RMDBError("failure");
     }
     return std::make_shared<ProjectionPlan>(
         T_Projection, std::move(plan), query->cols, query->is_select_all, -1);
