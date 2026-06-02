@@ -61,17 +61,6 @@ class SortExecutor : public AbstractExecutor {
                 return is_descs_[i] ? -cmp : cmp;
             }
         }
-        for (const auto &col : prev_->cols()) {
-            int cmp;
-            if (col.type == TYPE_STRING) {
-                cmp = compare_string_col(a.data + col.offset, b.data + col.offset, col.len);
-            } else {
-                cmp = compare_col_value(a.data + col.offset, b.data + col.offset, col.type, col.len);
-            }
-            if (cmp != 0) {
-                return cmp;
-            }
-        }
         return 0;
     }
 
