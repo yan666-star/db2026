@@ -105,6 +105,16 @@ inline int compare_col_value(const char *a, const char *b, ColType type, int col
     }
 }
 
+inline int compare_record_by_cols(const RmRecord &a, const RmRecord &b, const std::vector<ColMeta> &cols) {
+    for (const auto &col : cols) {
+        int cmp = compare_col_value(a.data + col.offset, b.data + col.offset, col.type, col.len);
+        if (cmp != 0) {
+            return cmp;
+        }
+    }
+    return 0;
+}
+
 inline bool eval_comp(int cmp, CompOp op) {
     switch (op) {
         case OP_EQ:

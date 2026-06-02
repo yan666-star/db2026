@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -121,6 +122,11 @@ class UnionExecutor : public AbstractExecutor {
                 }
             }
         }
+
+        std::stable_sort(tuples_.begin(), tuples_.end(), [&](const std::unique_ptr<RmRecord> &a,
+                                                             const std::unique_ptr<RmRecord> &b) {
+            return compare_record_by_cols(*a, *b, cols_) < 0;
+        });
 
         if (plan_ != nullptr) {
             plan_->rows_ = tuples_.size();
