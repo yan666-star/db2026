@@ -67,7 +67,7 @@ class SortExecutor : public AbstractExecutor {
                 return is_descs_[i] ? -cmp : cmp;
             }
         }
-        return compare_record_by_cols(a, b, prev_->cols());
+        return 0;
     }
 
    public:
