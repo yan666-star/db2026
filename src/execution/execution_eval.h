@@ -105,6 +105,55 @@ inline int compare_col_value(const char *a, const char *b, ColType type, int col
     }
 }
 
+inline int compare_number_value(double a, double b) {
+    return (a < b) ? -1 : ((a > b) ? 1 : 0);
+}
+
+inline int compare_col_to_value(const char *lhs_data, const ColMeta &lhs_col, const Value &rhs_val) {
+    if (lhs_col.type == TYPE_INT) {
+        double lhs = static_cast<double>(*(const int *)lhs_data);
+        double rhs = 0;
+        if (rhs_val.type == TYPE_FLOAT) {
+            rhs = static_cast<double>(rhs_val.float_val);
+        } else if (rhs_val.type == TYPE_INT) {
+            rhs = static_cast<double>(rhs_val.int_val);
+        } else {
+            throw IncompatibleTypeError(coltype2str(lhs_col.type), coltype2str(rhs_val.type));
+        }
+        return compare_number_value(lhs, rhs);
+    }
+    if (lhs_col.type == TYPE_FLOAT) {
+        double lhs = static_cast<double>(*(const float *)lhs_data);
+        double rhs = 0;
+        if (rhs_val.type == TYPE_FLOAT) {
+            rhs = static_cast<double>(rhs_val.float_val);
+        } else if (rhs_val.type == TYPE_INT) {
+            rhs = static_cast<double>(rhs_val.int_val);
+        } else {
+            throw IncompatibleTypeError(coltype2str(lhs_col.type), coltype2str(rhs_val.type));
+        }
+        return compare_number_value(lhs, rhs);
+    }
+    if (lhs_col.type == TYPE_STRING) {
+        std::vector<char> rhs(lhs_col.len, 0);
+        if (rhs_val.type == TYPE_STRING) {
+            int copy_len = std::min(lhs_col.len, static_cast<int>(rhs_val.str_val.size()));
+            if (copy_len > 0) {
+                memcpy(rhs.data(), rhs_val.str_val.data(), copy_len);
+            }
+        } else if (rhs_val.raw != nullptr) {
+            int copy_len = std::min(lhs_col.len, rhs_val.raw->size);
+            if (copy_len > 0) {
+                memcpy(rhs.data(), rhs_val.raw->data, copy_len);
+            }
+        } else {
+            throw IncompatibleTypeError(coltype2str(lhs_col.type), coltype2str(rhs_val.type));
+        }
+        return compare_string_value(lhs_data, rhs.data(), lhs_col.len);
+    }
+    throw InternalError("Unexpected data type");
+}
+
 inline int compare_record_by_cols(const RmRecord &a, const RmRecord &b, const std::vector<ColMeta> &cols) {
     for (const auto &col : cols) {
         int cmp = compare_col_value(a.data + col.offset, b.data + col.offset, col.type, col.len);
@@ -155,7 +204,7 @@ inline bool eval_condition(const RmRecord &rec, const Condition &cond, const std
 
     int cmp;
     if (cond.is_rhs_val) {
-        cmp = compare_col_value(lhs_data, cond.rhs_val.raw->data, lhs_col->type, lhs_col->len);
+        cmp = compare_col_to_value(lhs_data, *lhs_col, cond.rhs_val);
     } else {
         const ColMeta *rhs_col = find_col(cols, cond.rhs_col);
         cmp = compare_col_value(lhs_data, rec.data + rhs_col->offset, lhs_col->type, lhs_col->len);

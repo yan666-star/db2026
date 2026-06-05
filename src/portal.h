@@ -22,6 +22,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_update.h"
 #include "execution/executor_insert.h"
 #include "execution/executor_delete.h"
+#include "execution/executor_filter.h"
 #include "execution/execution_sort.h"
 #include "execution/executor_aggregation.h"
 #include "execution/executor_union.h"
@@ -74,6 +75,9 @@ class Portal
         }
         if (auto s = std::dynamic_pointer_cast<SortPlan>(plan)) {
             return collect_output_cols(s->subplan_);
+        }
+        if (auto f = std::dynamic_pointer_cast<FilterPlan>(plan)) {
+            return collect_output_cols(f->subplan_);
         }
         if (auto u = std::dynamic_pointer_cast<UnionPlan>(plan)) {
             std::vector<TabCol> out_cols;
@@ -221,7 +225,10 @@ class Portal
         }
         //此时天剑filter在project和scan之间，所以如果当前节点是filter，就继续往它的子节点找，直到找到scan节点
         else if(auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
-            return convert_plan_executor(x->subplan_, context, x.get());
+            return std::make_unique<FilterExecutor>(
+                convert_plan_executor(x->subplan_, context, nullptr),
+                x->conds_,
+                x.get());
         }//FilterPlan 不创建 FilterExecutor。把自己 x.get() 传给下面的 ScanExecutor。这样 ScanExecutor 每通过一条过滤条件，就能执行 filter_plan_->rows_++。
         else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
             if(x->tag == T_SeqScan) {

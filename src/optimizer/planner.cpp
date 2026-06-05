@@ -74,13 +74,14 @@ bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_c
  * @return std::vector<Condition>
  */
 std::vector<Condition> pop_conds(std::vector<Condition> &conds, std::string tab_names) {
-    // auto has_tab = [&](const std::string &tab_name) {
-    //     return std::find(tab_names.begin(), tab_names.end(), tab_name) != tab_names.end();
-    // };
     std::vector<Condition> solved_conds;
     auto it = conds.begin();
     while (it != conds.end()) {
-        if ((tab_names.compare(it->lhs_col.tab_name) == 0 && it->is_rhs_val) || (it->lhs_col.tab_name.compare(it->rhs_col.tab_name) == 0)) {
+        bool lhs_matches = (it->lhs_col.tab_name == tab_names);
+        bool rhs_matches = (!it->is_rhs_val && it->rhs_col.tab_name == tab_names);
+        bool single_table_value_cond = lhs_matches && it->is_rhs_val;
+        bool single_table_col_cond = lhs_matches && rhs_matches;
+        if (single_table_value_cond || single_table_col_cond) {
             solved_conds.emplace_back(std::move(*it));
             it = conds.erase(it);
         } else {
@@ -266,24 +267,33 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
     // // Scan table , 生成表算子列表tab_nodes
     std::vector<std::shared_ptr<Plan>> table_scan_executors(tables.size());
     for (size_t i = 0; i < tables.size(); i++) {
+    auto curr_conds = pop_conds(query->conds, tables[i]);
+
     if (query->derived_tables.count(tables[i])) {
         auto &info = query->derived_tables.at(tables[i]);
+        std::shared_ptr<Plan> derived_plan;
         if (!info.is_union_table) {
             if (info.branch_queries.size() != 1) {
                 throw InternalError("Unexpected derived subquery plan");
             }
-            table_scan_executors[i] = generate_subquery_plan(info.branch_queries[0]);
+            derived_plan = generate_subquery_plan(info.branch_queries[0]);
+            if (!curr_conds.empty()) {
+                derived_plan = std::make_shared<FilterPlan>(derived_plan, curr_conds);
+            }
+            table_scan_executors[i] = derived_plan;
             continue;
         }
         std::vector<std::shared_ptr<Plan>> branch_plans;
         for (auto &branch_query : info.branch_queries) {
             branch_plans.push_back(generate_subquery_plan(branch_query));
         }
-        table_scan_executors[i] = std::make_shared<UnionPlan>(std::move(branch_plans), info.cols);
+        derived_plan = std::make_shared<UnionPlan>(std::move(branch_plans), info.cols);
+        if (!curr_conds.empty()) {
+            derived_plan = std::make_shared<FilterPlan>(derived_plan, curr_conds);
+        }
+        table_scan_executors[i] = derived_plan;
         continue;
     }
-
-    auto curr_conds = pop_conds(query->conds, tables[i]);
 
     std::vector<std::string> index_col_names;
     bool index_exist = get_index_cols(tables[i], curr_conds, index_col_names);
