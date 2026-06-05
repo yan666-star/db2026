@@ -41,6 +41,23 @@ static void assign_col_offsets(std::vector<ColMeta> &cols) {
     }
 }
 
+static bool resolve_order_by_alias(const std::vector<SelectItem> &select_items, const TabCol &target, OrderByItem &ob) {
+    if (!target.tab_name.empty()) {
+        return false;
+    }
+    for (const auto &item : select_items) {
+        if (!item.alias.empty() && item.alias == target.col_name) {
+            ob.col = {.tab_name = "", .col_name = item.alias};
+            ob.is_agg = item.is_agg;
+            if (item.is_agg) {
+                ob.agg = item.agg;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Analyze::union_compatible(ColType a, ColType b) {
     if (a == b) {
         return true;
@@ -205,10 +222,15 @@ std::shared_ptr<Query> Analyze::analyze_top_level_union(std::shared_ptr<ast::Sel
             OrderByItem ob;
             ob.is_desc = sv_order->orderby_dir == ast::OrderBy_DESC;
             ob.is_agg = false;
+            TabCol order_col = {.tab_name = sv_order->cols->tab_name, .col_name = sv_order->cols->col_name};
+            if ((query->has_agg || !query->group_bys.empty() || !query->havings.empty()) &&
+                resolve_order_by_alias(query->select_items, order_col, ob)) {
+                query->order_bys.push_back(ob);
+                continue;
+            }
             try {
                 ob.col = check_column(all_cols,
-                                      {.tab_name = sv_order->cols->tab_name, .col_name = sv_order->cols->col_name},
-                                      query->alias_to_table);
+                                      order_col, query->alias_to_table);
             } catch (ColumnNotFoundError &) {
                 throw RMDBError("failure");
             } catch (AmbiguousColumnError &) {
@@ -220,13 +242,17 @@ std::shared_ptr<Query> Analyze::analyze_top_level_union(std::shared_ptr<ast::Sel
         OrderByItem ob;
         ob.is_desc = x->order->orderby_dir == ast::OrderBy_DESC;
         ob.is_agg = false;
-        try {
-            ob.col = check_column(all_cols, {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name},
-                                  query->alias_to_table);
-        } catch (ColumnNotFoundError &) {
-            throw RMDBError("failure");
-        } catch (AmbiguousColumnError &) {
-            throw RMDBError("failure");
+        TabCol order_col = {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name};
+        bool resolved_alias = (query->has_agg || !query->group_bys.empty() || !query->havings.empty()) &&
+                              resolve_order_by_alias(query->select_items, order_col, ob);
+        if (!resolved_alias) {
+            try {
+                ob.col = check_column(all_cols, order_col, query->alias_to_table);
+            } catch (ColumnNotFoundError &) {
+                throw RMDBError("failure");
+            } catch (AmbiguousColumnError &) {
+                throw RMDBError("failure");
+            }
         }
         query->order_bys.push_back(ob);
     }
@@ -379,10 +405,15 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
             OrderByItem ob;
             ob.is_desc = sv_order->orderby_dir == ast::OrderBy_DESC;
             ob.is_agg = false;
+            TabCol order_col = {.tab_name = sv_order->cols->tab_name, .col_name = sv_order->cols->col_name};
+            if ((query->has_agg || !query->group_bys.empty() || !query->havings.empty()) &&
+                resolve_order_by_alias(query->select_items, order_col, ob)) {
+                query->order_bys.push_back(ob);
+                continue;
+            }
             try {
                 ob.col = check_column(all_cols,
-                                      {.tab_name = sv_order->cols->tab_name, .col_name = sv_order->cols->col_name},
-                                      query->alias_to_table);
+                                      order_col, query->alias_to_table);
             } catch (ColumnNotFoundError &) {
                 throw RMDBError("failure");
             } catch (AmbiguousColumnError &) {
@@ -394,13 +425,17 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
         OrderByItem ob;
         ob.is_desc = x->order->orderby_dir == ast::OrderBy_DESC;
         ob.is_agg = false;
-        try {
-            ob.col = check_column(all_cols, {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name},
-                                  query->alias_to_table);
-        } catch (ColumnNotFoundError &) {
-            throw RMDBError("failure");
-        } catch (AmbiguousColumnError &) {
-            throw RMDBError("failure");
+        TabCol order_col = {.tab_name = x->order->cols->tab_name, .col_name = x->order->cols->col_name};
+        bool resolved_alias = (query->has_agg || !query->group_bys.empty() || !query->havings.empty()) &&
+                              resolve_order_by_alias(query->select_items, order_col, ob);
+        if (!resolved_alias) {
+            try {
+                ob.col = check_column(all_cols, order_col, query->alias_to_table);
+            } catch (ColumnNotFoundError &) {
+                throw RMDBError("failure");
+            } catch (AmbiguousColumnError &) {
+                throw RMDBError("failure");
+            }
         }
         query->order_bys.push_back(ob);
     }

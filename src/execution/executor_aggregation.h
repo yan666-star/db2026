@@ -330,15 +330,26 @@ class AggregationExecutor : public AbstractExecutor {
         }
 
         if (!plan_->order_bys_.empty()) {
-            auto ob = plan_->order_bys_[0];
-            int order_idx = find_order_col_idx(ob);
-            if (order_idx >= 0) {
-                const auto c = cols_[order_idx];
-                std::sort(out_.begin(), out_.end(), [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
-                    std::string av(a->data + c.offset, c.len);
-                    std::string bv(b->data + c.offset, c.len);
-                    int cmp = cmp_bin(c.type, av, c.type, bv);
-                    return ob.is_desc ? (cmp > 0) : (cmp < 0);
+            std::vector<std::pair<int, bool>> order_idxs;
+            for (auto &ob : plan_->order_bys_) {
+                int order_idx = find_order_col_idx(ob);
+                if (order_idx >= 0) {
+                    order_idxs.emplace_back(order_idx, ob.is_desc);
+                }
+            }
+            if (!order_idxs.empty()) {
+                std::stable_sort(out_.begin(), out_.end(),
+                                 [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
+                    for (auto &[order_idx, is_desc] : order_idxs) {
+                        const auto &c = cols_[order_idx];
+                        std::string av(a->data + c.offset, c.len);
+                        std::string bv(b->data + c.offset, c.len);
+                        int cmp = cmp_bin(c.type, av, c.type, bv);
+                        if (cmp != 0) {
+                            return is_desc ? (cmp > 0) : (cmp < 0);
+                        }
+                    }
+                    return false;
                 });
             }
         }
