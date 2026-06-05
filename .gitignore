@@ -1,3 +1,12 @@
 build/
 **/build/
 .DS_Store
+
+# Local RMDB database/test output directories
+testdb/
+*_test_db/
+lab4debug/
+lab4test_single/
+lab4_test_db/
+union_test_db/
+rmdb/
