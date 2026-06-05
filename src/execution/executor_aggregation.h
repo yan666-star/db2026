@@ -53,6 +53,7 @@ class AggregationExecutor : public AbstractExecutor {
     }
 
     int find_order_col_idx(const OrderByItem &ob) const {
+        int agg_match = -1;
         for (size_t i = 0; i < plan_->select_items_.size(); i++) {
             const auto &sel = plan_->select_items_[i];
             if (!sel.alias.empty() && sel.alias == ob.col.col_name) {
@@ -64,6 +65,19 @@ class AggregationExecutor : public AbstractExecutor {
                  sel.col.tab_name.empty())) {
                 return static_cast<int>(i);
             }
+            if (sel.is_agg && !sel.agg.is_star &&
+                sel.agg.col.col_name == ob.col.col_name &&
+                (ob.col.tab_name.empty() || sel.agg.col.tab_name == ob.col.tab_name ||
+                 sel.agg.col.tab_name.empty())) {
+                if (agg_match >= 0) {
+                    agg_match = -2;
+                } else {
+                    agg_match = static_cast<int>(i);
+                }
+            }
+        }
+        if (agg_match >= 0) {
+            return agg_match;
         }
         return -1;
     }

@@ -94,6 +94,37 @@ std::vector<ColMeta> Analyze::get_branch_output_cols(const std::shared_ptr<Query
     }
 
     std::vector<ColMeta> out;
+    if (query->has_agg || !query->group_bys.empty() || !query->havings.empty()) {
+        for (auto &item : query->select_items) {
+            ColMeta col{};
+            col.tab_name = "";
+            col.name = item.alias.empty() ? (item.is_agg ? "agg" : item.col.col_name) : item.alias;
+
+            if (!item.is_agg) {
+                auto it = find_col_meta(all_cols, item.col);
+                col.type = it->type;
+                col.len = it->len;
+            } else if (item.agg.type == AGG_COUNT) {
+                col.type = TYPE_INT;
+                col.len = static_cast<int>(sizeof(int));
+            } else if (item.agg.type == AGG_AVG) {
+                col.type = TYPE_FLOAT;
+                col.len = static_cast<int>(sizeof(float));
+            } else if (item.agg.type == AGG_SUM) {
+                auto it = find_col_meta(all_cols, item.agg.col);
+                col.type = (it->type == TYPE_INT) ? TYPE_INT : TYPE_FLOAT;
+                col.len = (col.type == TYPE_INT) ? static_cast<int>(sizeof(int)) : static_cast<int>(sizeof(float));
+            } else {
+                auto it = find_col_meta(all_cols, item.agg.col);
+                col.type = it->type;
+                col.len = it->len;
+            }
+            out.push_back(col);
+        }
+        assign_col_offsets(out);
+        return out;
+    }
+
     for (size_t i = 0; i < query->cols.size(); i++) {
         auto &tc = query->cols[i];
         auto it = find_col_meta(all_cols, tc);
@@ -172,13 +203,7 @@ DerivedTableInfo Analyze::analyze_derived_subquery(const std::shared_ptr<ast::Se
         return analyze_union_branches(subquery->union_branches, alias);
     }
 
-    if (!subquery->group_bys.empty() || !subquery->havings.empty()) {
-        throw RMDBError("failure");
-    }
     auto sub_q = analyze_select(subquery, true);
-    if (sub_q->has_agg || !sub_q->group_bys.empty() || !sub_q->havings.empty()) {
-        throw RMDBError("failure");
-    }
 
     DerivedTableInfo info;
     info.is_union_table = false;
