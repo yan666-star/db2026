@@ -26,7 +26,7 @@ inline std::string format_float_output(float f, bool agg_float_fixed) {
     char buf[64];
     if (agg_float_fixed) {
         std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(f));
-        return trim_trailing_zeros(std::string(buf));
+        return std::string(buf);
     }
     std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(f));
     std::string s(buf);
