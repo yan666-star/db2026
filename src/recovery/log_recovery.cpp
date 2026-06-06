@@ -15,14 +15,13 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "errors.h"
-#include "transaction/transaction_manager.h"
-
 void RecoveryManager::analyze() {
     logs_.clear();
     txn_states_.clear();
     txn_last_lsns_.clear();
     touched_tables_.clear();
     index_rebuild_tables_.clear();
+    next_txn_id_ = 0;
 
     const int log_size = disk_manager_->get_file_size(LOG_FILE_NAME);
     if (log_size <= 0) {
@@ -56,7 +55,8 @@ void RecoveryManager::analyze() {
                             if (checkpoint_record->active_txns_.empty()) {
                                 restart_offset_ = candidate;
                                 scan_start = static_cast<int>(candidate);
-                                transaction_manager_->advance_next_txn_id(
+                                next_txn_id_ = std::max(
+                                    next_txn_id_,
                                     static_cast<txn_id_t>(
                                         checkpoint_record->lsn_) + 1);
                             }
@@ -124,7 +124,7 @@ void RecoveryManager::analyze() {
     }
 
     if (max_txn_id != INVALID_TXN_ID) {
-        transaction_manager_->advance_next_txn_id(max_txn_id + 1);
+        next_txn_id_ = std::max(next_txn_id_, max_txn_id + 1);
     }
     indexes_from_checkpoint_ =
         restart_offset_ > 0 &&
@@ -205,16 +205,18 @@ void RecoveryManager::undo() {
     // The framework has no compensation log records. Persist the completed
     // undo before marking each loser aborted, so a crash can safely retry
     // undo until the ABORT record becomes durable.
-    for (txn_id_t txn_id : recovered_losers) {
-        AbortLogRecord abort_record(txn_id);
-        auto last_lsn = txn_last_lsns_.find(txn_id);
-        if (last_lsn != txn_last_lsns_.end()) {
-            abort_record.prev_lsn_ = last_lsn->second;
+    if (log_manager_ != nullptr) {
+        for (txn_id_t txn_id : recovered_losers) {
+            AbortLogRecord abort_record(txn_id);
+            auto last_lsn = txn_last_lsns_.find(txn_id);
+            if (last_lsn != txn_last_lsns_.end()) {
+                abort_record.prev_lsn_ = last_lsn->second;
+            }
+            log_manager_->add_log_to_buffer(&abort_record);
         }
-        log_manager_->add_log_to_buffer(&abort_record);
-    }
-    if (!recovered_losers.empty()) {
-        log_manager_->flush_log_to_disk();
+        if (!recovered_losers.empty()) {
+            log_manager_->flush_log_to_disk();
+        }
     }
 }
 

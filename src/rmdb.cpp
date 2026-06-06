@@ -42,7 +42,7 @@ auto optimizer = std::make_unique<Optimizer>(sm_manager.get(), planner.get());
 auto ql_manager = std::make_unique<QlManager>(sm_manager.get(), txn_manager.get(), nullptr);
 auto log_manager = std::make_unique<LogManager>(disk_manager.get());
 auto recovery = std::make_unique<RecoveryManager>(
-    disk_manager.get(), sm_manager.get(), txn_manager.get(), log_manager.get());
+    disk_manager.get(), buffer_pool_manager.get(), sm_manager.get());
 auto portal = std::make_unique<Portal>(sm_manager.get());
 auto analyze = std::make_unique<Analyze>(sm_manager.get());
 pthread_mutex_t *buffer_mutex;
@@ -391,9 +391,11 @@ int main(int argc, char **argv) {
         sm_manager->open_db(db_name);
         log_manager->initialize_from_disk();
         buffer_pool_manager->set_log_manager(log_manager.get());
+        recovery->set_log_manager(log_manager.get());
 
         // recovery database
         recovery->analyze();
+        txn_manager->advance_next_txn_id(recovery->get_next_txn_id());
         recovery->redo();
         recovery->undo();
         

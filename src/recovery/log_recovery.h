@@ -21,23 +21,32 @@ See the Mulan PSL v2 for more details. */
 #include "storage/disk_manager.h"
 #include "system/sm_manager.h"
 
-class TransactionManager;
-
 class RecoveryManager {
 public:
     RecoveryManager(DiskManager *disk_manager,
+                    BufferPoolManager *buffer_pool_manager,
+                    SmManager *sm_manager)
+        : disk_manager_(disk_manager),
+          sm_manager_(sm_manager),
+          log_manager_(nullptr) {
+        (void)buffer_pool_manager;
+    }
+
+    RecoveryManager(DiskManager *disk_manager,
                     SmManager *sm_manager,
-                    TransactionManager *transaction_manager,
                     LogManager *log_manager)
         : disk_manager_(disk_manager),
           sm_manager_(sm_manager),
-          transaction_manager_(transaction_manager),
           log_manager_(log_manager) {}
 
     void analyze();
     void redo();
     void undo();
+    void set_log_manager(LogManager *log_manager) {
+        log_manager_ = log_manager;
+    }
     int64_t get_restart_offset() const { return restart_offset_; }
+    txn_id_t get_next_txn_id() const { return next_txn_id_; }
 
 private:
     enum class TxnState { ACTIVE, COMMITTED, ABORTED };
@@ -66,9 +75,9 @@ private:
 
     DiskManager *disk_manager_;
     SmManager *sm_manager_;
-    TransactionManager *transaction_manager_;
     LogManager *log_manager_;
     int64_t restart_offset_ = 0;
+    txn_id_t next_txn_id_ = 0;
     std::vector<ParsedLog> logs_;
     std::unordered_map<txn_id_t, TxnState> txn_states_;
     std::unordered_map<txn_id_t, lsn_t> txn_last_lsns_;
