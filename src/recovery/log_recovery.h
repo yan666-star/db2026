@@ -10,33 +10,69 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
-#include <map>
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
 #include "log_manager.h"
 #include "storage/disk_manager.h"
 #include "system/sm_manager.h"
 
-class RedoLogsInPage {
-public:
-    RedoLogsInPage() { table_file_ = nullptr; }
-    RmFileHandle* table_file_;
-    std::vector<lsn_t> redo_logs_;   // 在该page上需要redo的操作的lsn
-};
+class TransactionManager;
 
 class RecoveryManager {
 public:
-    RecoveryManager(DiskManager* disk_manager, BufferPoolManager* buffer_pool_manager, SmManager* sm_manager) {
-        disk_manager_ = disk_manager;
-        buffer_pool_manager_ = buffer_pool_manager;
-        sm_manager_ = sm_manager;
-    }
+    RecoveryManager(DiskManager *disk_manager,
+                    SmManager *sm_manager,
+                    TransactionManager *transaction_manager,
+                    LogManager *log_manager)
+        : disk_manager_(disk_manager),
+          sm_manager_(sm_manager),
+          transaction_manager_(transaction_manager),
+          log_manager_(log_manager) {}
 
     void analyze();
     void redo();
     void undo();
+    int64_t get_restart_offset() const { return restart_offset_; }
+
 private:
-    LogBuffer buffer_;                                              // 读入日志
-    DiskManager* disk_manager_;                                     // 用来读写文件
-    BufferPoolManager* buffer_pool_manager_;                        // 对页面进行读写
-    SmManager* sm_manager_;                                         // 访问数据库元数据
+    enum class TxnState { ACTIVE, COMMITTED, ABORTED };
+
+    struct ParsedLog {
+        int64_t offset;
+        std::unique_ptr<LogRecord> record;
+    };
+
+    void redo_insert(const InsertLogRecord &record);
+    void redo_delete(const DeleteLogRecord &record);
+    void redo_update(const UpdateLogRecord &record);
+    void undo_insert(const InsertLogRecord &record);
+    void undo_delete(const DeleteLogRecord &record);
+    void undo_update(const UpdateLogRecord &record);
+    void install_record(const std::string &table_name, const Rid &rid,
+                        const RmRecord &record,
+                        const RmRecord *known_old_record = nullptr);
+    void remove_record(const std::string &table_name, const Rid &rid,
+                       const RmRecord *known_record = nullptr);
+    void insert_index_entries(const std::string &table_name,
+                              const RmRecord &record, const Rid &rid);
+    void delete_index_entries(const std::string &table_name,
+                              const RmRecord &record, const Rid &rid);
+    void finish_recovery();
+
+    DiskManager *disk_manager_;
+    SmManager *sm_manager_;
+    TransactionManager *transaction_manager_;
+    LogManager *log_manager_;
+    int64_t restart_offset_ = 0;
+    std::vector<ParsedLog> logs_;
+    std::unordered_map<txn_id_t, TxnState> txn_states_;
+    std::unordered_map<txn_id_t, lsn_t> txn_last_lsns_;
+    std::unordered_set<std::string> touched_tables_;
+    std::unordered_set<std::string> index_rebuild_tables_;
+    bool indexes_from_checkpoint_ = false;
 };

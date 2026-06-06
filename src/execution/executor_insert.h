@@ -72,7 +72,11 @@ class InsertExecutor : public AbstractExecutor {
             delete[] key;
         }
 
-        rid_ = fh_->insert_record(rec.data, context_);
+        rid_ = fh_->insert_record(rec.data, context_, tab_name_);
+        if (context_->txn_ != nullptr) {
+            context_->txn_->append_write_record(
+                new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
+        }
 
         for (auto &index : tab_.indexes) {
             auto ih =
@@ -85,10 +89,6 @@ class InsertExecutor : public AbstractExecutor {
             }
             ih->insert_entry(key, rid_, context_->txn_);
             delete[] key;
-        }
-
-        if (context_->txn_ != nullptr) {
-            context_->txn_->append_write_record(new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
         }
         return nullptr;
     }

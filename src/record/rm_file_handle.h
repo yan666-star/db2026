@@ -13,6 +13,8 @@ See the Mulan PSL v2 for more details. */
 #include <assert.h>
 
 #include <memory>
+#include <mutex>
+#include <string>
 
 #include "bitmap.h"
 #include "common/context.h"
@@ -50,6 +52,7 @@ class RmFileHandle {
     BufferPoolManager *buffer_pool_manager_;
     int fd_;        // 打开文件后产生的文件句柄
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
+    std::mutex insert_latch_;
 
    public:
     RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
@@ -68,7 +71,9 @@ class RmFileHandle {
     /* 判断指定位置上是否已经存在一条记录，通过Bitmap来判断 */
     bool is_record(const Rid &rid) const {
         RmPageHandle page_handle = fetch_page_handle(rid.page_no);
-        return Bitmap::is_set(page_handle.bitmap, rid.slot_no);  // page的slot_no位置上是否有record
+        bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
+        buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
+        return exists;
     }
 
     std::unique_ptr<RmRecord> get_record(const Rid &rid, Context *context) const;
@@ -77,18 +82,36 @@ class RmFileHandle {
 
     Rid insert_record(char *buf, Context *context);
 
+    Rid insert_record(char *buf, Context *context, const std::string &table_name);
+
     void insert_record(const Rid &rid, char *buf);
 
     void delete_record(const Rid &rid, Context *context);
 
     void update_record(const Rid &rid, char *buf, Context *context);
 
+    bool record_exists(const Rid &rid) const;
+
+    void upsert_record_for_recovery(const Rid &rid, const char *buf);
+
+    void delete_record_for_recovery(const Rid &rid);
+
+    void rebuild_free_page_list();
+
+    void flush_file_header() const;
+
     RmPageHandle create_new_page_handle();
 
     RmPageHandle fetch_page_handle(int page_no) const;
 
    private:
+    Rid insert_record_internal(char *buf, Context *context, const std::string *table_name);
+
     RmPageHandle create_page_handle();
 
     void release_page_handle(RmPageHandle &page_handle);
+
+    void ensure_page_exists(int page_no);
+
+    void remove_page_from_free_list(int page_no);
 };

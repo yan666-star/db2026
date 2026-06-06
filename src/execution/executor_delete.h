@@ -46,6 +46,17 @@ class DeleteExecutor : public AbstractExecutor {
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
             RmRecord old_rec(*rec);
+            if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
+                DeleteLogRecord log_record(
+                    context_->txn_->get_transaction_id(), old_rec, rid, tab_name_);
+                log_record.prev_lsn_ = context_->txn_->get_prev_lsn();
+                lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_record);
+                context_->txn_->set_prev_lsn(lsn);
+            }
+            if (context_->txn_ != nullptr) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, old_rec));
+            }
             for (auto &index : tab_.indexes) {
                 auto ih =
                     sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
@@ -59,10 +70,6 @@ class DeleteExecutor : public AbstractExecutor {
                 delete[] key;
             }
             fh_->delete_record(rid, context_);
-            if (context_->txn_ != nullptr) {
-                context_->txn_->append_write_record(
-                    new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, old_rec));
-            }
         }
         return nullptr;
     }

@@ -41,7 +41,8 @@ auto planner = std::make_unique<Planner>(sm_manager.get());
 auto optimizer = std::make_unique<Optimizer>(sm_manager.get(), planner.get());
 auto ql_manager = std::make_unique<QlManager>(sm_manager.get(), txn_manager.get(), nullptr);
 auto log_manager = std::make_unique<LogManager>(disk_manager.get());
-auto recovery = std::make_unique<RecoveryManager>(disk_manager.get(), buffer_pool_manager.get(), sm_manager.get());
+auto recovery = std::make_unique<RecoveryManager>(
+    disk_manager.get(), sm_manager.get(), txn_manager.get(), log_manager.get());
 auto portal = std::make_unique<Portal>(sm_manager.get());
 auto analyze = std::make_unique<Analyze>(sm_manager.get());
 pthread_mutex_t *buffer_mutex;
@@ -137,7 +138,7 @@ void *client_handler(void *sock_fd) {
         // 开启事务，初始化系统所需的上下文信息（包括事务对象指针、锁管理器指针、日志管理器指针、存放结果的buffer、记录结果长度的变量）
         auto context_holder = std::make_unique<Context>(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
         Context *context = context_holder.get();
-        SetTransaction(&txn_id, context);
+        bool statement_entered = false;
 
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
         bool finish_analyze = false;
@@ -146,6 +147,14 @@ void *client_handler(void *sock_fd) {
         if (yyparse() == 0) {
             if (ast::parse_tree != nullptr) {
                 try {
+                    bool is_checkpoint =
+                        std::dynamic_pointer_cast<ast::StaticCheckpoint>(ast::parse_tree) != nullptr;
+                    if (!is_checkpoint) {
+                        txn_manager->enter_statement(txn_id);
+                        statement_entered = true;
+                        SetTransaction(&txn_id, context);
+                    }
+
                     // analyze and rewrite
                     std::shared_ptr<Query> query = analyze->do_analyze(ast::parse_tree);
                     yy_delete_buffer(buf);
@@ -191,6 +200,27 @@ void *client_handler(void *sock_fd) {
                     outfile.open("output.txt",std::ios::out | std::ios::app);
                     outfile << "failure\n";
                     outfile.close();
+                    if (context->txn_ != nullptr &&
+                        context->txn_->get_state() != TransactionState::COMMITTED &&
+                        context->txn_->get_state() != TransactionState::ABORTED) {
+                        txn_manager->abort(context->txn_, log_manager.get());
+                    }
+                } catch (const std::exception &e) {
+                    if (kVerboseServerLog) {
+                        std::cerr << e.what() << std::endl;
+                    }
+                    const std::string client_msg = "failure\n";
+                    memcpy(data_send, client_msg.c_str(), client_msg.size());
+                    data_send[client_msg.size()] = '\0';
+                    offset = static_cast<int>(client_msg.size());
+                    std::fstream outfile(
+                        "output.txt", std::ios::out | std::ios::app);
+                    outfile << "failure\n";
+                    if (context->txn_ != nullptr &&
+                        context->txn_->get_state() != TransactionState::COMMITTED &&
+                        context->txn_->get_state() != TransactionState::ABORTED) {
+                        txn_manager->abort(context->txn_, log_manager.get());
+                    }
                 }
             }
         } else {
@@ -211,19 +241,31 @@ void *client_handler(void *sock_fd) {
         }
         // future TODO: 格式化 sql_handler.result, 传给客户端
         // send result with fixed format, use protobuf in the future
-        if (write(fd, data_send, offset + 1) == -1) {
-            break;
-        }
         // 如果是单挑语句，需要按照一个完整的事务来执行，所以执行完当前语句后，自动提交事务
-        if(context->txn_->get_txn_mode() == false)
+        if(context->txn_ != nullptr && context->txn_->get_txn_mode() == false)
         {
             txn_manager->commit(context->txn_, context->log_mgr_);
+        }
+        if (statement_entered) {
+            txn_manager->leave_statement();
+        }
+        // Do not report success before an implicit transaction's COMMIT record
+        // is durable; otherwise an acknowledged write can be lost on crash.
+        bool write_failed = write(fd, data_send, offset + 1) == -1;
+        if (write_failed) {
+            break;
         }
     }
 
     // Clear
     if (kVerboseServerLog) {
         std::cout << "Terminating current client_connection..." << std::endl;
+    }
+    Transaction *remaining_txn = txn_manager->get_transaction(txn_id);
+    if (remaining_txn != nullptr &&
+        remaining_txn->get_state() != TransactionState::COMMITTED &&
+        remaining_txn->get_state() != TransactionState::ABORTED) {
+        txn_manager->abort(remaining_txn, log_manager.get());
     }
     delete[] data_send;
     close(fd);           // close a file descriptor.
@@ -347,6 +389,8 @@ int main(int argc, char **argv) {
         }
         // Open database
         sm_manager->open_db(db_name);
+        log_manager->initialize_from_disk();
+        buffer_pool_manager->set_log_manager(log_manager.get());
 
         // recovery database
         recovery->analyze();

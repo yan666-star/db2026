@@ -48,6 +48,9 @@ struct Help : public TreeNode {
 struct ShowTables : public TreeNode {
 };
 
+struct StaticCheckpoint : public TreeNode {
+};
+
 struct TxnBegin : public TreeNode {
 };
 

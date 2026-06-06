@@ -75,6 +75,20 @@ class UpdateExecutor : public AbstractExecutor {
                 }
             }
 
+            if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
+                UpdateLogRecord log_record(
+                    context_->txn_->get_transaction_id(), old_rec, *rec_new, rid, tab_name_);
+                log_record.prev_lsn_ = context_->txn_->get_prev_lsn();
+                lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log_record);
+                context_->txn_->set_prev_lsn(lsn);
+            }
+            if (context_->txn_ != nullptr) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rid, old_rec));
+            }
+
+            fh_->update_record(rid, rec_new->data, context_);
+
             for (auto &index : tab_.indexes) {
                 auto ih =
                     sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
@@ -96,12 +110,6 @@ class UpdateExecutor : public AbstractExecutor {
                 ih->insert_entry(key, rid, context_->txn_);
             }
             delete[] key;
-
-            fh_->update_record(rid, rec_new->data, context_);
-            if (context_->txn_ != nullptr) {
-                context_->txn_->append_write_record(
-                    new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rid, old_rec));
-            }
         }
         return nullptr;
     }

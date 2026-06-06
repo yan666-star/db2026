@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>    
 
 #include <atomic>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -68,6 +69,18 @@ class DiskManager {
     int read_log(char *log_data, int size, int offset);
 
     void write_log(char *log_data, int size);
+
+    void sync_log();
+
+    void truncate_log(int size);
+
+    void sync_all_open_files();
+
+    void sync_file(const std::string &path);
+
+    void write_restart_offset(int64_t offset);
+
+    int64_t read_restart_offset();
 
     void SetLogFd(int log_fd) { log_fd_ = log_fd; }
 

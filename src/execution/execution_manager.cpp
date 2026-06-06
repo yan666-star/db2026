@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "execution_manager.h"
 #include <algorithm>
+#include <iostream>
 #include <set>
 #include <sstream>
 #include "execution_eval.h"
@@ -31,6 +32,7 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  DROP TABLE table_name\n"
                    "  CREATE INDEX table_name (column_name)\n"
                    "  DROP INDEX table_name (column_name)\n"
+                   "  CREATE STATIC_CHECKPOINT\n"
                    "  INSERT INTO table_name VALUES (value [, value ...])\n"
                    "  DELETE FROM table_name [WHERE where_clause]\n"
                    "  UPDATE table_name SET column_name = value [, column_name = value ...] [WHERE where_clause]\n"
@@ -102,6 +104,41 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
             case T_DescTable:
             {
                 sm_manager_->desc_table(x->tab_name_, context);
+                break;
+            }
+            case T_StaticCheckpoint:
+            {
+                Transaction *current_txn = txn_mgr_->get_transaction(*txn_id);
+                if (current_txn != nullptr &&
+                    current_txn->get_state() == TransactionState::GROWING &&
+                    current_txn->get_txn_mode()) {
+                    throw RMDBError("CREATE STATIC_CHECKPOINT cannot run inside a transaction");
+                }
+
+                std::vector<txn_id_t> active_txns = txn_mgr_->begin_static_checkpoint();
+                const char *checkpoint_stage = "writing checkpoint log";
+                try {
+                    int64_t checkpoint_offset =
+                        context->log_mgr_->write_checkpoint_record(active_txns);
+                    checkpoint_stage = "flushing database pages";
+                    sm_manager_->flush_for_checkpoint();
+                    checkpoint_stage = "snapshotting indexes";
+                    sm_manager_->create_index_snapshots(checkpoint_offset);
+                    checkpoint_stage = "writing restart file";
+                    context->log_mgr_->persist_restart_offset(checkpoint_offset);
+                    sm_manager_->cleanup_index_snapshots(checkpoint_offset);
+                } catch (const std::exception &e) {
+                    std::cerr << "Static checkpoint failed while " << checkpoint_stage
+                              << ": " << e.what() << std::endl;
+                    txn_mgr_->end_static_checkpoint();
+                    throw;
+                } catch (...) {
+                    std::cerr << "Static checkpoint failed while " << checkpoint_stage
+                              << ": unknown error" << std::endl;
+                    txn_mgr_->end_static_checkpoint();
+                    throw;
+                }
+                txn_mgr_->end_static_checkpoint();
                 break;
             }
             case T_Transaction_begin:

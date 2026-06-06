@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <cstring>
 
 #include "errors.h"
+#include "recovery/log_manager.h"
 
 /**
  * @description: 获取当前表中记录号为rid的记录
@@ -67,9 +68,29 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
  * @return {Rid} 插入的记录的记录号（位置）
  */
 Rid RmFileHandle::insert_record(char* buf, Context* context) {
+    return insert_record_internal(buf, context, nullptr);
+}
+
+Rid RmFileHandle::insert_record(char *buf, Context *context, const std::string &table_name) {
+    return insert_record_internal(buf, context, &table_name);
+}
+
+Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std::string *table_name) {
+    std::lock_guard<std::mutex> lock(insert_latch_);
     RmPageHandle page_handle = create_page_handle();
     int page_no = page_handle.page->get_page_id().page_no;
     int slot_no = Bitmap::first_bit(false, page_handle.bitmap, file_hdr_.num_records_per_page);
+    Rid rid{page_no, slot_no};
+
+    if (context != nullptr && context->txn_ != nullptr && context->log_mgr_ != nullptr &&
+        table_name != nullptr) {
+        RmRecord record(file_hdr_.record_size, buf);
+        InsertLogRecord log_record(
+            context->txn_->get_transaction_id(), record, rid, *table_name);
+        log_record.prev_lsn_ = context->txn_->get_prev_lsn();
+        lsn_t lsn = context->log_mgr_->add_log_to_buffer(&log_record);
+        context->txn_->set_prev_lsn(lsn);
+    }
 
     Bitmap::set(page_handle.bitmap, slot_no);
     memcpy(page_handle.get_slot(slot_no), buf, file_hdr_.record_size);
@@ -83,7 +104,7 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
     }
 
     buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, true);
-    return Rid{page_no, slot_no};
+    return rid;
 }
 
 /**
@@ -92,6 +113,8 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
  * @param {char*} buf 要插入记录的数据
  */
 void RmFileHandle::insert_record(const Rid& rid, char* buf) {
+    std::lock_guard<std::mutex> lock(insert_latch_);
+    ensure_page_exists(rid.page_no);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool existed = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
     Bitmap::set(page_handle.bitmap, rid.slot_no);
@@ -99,7 +122,13 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
     if (!existed) {
         page_handle.page_hdr->num_records++;
     }
+    bool became_full =
+        !existed &&
+        page_handle.page_hdr->num_records == file_hdr_.num_records_per_page;
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
+    if (became_full) {
+        remove_page_from_free_list(rid.page_no);
+    }
 }
 
 /**
@@ -108,6 +137,7 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
  * @param {Context*} context
  */
 void RmFileHandle::delete_record(const Rid& rid, Context* context) {
+    std::lock_guard<std::mutex> lock(insert_latch_);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
@@ -140,6 +170,63 @@ void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
 
     memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
+}
+
+bool RmFileHandle::record_exists(const Rid &rid) const {
+    if (rid.page_no < RM_FIRST_RECORD_PAGE || rid.page_no >= file_hdr_.num_pages ||
+        rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        return false;
+    }
+    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+    bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
+    buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
+    return exists;
+}
+
+void RmFileHandle::upsert_record_for_recovery(const Rid &rid, const char *buf) {
+    if (rid.page_no < RM_FIRST_RECORD_PAGE || rid.slot_no < 0 ||
+        rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw InternalError("Invalid RID in recovery log");
+    }
+
+    ensure_page_exists(rid.page_no);
+    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+    if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
+        Bitmap::set(page_handle.bitmap, rid.slot_no);
+        page_handle.page_hdr->num_records++;
+    }
+    memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
+    buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
+}
+
+void RmFileHandle::delete_record_for_recovery(const Rid &rid) {
+    if (!record_exists(rid)) {
+        return;
+    }
+    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+    Bitmap::reset(page_handle.bitmap, rid.slot_no);
+    page_handle.page_hdr->num_records--;
+    buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
+}
+
+void RmFileHandle::rebuild_free_page_list() {
+    int first_free_page_no = RM_NO_PAGE;
+    for (int page_no = file_hdr_.num_pages - 1; page_no >= RM_FIRST_RECORD_PAGE; --page_no) {
+        RmPageHandle page_handle = fetch_page_handle(page_no);
+        if (page_handle.page_hdr->num_records < file_hdr_.num_records_per_page) {
+            page_handle.page_hdr->next_free_page_no = first_free_page_no;
+            first_free_page_no = page_no;
+        } else {
+            page_handle.page_hdr->next_free_page_no = RM_NO_PAGE;
+        }
+        buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, true);
+    }
+    file_hdr_.first_free_page_no = first_free_page_no;
+}
+
+void RmFileHandle::flush_file_header() const {
+    disk_manager_->write_page(
+        fd_, RM_FILE_HDR_PAGE, reinterpret_cast<const char *>(&file_hdr_), sizeof(file_hdr_));
 }
 
 /**
@@ -199,4 +286,44 @@ void RmFileHandle::release_page_handle(RmPageHandle& page_handle) {
     int page_no = page_handle.page->get_page_id().page_no;
     page_handle.page_hdr->next_free_page_no = file_hdr_.first_free_page_no;
     file_hdr_.first_free_page_no = page_no;
+}
+
+void RmFileHandle::ensure_page_exists(int page_no) {
+    while (file_hdr_.num_pages <= page_no) {
+        RmPageHandle page_handle = create_new_page_handle();
+        int new_page_no = page_handle.page->get_page_id().page_no;
+        buffer_pool_manager_->unpin_page(PageId{fd_, new_page_no}, true);
+    }
+}
+
+void RmFileHandle::remove_page_from_free_list(int page_no) {
+    if (file_hdr_.first_free_page_no == RM_NO_PAGE) {
+        return;
+    }
+    if (file_hdr_.first_free_page_no == page_no) {
+        RmPageHandle page_handle = fetch_page_handle(page_no);
+        file_hdr_.first_free_page_no = page_handle.page_hdr->next_free_page_no;
+        page_handle.page_hdr->next_free_page_no = RM_NO_PAGE;
+        buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, true);
+        return;
+    }
+
+    int current_page_no = file_hdr_.first_free_page_no;
+    while (current_page_no != RM_NO_PAGE) {
+        RmPageHandle current = fetch_page_handle(current_page_no);
+        int next_page_no = current.page_hdr->next_free_page_no;
+        if (next_page_no == page_no) {
+            RmPageHandle removed = fetch_page_handle(page_no);
+            current.page_hdr->next_free_page_no =
+                removed.page_hdr->next_free_page_no;
+            removed.page_hdr->next_free_page_no = RM_NO_PAGE;
+            buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, true);
+            buffer_pool_manager_->unpin_page(
+                PageId{fd_, current_page_no}, true);
+            return;
+        }
+        buffer_pool_manager_->unpin_page(
+            PageId{fd_, current_page_no}, false);
+        current_page_no = next_page_no;
+    }
 }

@@ -198,7 +198,6 @@ int IxNodeHandle::remove(const char *key)
 IxIndexHandle::IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
     : disk_manager_(disk_manager), buffer_pool_manager_(buffer_pool_manager), fd_(fd)
 {
-    disk_manager_->read_page(fd, IX_FILE_HDR_PAGE, (char *)&file_hdr_, sizeof(file_hdr_));
     char *buf = new char[PAGE_SIZE];
     memset(buf, 0, PAGE_SIZE);
     disk_manager_->read_page(fd, IX_FILE_HDR_PAGE, buf, PAGE_SIZE);
@@ -207,8 +206,13 @@ IxIndexHandle::IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffe
     
     delete[] buf;
     
-    int now_page_no = disk_manager_->get_fd2pageno(fd);
-    disk_manager_->set_fd2pageno(fd, now_page_no + 3);
+    disk_manager_->set_fd2pageno(fd, file_hdr_->num_pages_);
+}
+
+void IxIndexHandle::flush_file_header() const {
+    std::vector<char> data(file_hdr_->tot_len_);
+    file_hdr_->serialize(data.data());
+    disk_manager_->write_page(fd_, IX_FILE_HDR_PAGE, data.data(), file_hdr_->tot_len_);
 }
 
 /**
@@ -301,8 +305,6 @@ IxNodeHandle *IxIndexHandle::split(IxNodeHandle *node)
             maintain_child(new_node, i);
         }
     }
-    buffer_pool_manager_->unpin_page(new_node->get_page_id(), true);
-
     return new_node;
 }
 
@@ -444,7 +446,7 @@ bool IxIndexHandle::delete_entry(const char *key, Transaction *transaction)
         return false;
     }
     node->erase_pair(key_idx);
-    if (key_idx == 0 && !node->is_root_page()) {
+    if (key_idx == 0 && node->get_size() > 0 && !node->is_root_page()) {
         // Update the parent key if the first key in a leaf node is deleted.
         auto parent = fetch_node(node->get_parent_page_no());
         int index_in_parent = parent->find_child(node);
@@ -458,8 +460,6 @@ bool IxIndexHandle::delete_entry(const char *key, Transaction *transaction)
     auto is_coalesce_or_redistribute_succ = coalesce_or_redistribute(node, transaction, &root_is_latched);
     if (is_coalesce_or_redistribute_succ)
     {
-        if (root_is_latched)
-            root_latch_.unlock();
         if (transaction != nullptr)
             transaction->append_index_deleted_page(node->page);
     }
@@ -533,9 +533,9 @@ bool IxIndexHandle::adjust_root(IxNodeHandle *old_root_node)
     bool is_success = false;
     if (old_root_node->is_leaf_page() && old_root_node->get_size() == 0)
     {
-        release_node_handle(*old_root_node);
-        file_hdr_->root_page_ = INVALID_PAGE_ID;
-        is_success = true;
+        file_hdr_->first_leaf_ = old_root_node->get_page_no();
+        file_hdr_->last_leaf_ = old_root_node->get_page_no();
+        return false;
     }
     else if (!old_root_node->is_leaf_page() && old_root_node->get_size() == 0)
     {
@@ -657,6 +657,9 @@ Iid IxIndexHandle::lower_bound(const char *key)
 {
     std::scoped_lock lock(root_latch_);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
+    if (leaf_node == nullptr) {
+        return {IX_NO_PAGE, 0};
+    }
     int index = leaf_node->lower_bound(key);
     Iid iid;
     if (index == leaf_node->get_size())
@@ -683,6 +686,9 @@ Iid IxIndexHandle::upper_bound(const char *key)
 {
     std::scoped_lock lock(root_latch_);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
+    if (leaf_node == nullptr) {
+        return {IX_NO_PAGE, 0};
+    }
     int index = leaf_node->upper_bound(key);
     Iid iid;
     if (index == leaf_node->get_size())
@@ -705,6 +711,10 @@ Iid IxIndexHandle::upper_bound(const char *key)
  */
 Iid IxIndexHandle::leaf_end() const
 {
+    if (file_hdr_->root_page_ == IX_NO_PAGE ||
+        file_hdr_->last_leaf_ == IX_NO_PAGE) {
+        return {IX_NO_PAGE, 0};
+    }
     auto node = fetch_node(file_hdr_->last_leaf_);
     Iid iid = {.page_no = file_hdr_->last_leaf_, .slot_no = node->get_size()};
     buffer_pool_manager_->unpin_page(node->get_page_id(), false);
@@ -718,6 +728,10 @@ Iid IxIndexHandle::leaf_end() const
  */
 Iid IxIndexHandle::leaf_begin() const
 {
+    if (file_hdr_->root_page_ == IX_NO_PAGE ||
+        file_hdr_->first_leaf_ == IX_NO_PAGE) {
+        return {IX_NO_PAGE, 0};
+    }
     Iid iid = {.page_no = file_hdr_->first_leaf_, .slot_no = 0};
     return iid;
 }
@@ -821,8 +835,9 @@ void IxIndexHandle::erase_leaf(IxNodeHandle *leaf)
  */
 void IxIndexHandle::release_node_handle(IxNodeHandle &node)
 {
-    file_hdr_->num_pages_--;
-    buffer_pool_manager_->unpin_page(node.get_page_id(), true);
+    // Page numbers are append-only because this implementation has no reusable
+    // index-page free list. The caller owns the pin and will unpin the page.
+    (void)node;
 }
 
 /**

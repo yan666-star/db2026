@@ -12,6 +12,14 @@ See the Mulan PSL v2 for more details. */
 
 #include <cstring>
 
+#include "recovery/log_manager.h"
+
+void BufferPoolManager::flush_wal_before_page_write() {
+    if (log_manager_ != nullptr) {
+        log_manager_->flush_log_to_disk();
+    }
+}
+
 /**
  * @description: 从free_list或replacer中得到可淘汰帧页的 *frame_id
  * @return {bool} true: 可替换帧查找成功 , false: 可替换帧查找失败
@@ -36,6 +44,7 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
     PageId old_page_id = page->get_page_id();
     if (old_page_id.page_no != INVALID_PAGE_ID) {
         if (page->is_dirty_) {
+            flush_wal_before_page_write();
             disk_manager_->write_page(old_page_id.fd, old_page_id.page_no, page->get_data(), PAGE_SIZE);
             page->is_dirty_ = false;
         }
@@ -128,6 +137,9 @@ bool BufferPoolManager::flush_page(PageId page_id) {
     }
 
     Page *page = &pages_[it->second];
+    if (page->is_dirty_) {
+        flush_wal_before_page_write();
+    }
     disk_manager_->write_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
     page->is_dirty_ = false;
     return true;
@@ -177,6 +189,7 @@ bool BufferPoolManager::delete_page(PageId page_id) {
     }
 
     if (page->is_dirty_) {
+        flush_wal_before_page_write();
         disk_manager_->write_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
     }
 
@@ -196,11 +209,71 @@ bool BufferPoolManager::delete_page(PageId page_id) {
  */
 void BufferPoolManager::flush_all_pages(int fd) {
     std::scoped_lock lock{latch_};
+    bool has_dirty_page = false;
+    for (const auto &entry : page_table_) {
+        if (entry.first.fd == fd && pages_[entry.second].is_dirty_) {
+            has_dirty_page = true;
+            break;
+        }
+    }
+    if (has_dirty_page) {
+        flush_wal_before_page_write();
+    }
     for (auto &entry : page_table_) {
         if (entry.first.fd == fd) {
             Page *page = &pages_[entry.second];
-            disk_manager_->write_page(entry.first.fd, entry.first.page_no, page->get_data(), PAGE_SIZE);
+            if (page->is_dirty_) {
+                disk_manager_->write_page(
+                    entry.first.fd, entry.first.page_no,
+                    page->get_data(), PAGE_SIZE);
+                page->is_dirty_ = false;
+            }
+        }
+    }
+}
+
+void BufferPoolManager::flush_all_pages() {
+    std::scoped_lock lock{latch_};
+    bool has_dirty_page = false;
+    for (const auto &entry : page_table_) {
+        if (pages_[entry.second].is_dirty_) {
+            has_dirty_page = true;
+            break;
+        }
+    }
+    if (has_dirty_page) {
+        flush_wal_before_page_write();
+    }
+    for (auto &entry : page_table_) {
+        Page *page = &pages_[entry.second];
+        if (page->is_dirty_) {
+            disk_manager_->write_page(
+                entry.first.fd, entry.first.page_no,
+                page->get_data(), PAGE_SIZE);
             page->is_dirty_ = false;
         }
+    }
+}
+
+void BufferPoolManager::discard_all_pages(int fd) {
+    std::scoped_lock lock{latch_};
+    for (auto it = page_table_.begin(); it != page_table_.end();) {
+        if (it->first.fd != fd) {
+            ++it;
+            continue;
+        }
+
+        frame_id_t frame_id = it->second;
+        Page *page = &pages_[frame_id];
+        if (page->pin_count_ != 0) {
+            throw InternalError("Cannot close a file with pinned buffer pages");
+        }
+        replacer_->pin(frame_id);
+        page->id_ = PageId{fd, INVALID_PAGE_ID};
+        page->is_dirty_ = false;
+        page->pin_count_ = 0;
+        memset(page->data_, 0, PAGE_SIZE);
+        free_list_.push_back(frame_id);
+        it = page_table_.erase(it);
     }
 }

@@ -65,6 +65,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "TABLES" { return TABLES; }
 "CREATE" { return CREATE; }
 "TABLE" { return TABLE; }
+"STATIC_CHECKPOINT" { return STATIC_CHECKPOINT; }
 "DROP" { return DROP; }
 "DESC" { return DESC; }
 "INSERT" { return INSERT; }

@@ -1,10 +1,14 @@
 build/
 **/build/
 .DS_Store
+__pycache__/
+*.pyc
 
 # Local RMDB database/test output directories
 testdb/
 *_test_db/
+checkpoint_smoke_db/
+recovery_full_db/
 lab4debug/
 lab4test_single/
 lab4_test_db/

@@ -74,10 +74,8 @@ struct TabMeta {
 
     TabMeta(){}
 
-    TabMeta(const TabMeta &other) {
-        name = other.name;
-        for(auto col : other.cols) cols.push_back(col);
-    }
+    TabMeta(const TabMeta &other) = default;
+    TabMeta &operator=(const TabMeta &other) = default;
 
     /* 判断当前表中是否存在名为col_name的字段 */
     bool is_col(const std::string &col_name) const {

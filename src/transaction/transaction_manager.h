@@ -11,10 +11,13 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <unordered_map>
+#include <unordered_set>
 #include <optional>
 #include <functional>
 #include <shared_mutex>
+#include <vector>
 
 #include "transaction.h"
 #include "watermark.h"
@@ -62,6 +65,21 @@ public:
     void commit(Transaction* txn, LogManager* log_manager);
 
     void abort(Transaction* txn, LogManager* log_manager);
+
+    void enter_statement(txn_id_t txn_id);
+
+    void leave_statement();
+
+    std::vector<txn_id_t> begin_static_checkpoint();
+
+    void end_static_checkpoint();
+
+    void advance_next_txn_id(txn_id_t next_txn_id) {
+        txn_id_t current = next_txn_id_.load();
+        while (current < next_txn_id &&
+               !next_txn_id_.compare_exchange_weak(current, next_txn_id)) {
+        }
+    }
 
     ConcurrencyMode get_concurrency_mode() { return concurrency_mode_; }
 
@@ -140,12 +158,21 @@ public:
 
 
 private:
+    void finish_transaction(Transaction *txn);
+
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL
     std::atomic<txn_id_t> next_txn_id_{0};  // 用于分发事务ID
     std::atomic<timestamp_t> next_timestamp_{0};    // 用于分发事务时间戳
     std::mutex latch_;  // 用于txn_map的并发
     SmManager *sm_manager_;
     LockManager *lock_manager_;
+
+    std::mutex checkpoint_latch_;
+    std::mutex checkpoint_serial_latch_;
+    std::condition_variable checkpoint_cv_;
+    bool checkpoint_in_progress_ = false;
+    size_t active_statements_ = 0;
+    std::unordered_set<txn_id_t> active_txns_;
 
     std::atomic<timestamp_t> last_commit_ts_{0};    // 最后提交的时间戳,仅用于MVCC
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC

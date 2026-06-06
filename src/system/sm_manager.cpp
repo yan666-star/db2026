@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 #include "errors.h"
@@ -121,6 +122,136 @@ void SmManager::flush_meta() {
     // 默认清空文件
     std::ofstream ofs(DB_META_NAME);
     ofs << db_;
+}
+
+void SmManager::flush_for_checkpoint() {
+    flush_meta();
+    for (const auto &entry : fhs_) {
+        entry.second->flush_file_header();
+    }
+    for (const auto &entry : ihs_) {
+        entry.second->flush_file_header();
+    }
+    buffer_pool_manager_->flush_all_pages();
+    disk_manager_->sync_all_open_files();
+    disk_manager_->sync_file(DB_META_NAME);
+}
+
+void SmManager::rebuild_indexes_for_recovery(
+    const std::unordered_set<std::string> &table_names) {
+    for (const auto &table_name : table_names) {
+        TabMeta &table = db_.get_table(table_name);
+        RmFileHandle *file_handle = fhs_.at(table_name).get();
+        for (const auto &index : table.indexes) {
+            std::string index_name =
+                ix_manager_->get_index_name(table_name, index.cols);
+            auto old_handle = ihs_.find(index_name);
+            if (old_handle != ihs_.end()) {
+                ix_manager_->close_index(old_handle->second.get());
+                ihs_.erase(old_handle);
+            }
+            if (ix_manager_->exists(table_name, index.cols)) {
+                ix_manager_->destroy_index(table_name, index.cols);
+            }
+
+            ix_manager_->create_index(table_name, index.cols);
+            auto new_handle = ix_manager_->open_index(table_name, index.cols);
+            IxIndexHandle *index_handle = new_handle.get();
+            ihs_.emplace(index_name, std::move(new_handle));
+
+            RmScan scan(file_handle);
+            while (!scan.is_end()) {
+                Rid rid = scan.rid();
+                auto record = file_handle->get_record(rid, nullptr);
+                std::vector<char> key(index.col_tot_len);
+                int key_offset = 0;
+                for (const auto &col : index.cols) {
+                    memcpy(key.data() + key_offset,
+                           record->data + col.offset, col.len);
+                    key_offset += col.len;
+                }
+                index_handle->insert_entry(key.data(), rid, nullptr);
+                scan.next();
+            }
+        }
+    }
+}
+
+void SmManager::create_index_snapshots(int64_t checkpoint_offset) {
+    for (const auto &entry : ihs_) {
+        const std::string snapshot =
+            entry.first + ".checkpoint." + std::to_string(checkpoint_offset);
+        std::error_code error;
+        std::filesystem::copy_file(
+            entry.first, snapshot,
+            std::filesystem::copy_options::overwrite_existing, error);
+        if (error) {
+            throw InternalError("Cannot create index checkpoint snapshot");
+        }
+        disk_manager_->sync_file(snapshot);
+    }
+}
+
+bool SmManager::restore_index_snapshots(int64_t checkpoint_offset) {
+    for (const auto &entry : ihs_) {
+        const std::string snapshot =
+            entry.first + ".checkpoint." + std::to_string(checkpoint_offset);
+        if (!disk_manager_->is_file(snapshot)) {
+            return false;
+        }
+    }
+
+    std::vector<std::string> index_names;
+    index_names.reserve(ihs_.size());
+    for (const auto &entry : ihs_) {
+        index_names.push_back(entry.first);
+    }
+    for (const auto &index_name : index_names) {
+        ix_manager_->close_index(ihs_.at(index_name).get());
+        ihs_.erase(index_name);
+    }
+
+    for (auto &table_entry : db_.tabs_) {
+        const std::string &table_name = table_entry.first;
+        for (const auto &index : table_entry.second.indexes) {
+            const std::string index_name =
+                ix_manager_->get_index_name(table_name, index.cols);
+            const std::string snapshot =
+                index_name + ".checkpoint." + std::to_string(checkpoint_offset);
+            std::error_code error;
+            std::filesystem::copy_file(
+                snapshot, index_name,
+                std::filesystem::copy_options::overwrite_existing, error);
+            if (error) {
+                throw InternalError("Cannot restore index checkpoint snapshot");
+            }
+            disk_manager_->sync_file(index_name);
+            ihs_.emplace(
+                index_name, ix_manager_->open_index(table_name, index.cols));
+        }
+    }
+    return true;
+}
+
+void SmManager::cleanup_index_snapshots(int64_t checkpoint_offset) {
+    const std::string keep_suffix =
+        ".checkpoint." + std::to_string(checkpoint_offset);
+    std::error_code error;
+    for (const auto &entry : std::filesystem::directory_iterator(".", error)) {
+        if (error || !entry.is_regular_file()) {
+            continue;
+        }
+        const std::string name = entry.path().filename().string();
+        const auto marker = name.rfind(".checkpoint.");
+        if (marker == std::string::npos ||
+            name.size() < keep_suffix.size() ||
+            name.compare(name.size() - keep_suffix.size(),
+                         keep_suffix.size(), keep_suffix) == 0) {
+            continue;
+        }
+        std::filesystem::remove(entry.path(), error);
+        error.clear();
+    }
 }
 
 /**
@@ -300,7 +431,9 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
         }
         std::vector<Rid> tmp_result;
         if (ih->get_value(key, &tmp_result, context == nullptr ? nullptr : context->txn_)) {
-            ihs_.erase(ix_manager_->get_index_name(tab_name, cols));
+            std::string index_name = ix_manager_->get_index_name(tab_name, cols);
+            ix_manager_->close_index(ihs_.at(index_name).get());
+            ihs_.erase(index_name);
             ix_manager_->destroy_index(tab_name, cols);
             tab.indexes.pop_back();
             flush_meta();
@@ -311,6 +444,9 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
         rm_scan.next();
     }
     delete[] key;
+    ih->flush_file_header();
+    buffer_pool_manager_->flush_all_pages(ih->GetFd());
+    disk_manager_->sync_all_open_files();
 }
 
 /**

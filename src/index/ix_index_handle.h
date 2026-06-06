@@ -172,6 +172,8 @@ class IxIndexHandle {
    public:
     IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd);
 
+    ~IxIndexHandle() { delete file_hdr_; }
+
     // for search
     bool get_value(const char *key, std::vector<Rid> *result, Transaction *transaction);
 
@@ -209,6 +211,10 @@ class IxIndexHandle {
     Iid leaf_end() const;
 
     Iid leaf_begin() const;
+
+    void flush_file_header() const;
+
+    int GetFd() const { return fd_; }
 
    private:
     // 辅助函数

@@ -16,6 +16,7 @@ See the Mulan PSL v2 for more details. */
 int main() {
     std::vector<std::string> sqls = {
         "show tables;",
+        "create static_checkpoint;",
         "desc tb;",
         "create table tb (a int, b float, c char(4));",
         "drop table tb;",

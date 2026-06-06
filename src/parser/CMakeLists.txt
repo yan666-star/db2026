@@ -1,6 +1,13 @@
 find_package(BISON REQUIRED)
 find_package(FLEX REQUIRED)
 
+# Generated parser sources are tracked in this repository. Remove stale copies
+# at configure time so Bison/Flex must regenerate them from the current grammar.
+file(REMOVE
+        ${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/lex.yy.cpp)
+
 bison_target(yacc yacc.y ${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.cpp
         DEFINES_FILE ${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.h)
 flex_target(lex lex.l ${CMAKE_CURRENT_SOURCE_DIR}/lex.yy.cpp)

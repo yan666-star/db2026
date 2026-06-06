@@ -17,6 +17,8 @@ See the Mulan PSL v2 for more details. */
 #include "common/context.h"
 #include "transaction/txn_defs.h"
 
+#include <unordered_set>
+
 class Context;
 
 struct ColDef {
@@ -64,6 +66,17 @@ class SmManager {
     void close_db();
 
     void flush_meta();
+
+    void flush_for_checkpoint();
+
+    void rebuild_indexes_for_recovery(
+        const std::unordered_set<std::string> &table_names);
+
+    void create_index_snapshots(int64_t checkpoint_offset);
+
+    bool restore_index_snapshots(int64_t checkpoint_offset);
+
+    void cleanup_index_snapshots(int64_t checkpoint_offset);
 
     void show_tables(Context* context);
 
