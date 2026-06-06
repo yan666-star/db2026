@@ -10,17 +10,43 @@ See the Mulan PSL v2 for more details. */
 
 #include "sm_manager.h"
 
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 
 #include "errors.h"
 #include "index/ix.h"
 #include "record/rm.h"
 #include "record_printer.h"
+
+namespace {
+
+void copy_file_for_checkpoint(const std::string &source,
+                              const std::string &destination) {
+    std::ifstream input(source, std::ios::binary);
+    if (!input.is_open()) {
+        throw InternalError("Cannot open checkpoint snapshot source");
+    }
+    std::ofstream output(
+        destination, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+        throw InternalError("Cannot open checkpoint snapshot destination");
+    }
+    output << input.rdbuf();
+    output.flush();
+    if (input.bad() || !output.good()) {
+        throw InternalError("Cannot copy index checkpoint snapshot");
+    }
+    output.close();
+    if (!output) {
+        throw InternalError("Cannot close index checkpoint snapshot");
+    }
+}
+
+}
 
 /**
  * @description: 判断是否为一个文件夹
@@ -181,13 +207,7 @@ void SmManager::create_index_snapshots(int64_t checkpoint_offset) {
     for (const auto &entry : ihs_) {
         const std::string snapshot =
             entry.first + ".checkpoint." + std::to_string(checkpoint_offset);
-        std::error_code error;
-        std::filesystem::copy_file(
-            entry.first, snapshot,
-            std::filesystem::copy_options::overwrite_existing, error);
-        if (error) {
-            throw InternalError("Cannot create index checkpoint snapshot");
-        }
+        copy_file_for_checkpoint(entry.first, snapshot);
         disk_manager_->sync_file(snapshot);
     }
 }
@@ -218,13 +238,7 @@ bool SmManager::restore_index_snapshots(int64_t checkpoint_offset) {
                 ix_manager_->get_index_name(table_name, index.cols);
             const std::string snapshot =
                 index_name + ".checkpoint." + std::to_string(checkpoint_offset);
-            std::error_code error;
-            std::filesystem::copy_file(
-                snapshot, index_name,
-                std::filesystem::copy_options::overwrite_existing, error);
-            if (error) {
-                throw InternalError("Cannot restore index checkpoint snapshot");
-            }
+            copy_file_for_checkpoint(snapshot, index_name);
             disk_manager_->sync_file(index_name);
             ihs_.emplace(
                 index_name, ix_manager_->open_index(table_name, index.cols));
@@ -236,12 +250,21 @@ bool SmManager::restore_index_snapshots(int64_t checkpoint_offset) {
 void SmManager::cleanup_index_snapshots(int64_t checkpoint_offset) {
     const std::string keep_suffix =
         ".checkpoint." + std::to_string(checkpoint_offset);
-    std::error_code error;
-    for (const auto &entry : std::filesystem::directory_iterator(".", error)) {
-        if (error || !entry.is_regular_file()) {
+
+    DIR *directory = opendir(".");
+    if (directory == nullptr) {
+        throw UnixError();
+    }
+    while (dirent *entry = readdir(directory)) {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..") {
             continue;
         }
-        const std::string name = entry.path().filename().string();
+        struct stat file_stat {};
+        if (stat(name.c_str(), &file_stat) != 0 ||
+            !S_ISREG(file_stat.st_mode)) {
+            continue;
+        }
         const auto marker = name.rfind(".checkpoint.");
         if (marker == std::string::npos ||
             name.size() < keep_suffix.size() ||
@@ -249,8 +272,13 @@ void SmManager::cleanup_index_snapshots(int64_t checkpoint_offset) {
                          keep_suffix.size(), keep_suffix) == 0) {
             continue;
         }
-        std::filesystem::remove(entry.path(), error);
-        error.clear();
+        if (unlink(name.c_str()) != 0) {
+            closedir(directory);
+            throw UnixError();
+        }
+    }
+    if (closedir(directory) != 0) {
+        throw UnixError();
     }
 }
 

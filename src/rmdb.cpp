@@ -51,7 +51,7 @@ pthread_mutex_t *sockfd_mutex;
 static constexpr bool kVerboseServerLog = false;
 
 static jmp_buf jmpbuf;
-void sigint_handler(int signo) {
+void sigint_handler(int) {
     should_exit = true;
     log_manager->flush_log_to_disk();
     if (kVerboseServerLog) {
@@ -270,6 +270,7 @@ void *client_handler(void *sock_fd) {
     delete[] data_send;
     close(fd);           // close a file descriptor.
     pthread_exit(NULL);  // terminate calling thread!
+    return nullptr;
 }
 
 void start_server() {
