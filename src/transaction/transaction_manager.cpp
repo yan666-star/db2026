@@ -114,6 +114,20 @@ void TransactionManager::finish_transaction(Transaction *txn) {
     checkpoint_cv_.notify_all();
 }
 
+void TransactionManager::release_transaction(Transaction *txn) {
+    if (txn == nullptr) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(latch_);
+        auto it = txn_map.find(txn->get_transaction_id());
+        if (it != txn_map.end() && it->second == txn) {
+            txn_map.erase(it);
+        }
+    }
+    delete txn;
+}
+
 void TransactionManager::enter_statement(txn_id_t txn_id) {
     std::unique_lock<std::mutex> lock(checkpoint_latch_);
     checkpoint_cv_.wait(lock, [this, txn_id] {

@@ -49,13 +49,9 @@ public:
     txn_id_t get_next_txn_id() const { return next_txn_id_; }
 
 private:
-    enum class TxnState { ACTIVE, COMMITTED, ABORTED };
-
-    struct ParsedLog {
-        int64_t offset;
-        std::unique_ptr<LogRecord> record;
-    };
-
+    std::unique_ptr<LogRecord> read_log_record(int64_t offset,
+                                               int64_t log_end,
+                                               int64_t *next_offset) const;
     void redo_insert(const InsertLogRecord &record);
     void redo_delete(const DeleteLogRecord &record);
     void redo_update(const UpdateLogRecord &record);
@@ -77,11 +73,14 @@ private:
     SmManager *sm_manager_;
     LogManager *log_manager_;
     int64_t restart_offset_ = 0;
+    int64_t valid_log_end_ = 0;
     txn_id_t next_txn_id_ = 0;
-    std::vector<ParsedLog> logs_;
-    std::unordered_map<txn_id_t, TxnState> txn_states_;
-    std::unordered_map<txn_id_t, lsn_t> txn_last_lsns_;
+    std::unordered_set<txn_id_t> active_txns_;
+    std::unordered_set<txn_id_t> aborted_txns_;
+    std::unordered_map<txn_id_t, lsn_t> active_last_lsns_;
+    std::vector<int64_t> loser_action_offsets_;
     std::unordered_set<std::string> touched_tables_;
     std::unordered_set<std::string> index_rebuild_tables_;
+    bool has_valid_checkpoint_ = false;
     bool indexes_from_checkpoint_ = false;
 };

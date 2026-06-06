@@ -175,6 +175,9 @@ void *client_handler(void *sock_fd) {
 
                     // 回滚事务
                     txn_manager->abort(context->txn_, log_manager.get());
+                    txn_manager->release_transaction(context->txn_);
+                    context->txn_ = nullptr;
+                    txn_id = INVALID_TXN_ID;
                     if (kVerboseServerLog) {
                         std::cout << e.GetInfo() << std::endl;
                     }
@@ -204,6 +207,9 @@ void *client_handler(void *sock_fd) {
                         context->txn_->get_state() != TransactionState::COMMITTED &&
                         context->txn_->get_state() != TransactionState::ABORTED) {
                         txn_manager->abort(context->txn_, log_manager.get());
+                        txn_manager->release_transaction(context->txn_);
+                        context->txn_ = nullptr;
+                        txn_id = INVALID_TXN_ID;
                     }
                 } catch (const std::exception &e) {
                     if (kVerboseServerLog) {
@@ -220,6 +226,9 @@ void *client_handler(void *sock_fd) {
                         context->txn_->get_state() != TransactionState::COMMITTED &&
                         context->txn_->get_state() != TransactionState::ABORTED) {
                         txn_manager->abort(context->txn_, log_manager.get());
+                        txn_manager->release_transaction(context->txn_);
+                        context->txn_ = nullptr;
+                        txn_id = INVALID_TXN_ID;
                     }
                 }
             }
@@ -245,6 +254,9 @@ void *client_handler(void *sock_fd) {
         if(context->txn_ != nullptr && context->txn_->get_txn_mode() == false)
         {
             txn_manager->commit(context->txn_, context->log_mgr_);
+            txn_manager->release_transaction(context->txn_);
+            context->txn_ = nullptr;
+            txn_id = INVALID_TXN_ID;
         }
         if (statement_entered) {
             txn_manager->leave_statement();
@@ -267,6 +279,7 @@ void *client_handler(void *sock_fd) {
         remaining_txn->get_state() != TransactionState::ABORTED) {
         txn_manager->abort(remaining_txn, log_manager.get());
     }
+    txn_manager->release_transaction(remaining_txn);
     delete[] data_send;
     close(fd);           // close a file descriptor.
     pthread_exit(NULL);  // terminate calling thread!

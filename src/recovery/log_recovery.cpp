@@ -15,13 +15,51 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "errors.h"
+
+std::unique_ptr<LogRecord> RecoveryManager::read_log_record(
+    int64_t offset, int64_t log_end, int64_t *next_offset) const {
+    if (offset < 0 || offset + LOG_HEADER_SIZE > log_end) {
+        return nullptr;
+    }
+
+    char header[LOG_HEADER_SIZE];
+    if (disk_manager_->read_log(
+            header, LOG_HEADER_SIZE, static_cast<int>(offset)) !=
+        LOG_HEADER_SIZE) {
+        return nullptr;
+    }
+
+    uint32_t total_len;
+    memcpy(&total_len, header + OFFSET_LOG_TOT_LEN, sizeof(total_len));
+    if (total_len < LOG_HEADER_SIZE || offset + total_len > log_end) {
+        return nullptr;
+    }
+
+    std::vector<char> data(total_len);
+    if (disk_manager_->read_log(
+            data.data(), total_len, static_cast<int>(offset)) !=
+        static_cast<int>(total_len)) {
+        return nullptr;
+    }
+
+    auto record = deserialize_log_record(data.data(), total_len);
+    if (record != nullptr && next_offset != nullptr) {
+        *next_offset = offset + total_len;
+    }
+    return record;
+}
+
 void RecoveryManager::analyze() {
-    logs_.clear();
-    txn_states_.clear();
-    txn_last_lsns_.clear();
+    active_txns_.clear();
+    aborted_txns_.clear();
+    active_last_lsns_.clear();
+    loser_action_offsets_.clear();
     touched_tables_.clear();
     index_rebuild_tables_.clear();
     next_txn_id_ = 0;
+    valid_log_end_ = 0;
+    has_valid_checkpoint_ = false;
+    indexes_from_checkpoint_ = false;
 
     const int log_size = disk_manager_->get_file_size(LOG_FILE_NAME);
     if (log_size <= 0) {
@@ -53,6 +91,7 @@ void RecoveryManager::analyze() {
                             auto *checkpoint_record =
                                 static_cast<CheckpointLogRecord *>(checkpoint.get());
                             if (checkpoint_record->active_txns_.empty()) {
+                                has_valid_checkpoint_ = true;
                                 restart_offset_ = candidate;
                                 scan_start = static_cast<int>(candidate);
                                 next_txn_id_ = std::max(
@@ -69,25 +108,9 @@ void RecoveryManager::analyze() {
 
     int offset = scan_start;
     txn_id_t max_txn_id = INVALID_TXN_ID;
-    while (offset + LOG_HEADER_SIZE <= log_size) {
-        char header[LOG_HEADER_SIZE];
-        if (disk_manager_->read_log(header, LOG_HEADER_SIZE, offset) != LOG_HEADER_SIZE) {
-            break;
-        }
-
-        uint32_t total_len;
-        memcpy(&total_len, header + OFFSET_LOG_TOT_LEN, sizeof(total_len));
-        if (total_len < LOG_HEADER_SIZE ||
-            static_cast<int64_t>(offset) + total_len > log_size) {
-            break;
-        }
-
-        std::vector<char> data(total_len);
-        if (disk_manager_->read_log(data.data(), total_len, offset) !=
-            static_cast<int>(total_len)) {
-            break;
-        }
-        auto record = deserialize_log_record(data.data(), total_len);
+    while (offset < log_size) {
+        int64_t next_offset = offset;
+        auto record = read_log_record(offset, log_size, &next_offset);
         if (record == nullptr) {
             break;
         }
@@ -96,38 +119,44 @@ void RecoveryManager::analyze() {
         if (record->log_type_ != LogType::CHECKPOINT &&
             txn_id != INVALID_TXN_ID) {
             max_txn_id = std::max(max_txn_id, txn_id);
-            txn_last_lsns_[txn_id] = record->lsn_;
         }
         switch (record->log_type_) {
             case LogType::begin:
-                txn_states_[txn_id] = TxnState::ACTIVE;
+                aborted_txns_.erase(txn_id);
+                active_txns_.insert(txn_id);
+                active_last_lsns_[txn_id] = record->lsn_;
                 break;
             case LogType::commit:
-                txn_states_[txn_id] = TxnState::COMMITTED;
+                active_txns_.erase(txn_id);
+                aborted_txns_.erase(txn_id);
+                active_last_lsns_.erase(txn_id);
                 break;
             case LogType::ABORT:
-                txn_states_[txn_id] = TxnState::ABORTED;
+                active_txns_.erase(txn_id);
+                active_last_lsns_.erase(txn_id);
+                aborted_txns_.insert(txn_id);
                 break;
             case LogType::INSERT:
             case LogType::DELETE:
             case LogType::UPDATE:
-                if (txn_states_.find(txn_id) == txn_states_.end()) {
-                    txn_states_[txn_id] = TxnState::ACTIVE;
+                if (aborted_txns_.find(txn_id) == aborted_txns_.end()) {
+                    active_txns_.insert(txn_id);
+                    active_last_lsns_[txn_id] = record->lsn_;
                 }
                 break;
             case LogType::CHECKPOINT:
                 break;
         }
 
-        logs_.push_back({offset, std::move(record)});
-        offset += static_cast<int>(total_len);
+        offset = static_cast<int>(next_offset);
     }
+    valid_log_end_ = offset;
 
     if (max_txn_id != INVALID_TXN_ID) {
         next_txn_id_ = std::max(next_txn_id_, max_txn_id + 1);
     }
     indexes_from_checkpoint_ =
-        restart_offset_ > 0 &&
+        has_valid_checkpoint_ &&
         sm_manager_->restore_index_snapshots(restart_offset_);
     if (!indexes_from_checkpoint_) {
         for (const auto &entry : sm_manager_->fhs_) {
@@ -139,18 +168,28 @@ void RecoveryManager::analyze() {
 }
 
 void RecoveryManager::redo() {
-    for (const auto &entry : logs_) {
-        if (entry.offset < restart_offset_) {
-            continue;
+    loser_action_offsets_.clear();
+    int64_t offset = restart_offset_;
+    while (offset < valid_log_end_) {
+        int64_t next_offset = offset;
+        auto record = read_log_record(offset, valid_log_end_, &next_offset);
+        if (record == nullptr) {
+            break;
         }
 
-        const LogRecord &base = *entry.record;
-        auto state_it = txn_states_.find(base.log_tid_);
-        if (state_it != txn_states_.end() &&
-            state_it->second == TxnState::ABORTED) {
+        const LogRecord &base = *record;
+        bool is_action = base.log_type_ == LogType::INSERT ||
+                         base.log_type_ == LogType::DELETE ||
+                         base.log_type_ == LogType::UPDATE;
+        if (is_action &&
+            active_txns_.find(base.log_tid_) != active_txns_.end()) {
+            loser_action_offsets_.push_back(offset);
+        }
+        if (aborted_txns_.find(base.log_tid_) != aborted_txns_.end()) {
             // An ABORT record is written only after runtime rollback has
             // restored the database. Replaying its original actions would
             // resurrect changes that were already undone.
+            offset = next_offset;
             continue;
         }
         switch (base.log_type_) {
@@ -166,26 +205,22 @@ void RecoveryManager::redo() {
             default:
                 break;
         }
+        offset = next_offset;
     }
 }
 
 void RecoveryManager::undo() {
-    std::vector<txn_id_t> recovered_losers;
-    recovered_losers.reserve(txn_states_.size());
-    for (const auto &entry : txn_states_) {
-        if (entry.second == TxnState::ACTIVE) {
-            recovered_losers.push_back(entry.first);
-        }
-    }
+    std::vector<txn_id_t> recovered_losers(
+        active_txns_.begin(), active_txns_.end());
 
-    for (auto it = logs_.rbegin(); it != logs_.rend(); ++it) {
-        const LogRecord &base = *it->record;
-        auto state_it = txn_states_.find(base.log_tid_);
-        if (state_it == txn_states_.end() ||
-            state_it->second != TxnState::ACTIVE) {
+    for (auto it = loser_action_offsets_.rbegin();
+         it != loser_action_offsets_.rend(); ++it) {
+        auto record = read_log_record(*it, valid_log_end_, nullptr);
+        if (record == nullptr) {
             continue;
         }
 
+        const LogRecord &base = *record;
         switch (base.log_type_) {
             case LogType::INSERT:
                 undo_insert(static_cast<const InsertLogRecord &>(base));
@@ -208,8 +243,8 @@ void RecoveryManager::undo() {
     if (log_manager_ != nullptr) {
         for (txn_id_t txn_id : recovered_losers) {
             AbortLogRecord abort_record(txn_id);
-            auto last_lsn = txn_last_lsns_.find(txn_id);
-            if (last_lsn != txn_last_lsns_.end()) {
+            auto last_lsn = active_last_lsns_.find(txn_id);
+            if (last_lsn != active_last_lsns_.end()) {
                 abort_record.prev_lsn_ = last_lsn->second;
             }
             log_manager_->add_log_to_buffer(&abort_record);
