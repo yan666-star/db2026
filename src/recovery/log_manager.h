@@ -472,7 +472,7 @@ public:
         : persist_lsn_(INVALID_LSN), disk_manager_(disk_manager) {}
 
     lsn_t add_log_to_buffer(LogRecord* log_record);
-    void flush_log_to_disk();
+    void flush_log_to_disk(bool force_sync = false);
     void initialize_from_disk();
     int64_t write_checkpoint_record(const std::vector<txn_id_t> &active_txns);
     void persist_restart_offset(int64_t offset);
@@ -480,7 +480,7 @@ public:
     LogBuffer* get_log_buffer() { return &log_buffer_; }
 
 private:
-    void flush_log_to_disk_locked();
+    void flush_log_to_disk_locked(bool force_sync = false);
 
     std::atomic<lsn_t> global_lsn_{0};  // 全局lsn，递增，用于为每条记录分发lsn
     std::mutex latch_;                  // 用于对log_buffer_的互斥访问

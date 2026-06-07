@@ -95,7 +95,7 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         abort_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&abort_log);
         txn->set_prev_lsn(lsn);
-        log_manager->flush_log_to_disk();
+        log_manager->flush_log_to_disk(true);
     }
 
     for (const auto &lock_id : *txn->get_lock_set()) {

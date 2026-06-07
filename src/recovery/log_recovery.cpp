@@ -250,7 +250,7 @@ void RecoveryManager::undo() {
             log_manager_->add_log_to_buffer(&abort_record);
         }
         if (!recovered_losers.empty()) {
-            log_manager_->flush_log_to_disk();
+            log_manager_->flush_log_to_disk(true);
         }
     }
 }

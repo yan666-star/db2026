@@ -16,7 +16,7 @@ See the Mulan PSL v2 for more details. */
 
 void BufferPoolManager::flush_wal_before_page_write() {
     if (log_manager_ != nullptr) {
-        log_manager_->flush_log_to_disk();
+        log_manager_->flush_log_to_disk(true);
     }
 }
 

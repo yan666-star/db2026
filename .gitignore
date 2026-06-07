@@ -16,3 +16,8 @@ union_test_db/
 rmdb/
 union_test_db_new/
 oj_*_db/
+single_thread_*_db/
+statement_recovery_db/
+statement_tpcc_db/
+public_single_db/
+.reference_db2026*/

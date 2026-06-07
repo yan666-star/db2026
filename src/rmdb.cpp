@@ -53,7 +53,7 @@ static constexpr bool kVerboseServerLog = false;
 static jmp_buf jmpbuf;
 void sigint_handler(int) {
     should_exit = true;
-    log_manager->flush_log_to_disk();
+    log_manager->flush_log_to_disk(true);
     if (kVerboseServerLog) {
         std::cout << "The Server receive Crtl+C, will been closed\n";
     }
@@ -356,6 +356,7 @@ void start_server() {
             }
             break;  // break while loop
         }
+        pthread_detach(thread_id);
 
     }
 
@@ -381,6 +382,7 @@ int main(int argc, char **argv) {
     }
 
     signal(SIGINT, sigint_handler);
+    signal(SIGPIPE, SIG_IGN);
     try {
         if (kVerboseServerLog) {
             std::cout << "\n"

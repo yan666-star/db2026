@@ -39,18 +39,23 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
 /**
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */
-void LogManager::flush_log_to_disk() {
+void LogManager::flush_log_to_disk(bool force_sync) {
     std::lock_guard<std::mutex> lock(latch_);
-    flush_log_to_disk_locked();
+    flush_log_to_disk_locked(force_sync);
 }
 
-void LogManager::flush_log_to_disk_locked() {
+void LogManager::flush_log_to_disk_locked(bool force_sync) {
     if (log_buffer_.offset_ == 0) {
+        if (force_sync) {
+            disk_manager_->sync_log();
+        }
         return;
     }
 
     disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
-    disk_manager_->sync_log();
+    if (force_sync) {
+        disk_manager_->sync_log();
+    }
     persist_lsn_ = global_lsn_.load() - 1;
     memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
     log_buffer_.offset_ = 0;
@@ -153,7 +158,7 @@ int64_t LogManager::write_checkpoint_record(
     checkpoint.lsn_ = global_lsn_.fetch_add(1);
     checkpoint.serialize(log_buffer_.buffer_);
     log_buffer_.offset_ = checkpoint.log_tot_len_;
-    flush_log_to_disk_locked();
+    flush_log_to_disk_locked(true);
     return checkpoint_offset;
 }
 
