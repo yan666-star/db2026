@@ -45,17 +45,12 @@ inline std::string format_col_value(const ColMeta &col, const char *rec_buf, boo
         return format_float_output(*(const float *)rec_buf, agg_float_fixed);
     }
     if (col.type == TYPE_STRING) {
-        std::string col_str((const char *)rec_buf, col.len);
-        size_t end_pos = col_str.find_last_not_of('\0');
-        if (end_pos != std::string::npos) {
-            col_str.resize(end_pos + 1);
-        } else {
-            col_str.clear();
+        size_t value_len = 0;
+        while (value_len < static_cast<size_t>(col.len) &&
+               rec_buf[value_len] != '\0') {
+            value_len++;
         }
-        while (!col_str.empty() && col_str.back() == ' ') {
-            col_str.pop_back();
-        }
-        return col_str;
+        return std::string(rec_buf, value_len);
     }
     return "";
 }
