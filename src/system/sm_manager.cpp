@@ -120,7 +120,6 @@ void SmManager::open_db(const std::string& db_name) {
     if (chdir(db_name.c_str()) < 0) {
         throw UnixError();
     }
-    std::remove("output.txt");
 
     std::ifstream ifs(DB_META_NAME);
     if (!ifs.is_open()) {
