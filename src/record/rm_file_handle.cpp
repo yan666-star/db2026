@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "rm_file_handle.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "errors.h"
@@ -61,6 +62,40 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
     return records;
 }
 
+std::vector<Rid> RmFileHandle::lookup_equal_records(int offset, int len, const char *value) {
+    std::lock_guard<std::mutex> lock(insert_latch_);
+    std::uint64_t cache_id = equality_cache_id(offset, len);
+    auto cache_it = equality_caches_.find(cache_id);
+    if (cache_it == equality_caches_.end()) {
+        EqualityCache cache;
+        cache.offset = offset;
+        cache.len = len;
+        if (file_hdr_.num_pages > RM_FIRST_RECORD_PAGE) {
+            cache.values.reserve(
+                static_cast<size_t>(file_hdr_.num_pages - RM_FIRST_RECORD_PAGE) *
+                file_hdr_.num_records_per_page);
+        }
+        for (int page_no = RM_FIRST_RECORD_PAGE; page_no < file_hdr_.num_pages; ++page_no) {
+            RmPageHandle page_handle = fetch_page_handle(page_no);
+            for (int slot_no = 0; slot_no < file_hdr_.num_records_per_page; ++slot_no) {
+                if (!Bitmap::is_set(page_handle.bitmap, slot_no)) {
+                    continue;
+                }
+                const char *record = page_handle.get_slot(slot_no);
+                cache.values[std::string(record + offset, len)].push_back(Rid{page_no, slot_no});
+            }
+            buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
+        }
+        cache_it = equality_caches_.emplace(cache_id, std::move(cache)).first;
+    }
+
+    auto value_it = cache_it->second.values.find(std::string(value, len));
+    if (value_it == cache_it->second.values.end()) {
+        return {};
+    }
+    return value_it->second;
+}
+
 /**
  * @description: 在当前表中插入一条记录，不指定插入位置
  * @param {char*} buf 要插入的记录的数据
@@ -95,6 +130,7 @@ Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std:
     Bitmap::set(page_handle.bitmap, slot_no);
     memcpy(page_handle.get_slot(slot_no), buf, file_hdr_.record_size);
     page_handle.page_hdr->num_records++;
+    add_to_equality_caches(rid, buf);
 
     if (page_handle.page_hdr->num_records == file_hdr_.num_records_per_page) {
         if (file_hdr_.first_free_page_no == page_no) {
@@ -117,8 +153,12 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
     ensure_page_exists(rid.page_no);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool existed = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
+    if (existed) {
+        remove_from_equality_caches(rid, page_handle.get_slot(rid.slot_no));
+    }
     Bitmap::set(page_handle.bitmap, rid.slot_no);
     memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
+    add_to_equality_caches(rid, buf);
     if (!existed) {
         page_handle.page_hdr->num_records++;
     }
@@ -145,6 +185,7 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
     }
 
     bool was_full = page_handle.page_hdr->num_records == file_hdr_.num_records_per_page;
+    remove_from_equality_caches(rid, page_handle.get_slot(rid.slot_no));
     Bitmap::reset(page_handle.bitmap, rid.slot_no);
     page_handle.page_hdr->num_records--;
 
@@ -162,13 +203,16 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
  * @param {Context*} context
  */
 void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
+    std::lock_guard<std::mutex> lock(insert_latch_);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
 
-    memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
+    char *slot = page_handle.get_slot(rid.slot_no);
+    update_equality_caches(rid, slot, buf);
+    memcpy(slot, buf, file_hdr_.record_size);
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
 }
 
@@ -325,5 +369,54 @@ void RmFileHandle::remove_page_from_free_list(int page_no) {
         buffer_pool_manager_->unpin_page(
             PageId{fd_, current_page_no}, false);
         current_page_no = next_page_no;
+    }
+}
+
+std::uint64_t RmFileHandle::equality_cache_id(int offset, int len) const {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(offset)) << 32) |
+           static_cast<std::uint32_t>(len);
+}
+
+void RmFileHandle::add_to_equality_caches(const Rid &rid, const char *record) {
+    for (auto &entry : equality_caches_) {
+        EqualityCache &cache = entry.second;
+        cache.values[std::string(record + cache.offset, cache.len)].push_back(rid);
+    }
+}
+
+void RmFileHandle::remove_from_equality_caches(const Rid &rid, const char *record) {
+    for (auto &entry : equality_caches_) {
+        EqualityCache &cache = entry.second;
+        auto value_it = cache.values.find(std::string(record + cache.offset, cache.len));
+        if (value_it == cache.values.end()) {
+            continue;
+        }
+        auto &rids = value_it->second;
+        rids.erase(std::remove(rids.begin(), rids.end(), rid), rids.end());
+        if (rids.empty()) {
+            cache.values.erase(value_it);
+        }
+    }
+}
+
+void RmFileHandle::update_equality_caches(const Rid &rid, const char *old_record,
+                                          const char *new_record) {
+    for (auto &entry : equality_caches_) {
+        EqualityCache &cache = entry.second;
+        const char *old_value = old_record + cache.offset;
+        const char *new_value = new_record + cache.offset;
+        if (memcmp(old_value, new_value, cache.len) == 0) {
+            continue;
+        }
+
+        auto old_it = cache.values.find(std::string(old_value, cache.len));
+        if (old_it != cache.values.end()) {
+            auto &rids = old_it->second;
+            rids.erase(std::remove(rids.begin(), rids.end(), rid), rids.end());
+            if (rids.empty()) {
+                cache.values.erase(old_it);
+            }
+        }
+        cache.values[std::string(new_value, cache.len)].push_back(rid);
     }
 }

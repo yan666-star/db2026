@@ -31,10 +31,36 @@ class SeqScanExecutor : public AbstractExecutor {
 
     Rid rid_;
     std::unique_ptr<RecScan> scan_;
+    std::vector<Rid> equality_rids_;
+    size_t equality_pos_ = 0;
+    bool using_equality_cache_ = false;
+    bool enable_equality_cache_ = false;
     std::unique_ptr<RmRecord> current_rec_;
     bool is_end_ = true;
 
     SmManager *sm_manager_;
+
+    bool fetch_cached_current() {
+        while (equality_pos_ < equality_rids_.size()) {
+            rid_ = equality_rids_[equality_pos_];
+            auto rec = fh_->get_record(rid_, context_);
+            if (scan_plan_ != nullptr) {
+                scan_plan_->rows_++;
+            }
+            if (fed_conds_.empty() || eval_conditions(*rec, fed_conds_, cols_)) {
+                if (filter_plan_ != nullptr) {
+                    filter_plan_->rows_++;
+                }
+                current_rec_ = std::move(rec);
+                is_end_ = false;
+                return true;
+            }
+            equality_pos_++;
+        }
+        current_rec_.reset();
+        is_end_ = true;
+        return false;
+    }
 
     bool fetch_current() {
     while (!scan_->is_end()) {
@@ -66,7 +92,8 @@ class SeqScanExecutor : public AbstractExecutor {
                 std::vector<Condition> conds,
                 Context *context,
                 ScanPlan *scan_plan = nullptr,
-                FilterPlan *filter_plan = nullptr) {
+                FilterPlan *filter_plan = nullptr,
+                bool enable_equality_cache = false) {
         sm_manager_ = sm_manager;
         tab_name_ = std::move(tab_name);
         conds_ = std::move(conds);
@@ -78,6 +105,7 @@ class SeqScanExecutor : public AbstractExecutor {
         context_ = context;
         fed_conds_ = conds_;
         scan_plan_ = scan_plan;
+        enable_equality_cache_ = enable_equality_cache;
         filter_plan_ = filter_plan; //添加scan 和 filter plan显示表示
     }
 
@@ -88,12 +116,38 @@ class SeqScanExecutor : public AbstractExecutor {
     bool is_end() const override { return is_end_; }
 
     void beginTuple() override {
+        equality_rids_.clear();
+        equality_pos_ = 0;
+        using_equality_cache_ = false;
+        for (const auto &cond : fed_conds_) {
+            if (!enable_equality_cache_) {
+                break;
+            }
+            if (!cond.is_rhs_val || cond.op != OP_EQ) {
+                continue;
+            }
+            const ColMeta *col = find_col(cols_, cond.lhs_col);
+            if (col->type != TYPE_INT || col->len != static_cast<int>(sizeof(int)) ||
+                cond.rhs_val.type != TYPE_INT) {
+                continue;
+            }
+            equality_rids_ = fh_->lookup_equal_records(
+                col->offset, col->len, reinterpret_cast<const char *>(&cond.rhs_val.int_val));
+            using_equality_cache_ = true;
+            fetch_cached_current();
+            return;
+        }
         scan_ = std::make_unique<RmScan>(fh_);
         fetch_current();
     }
 
     void nextTuple() override {
         if (is_end_) {
+            return;
+        }
+        if (using_equality_cache_) {
+            equality_pos_++;
+            fetch_cached_current();
             return;
         }
         scan_->next();

@@ -129,7 +129,8 @@ class Portal
                     
                 case T_Update:
                 {
-                    std::unique_ptr<AbstractExecutor> scan= convert_plan_executor(x->subplan_, context);
+                    std::unique_ptr<AbstractExecutor> scan =
+                        convert_plan_executor(x->subplan_, context, nullptr, true);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());
@@ -140,7 +141,8 @@ class Portal
                 }
                 case T_Delete:
                 {
-                    std::unique_ptr<AbstractExecutor> scan= convert_plan_executor(x->subplan_, context);
+                    std::unique_ptr<AbstractExecutor> scan =
+                        convert_plan_executor(x->subplan_, context, nullptr, true);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());
@@ -214,7 +216,8 @@ class Portal
 
     std::unique_ptr<AbstractExecutor> convert_plan_executor(std::shared_ptr<Plan> plan,
                                                         Context *context,
-                                                        FilterPlan *filter_plan = nullptr)
+                                                        FilterPlan *filter_plan = nullptr,
+                                                        bool enable_equality_cache = false)
     {
         if(auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)){
             return std::make_unique<ProjectionExecutor>(
@@ -238,7 +241,8 @@ class Portal
                     x->conds_,
                     context,
                     x.get(),
-                    filter_plan
+                    filter_plan,
+                    enable_equality_cache
                 );
             }
             else {

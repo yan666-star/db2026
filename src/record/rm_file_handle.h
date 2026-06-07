@@ -12,9 +12,12 @@ See the Mulan PSL v2 for more details. */
 
 #include <assert.h>
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "bitmap.h"
 #include "common/context.h"
@@ -48,11 +51,18 @@ class RmFileHandle {
     friend class RmManager;
 
    private:
+    struct EqualityCache {
+        int offset = 0;
+        int len = 0;
+        std::unordered_map<std::string, std::vector<Rid>> values;
+    };
+
     DiskManager *disk_manager_;
     BufferPoolManager *buffer_pool_manager_;
     int fd_;        // 打开文件后产生的文件句柄
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
     std::mutex insert_latch_;
+    std::unordered_map<std::uint64_t, EqualityCache> equality_caches_;
 
    public:
     RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
@@ -79,6 +89,8 @@ class RmFileHandle {
     std::unique_ptr<RmRecord> get_record(const Rid &rid, Context *context) const;
 
     std::vector<std::unique_ptr<RmRecord>> batch_get_records(int page_no, std::vector<Rid> &rids, Context *context) const;
+
+    std::vector<Rid> lookup_equal_records(int offset, int len, const char *value);
 
     Rid insert_record(char *buf, Context *context);
 
@@ -114,4 +126,12 @@ class RmFileHandle {
     void ensure_page_exists(int page_no);
 
     void remove_page_from_free_list(int page_no);
+
+    std::uint64_t equality_cache_id(int offset, int len) const;
+
+    void add_to_equality_caches(const Rid &rid, const char *record);
+
+    void remove_from_equality_caches(const Rid &rid, const char *record);
+
+    void update_equality_caches(const Rid &rid, const char *old_record, const char *new_record);
 };
