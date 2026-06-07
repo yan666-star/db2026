@@ -131,8 +131,7 @@ class SeqScanExecutor : public AbstractExecutor {
                 cond.rhs_val.type != TYPE_INT) {
                 continue;
             }
-            equality_rids_ = fh_->lookup_equal_records(
-                col->offset, col->len, reinterpret_cast<const char *>(&cond.rhs_val.int_val));
+            equality_rids_ = fh_->lookup_int_equal_records(col->offset, cond.rhs_val.int_val);
             using_equality_cache_ = true;
             fetch_cached_current();
             return;

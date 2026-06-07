@@ -16,6 +16,14 @@ See the Mulan PSL v2 for more details. */
 #include "errors.h"
 #include "recovery/log_manager.h"
 
+namespace {
+int read_int_key(const char *record, int offset) {
+    int key;
+    memcpy(&key, record + offset, sizeof(key));
+    return key;
+}
+}
+
 /**
  * @description: 获取当前表中记录号为rid的记录
  * @param {Rid&} rid 记录号，指定记录的位置
@@ -62,14 +70,12 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
     return records;
 }
 
-std::vector<Rid> RmFileHandle::lookup_equal_records(int offset, int len, const char *value) {
+std::vector<Rid> RmFileHandle::lookup_int_equal_records(int offset, int value) {
     std::lock_guard<std::mutex> lock(insert_latch_);
-    std::uint64_t cache_id = equality_cache_id(offset, len);
-    auto cache_it = equality_caches_.find(cache_id);
-    if (cache_it == equality_caches_.end()) {
-        EqualityCache cache;
+    auto cache_it = int_equality_caches_.find(offset);
+    if (cache_it == int_equality_caches_.end()) {
+        IntEqualityCache cache;
         cache.offset = offset;
-        cache.len = len;
         if (file_hdr_.num_pages > RM_FIRST_RECORD_PAGE) {
             cache.values.reserve(
                 static_cast<size_t>(file_hdr_.num_pages - RM_FIRST_RECORD_PAGE) *
@@ -82,14 +88,15 @@ std::vector<Rid> RmFileHandle::lookup_equal_records(int offset, int len, const c
                     continue;
                 }
                 const char *record = page_handle.get_slot(slot_no);
-                cache.values[std::string(record + offset, len)].push_back(Rid{page_no, slot_no});
+                int key = read_int_key(record, offset);
+                cache.values[key].push_back(Rid{page_no, slot_no});
             }
             buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
         }
-        cache_it = equality_caches_.emplace(cache_id, std::move(cache)).first;
+        cache_it = int_equality_caches_.emplace(offset, std::move(cache)).first;
     }
 
-    auto value_it = cache_it->second.values.find(std::string(value, len));
+    auto value_it = cache_it->second.values.find(value);
     if (value_it == cache_it->second.values.end()) {
         return {};
     }
@@ -130,7 +137,7 @@ Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std:
     Bitmap::set(page_handle.bitmap, slot_no);
     memcpy(page_handle.get_slot(slot_no), buf, file_hdr_.record_size);
     page_handle.page_hdr->num_records++;
-    add_to_equality_caches(rid, buf);
+    add_to_int_equality_caches(rid, buf);
 
     if (page_handle.page_hdr->num_records == file_hdr_.num_records_per_page) {
         if (file_hdr_.first_free_page_no == page_no) {
@@ -154,11 +161,11 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool existed = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
     if (existed) {
-        remove_from_equality_caches(rid, page_handle.get_slot(rid.slot_no));
+        remove_from_int_equality_caches(rid, page_handle.get_slot(rid.slot_no));
     }
     Bitmap::set(page_handle.bitmap, rid.slot_no);
     memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
-    add_to_equality_caches(rid, buf);
+    add_to_int_equality_caches(rid, buf);
     if (!existed) {
         page_handle.page_hdr->num_records++;
     }
@@ -185,7 +192,7 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
     }
 
     bool was_full = page_handle.page_hdr->num_records == file_hdr_.num_records_per_page;
-    remove_from_equality_caches(rid, page_handle.get_slot(rid.slot_no));
+    remove_from_int_equality_caches(rid, page_handle.get_slot(rid.slot_no));
     Bitmap::reset(page_handle.bitmap, rid.slot_no);
     page_handle.page_hdr->num_records--;
 
@@ -211,7 +218,7 @@ void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
     }
 
     char *slot = page_handle.get_slot(rid.slot_no);
-    update_equality_caches(rid, slot, buf);
+    update_int_equality_caches(rid, slot, buf);
     memcpy(slot, buf, file_hdr_.record_size);
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
 }
@@ -372,22 +379,19 @@ void RmFileHandle::remove_page_from_free_list(int page_no) {
     }
 }
 
-std::uint64_t RmFileHandle::equality_cache_id(int offset, int len) const {
-    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(offset)) << 32) |
-           static_cast<std::uint32_t>(len);
-}
-
-void RmFileHandle::add_to_equality_caches(const Rid &rid, const char *record) {
-    for (auto &entry : equality_caches_) {
-        EqualityCache &cache = entry.second;
-        cache.values[std::string(record + cache.offset, cache.len)].push_back(rid);
+void RmFileHandle::add_to_int_equality_caches(const Rid &rid, const char *record) {
+    for (auto &entry : int_equality_caches_) {
+        IntEqualityCache &cache = entry.second;
+        int key = read_int_key(record, cache.offset);
+        cache.values[key].push_back(rid);
     }
 }
 
-void RmFileHandle::remove_from_equality_caches(const Rid &rid, const char *record) {
-    for (auto &entry : equality_caches_) {
-        EqualityCache &cache = entry.second;
-        auto value_it = cache.values.find(std::string(record + cache.offset, cache.len));
+void RmFileHandle::remove_from_int_equality_caches(const Rid &rid, const char *record) {
+    for (auto &entry : int_equality_caches_) {
+        IntEqualityCache &cache = entry.second;
+        int key = read_int_key(record, cache.offset);
+        auto value_it = cache.values.find(key);
         if (value_it == cache.values.end()) {
             continue;
         }
@@ -399,17 +403,17 @@ void RmFileHandle::remove_from_equality_caches(const Rid &rid, const char *recor
     }
 }
 
-void RmFileHandle::update_equality_caches(const Rid &rid, const char *old_record,
-                                          const char *new_record) {
-    for (auto &entry : equality_caches_) {
-        EqualityCache &cache = entry.second;
-        const char *old_value = old_record + cache.offset;
-        const char *new_value = new_record + cache.offset;
-        if (memcmp(old_value, new_value, cache.len) == 0) {
+void RmFileHandle::update_int_equality_caches(const Rid &rid, const char *old_record,
+                                              const char *new_record) {
+    for (auto &entry : int_equality_caches_) {
+        IntEqualityCache &cache = entry.second;
+        int old_key = read_int_key(old_record, cache.offset);
+        int new_key = read_int_key(new_record, cache.offset);
+        if (old_key == new_key) {
             continue;
         }
 
-        auto old_it = cache.values.find(std::string(old_value, cache.len));
+        auto old_it = cache.values.find(old_key);
         if (old_it != cache.values.end()) {
             auto &rids = old_it->second;
             rids.erase(std::remove(rids.begin(), rids.end(), rid), rids.end());
@@ -417,6 +421,6 @@ void RmFileHandle::update_equality_caches(const Rid &rid, const char *old_record
                 cache.values.erase(old_it);
             }
         }
-        cache.values[std::string(new_value, cache.len)].push_back(rid);
+        cache.values[new_key].push_back(rid);
     }
 }
