@@ -26,6 +26,43 @@ class UpdateExecutor : public AbstractExecutor {
     SmManager *sm_manager_;
     bool done_ = false;
 
+    bool uses_mvcc() const {
+        return context_->txn_mgr_ != nullptr &&
+               context_->txn_mgr_->uses_mvcc(context_->txn_);
+    }
+
+    bool same_first_col(const RmRecord &lhs, const RmRecord &rhs) const {
+        if (tab_.cols.empty()) {
+            return false;
+        }
+        const auto &col = tab_.cols.front();
+        return memcmp(lhs.data + col.offset, rhs.data + col.offset, col.len) == 0;
+    }
+
+    void check_no_index_logical_conflicts(
+        const Rid &target_rid, const RmRecord &old_rec,
+        const RmRecord &new_rec) {
+        if (!uses_mvcc() || !tab_.indexes.empty() || tab_.cols.empty()) {
+            return;
+        }
+
+        auto file_id = fh_->GetMvccFileId();
+        for (const auto &scan_rid : fh_->all_record_slots()) {
+            if (scan_rid == target_rid) {
+                continue;
+            }
+            auto visible = fh_->get_record(scan_rid, context_);
+            if (visible == nullptr) {
+                continue;
+            }
+            if (same_first_col(*visible, old_rec) ||
+                same_first_col(*visible, new_rec)) {
+                context_->txn_mgr_->check_write_conflict(
+                    context_->txn_, file_id, scan_rid);
+            }
+        }
+    }
+
    public:
     UpdateExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<SetClause> set_clauses,
                    std::vector<Condition> conds, std::vector<Rid> rids, Context *context) {
@@ -57,6 +94,13 @@ class UpdateExecutor : public AbstractExecutor {
                 memcpy(rec_new->data + col->offset, set_clause.rhs.raw->data, col->len);
             }
 
+            bool mvcc = uses_mvcc();
+            if (mvcc) {
+                context_->txn_mgr_->check_write_conflict(
+                    context_->txn_, fh_->GetMvccFileId(), rid);
+                check_no_index_logical_conflicts(rid, old_rec, *rec_new);
+            }
+
             int max_key_len = 0;
             for (auto &index : tab_.indexes) {
                 max_key_len = std::max(max_key_len, index.col_tot_len);
@@ -73,13 +117,20 @@ class UpdateExecutor : public AbstractExecutor {
                 std::vector<Rid> dup;
                 if (ih->get_value(key, &dup, context_->txn_) &&
                     !(dup.size() == 1 && dup[0] == rid)) {
+                    if (mvcc) {
+                        for (const auto &dup_rid : dup) {
+                            if (!(dup_rid == rid)) {
+                                context_->txn_mgr_->check_write_conflict(
+                                    context_->txn_, fh_->GetMvccFileId(), dup_rid);
+                            }
+                        }
+                    }
                     delete[] key;
                     throw RMDBError("failure");
                 }
             }
 
-            if (context_->txn_mgr_ != nullptr &&
-                context_->txn_mgr_->uses_mvcc(context_->txn_)) {
+            if (mvcc) {
                 context_->txn_mgr_->prepare_update(
                     context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
                     *rec_new);
