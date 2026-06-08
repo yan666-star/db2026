@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "transaction_manager.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "common/context.h"
 #include "execution/execution_eval.h"
@@ -96,7 +97,18 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     auto write_set = txn->get_write_set();
     while (!write_set->empty()) {
         WriteRecord *write_record = write_set->back();
-        sm_manager_->rollback(write_record, &context);
+        if (txn->uses_mvcc()) {
+            if (write_record->GetWriteType() == WType::INSERT_TUPLE) {
+                auto file_handle =
+                    sm_manager_->fhs_.at(write_record->GetTableName()).get();
+                try {
+                    file_handle->delete_record(write_record->GetRid(), nullptr);
+                } catch (const RecordNotFoundError &) {
+                }
+            }
+        } else {
+            sm_manager_->rollback(write_record, &context);
+        }
         write_set->pop_back();
         delete write_record;
     }
@@ -139,6 +151,30 @@ std::unique_ptr<RmRecord> make_record(const std::vector<char> &data) {
     }
     return std::make_unique<RmRecord>(
         static_cast<int>(data.size()), const_cast<char *>(data.data()));
+}
+
+void apply_indexes(SmManager *sm_manager, const std::string &table_name,
+                   const RmRecord &record, const Rid &rid,
+                   Transaction *txn, bool insert) {
+    auto &tab = sm_manager->db_.get_table(table_name);
+    for (auto &index_meta : tab.indexes) {
+        auto index_name =
+            sm_manager->get_ix_manager()->get_index_name(table_name, index_meta.cols);
+        auto index_handle = sm_manager->ihs_.at(index_name).get();
+        std::vector<char> key(index_meta.col_tot_len);
+        int key_offset = 0;
+        for (int i = 0; i < index_meta.col_num; ++i) {
+            memcpy(key.data() + key_offset,
+                   record.data + index_meta.cols[i].offset,
+                   index_meta.cols[i].len);
+            key_offset += index_meta.cols[i].len;
+        }
+        if (insert) {
+            index_handle->insert_entry(key.data(), rid, txn);
+        } else {
+            index_handle->delete_entry(key.data(), txn);
+        }
+    }
 }
 
 }
@@ -187,6 +223,31 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
         return nullptr;
     }
     return make_record(visible->data);
+}
+
+std::vector<Rid> TransactionManager::get_mvcc_record_slots(
+    uint64_t file_id, std::vector<Rid> physical_rids) {
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    for (const auto &[key, history] : record_versions_) {
+        if (key.file_id == file_id) {
+            physical_rids.push_back(key.rid);
+        }
+    }
+    std::sort(physical_rids.begin(), physical_rids.end(),
+              [](const Rid &left, const Rid &right) {
+                  if (left.page_no != right.page_no) {
+                      return left.page_no < right.page_no;
+                  }
+                  return left.slot_no < right.slot_no;
+              });
+    physical_rids.erase(
+        std::unique(physical_rids.begin(), physical_rids.end(),
+                    [](const Rid &left, const Rid &right) {
+                        return left.page_no == right.page_no &&
+                               left.slot_no == right.slot_no;
+                    }),
+        physical_rids.end());
+    return physical_rids;
 }
 
 bool TransactionManager::predicate_matches(
@@ -329,25 +390,27 @@ void TransactionManager::register_record_read(
 
 void TransactionManager::prepare_insert(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord &new_record) {
-    prepare_write(txn, file_id, rid, nullptr, &new_record, false);
+    const RmRecord &new_record, const std::string &table_name) {
+    prepare_write(txn, file_id, rid, nullptr, &new_record, false, table_name);
 }
 
 void TransactionManager::prepare_update(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord &old_record, const RmRecord &new_record) {
-    prepare_write(txn, file_id, rid, &old_record, &new_record, false);
+    const RmRecord &old_record, const RmRecord &new_record,
+    const std::string &table_name) {
+    prepare_write(txn, file_id, rid, &old_record, &new_record, false, table_name);
 }
 
 void TransactionManager::prepare_delete(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord &old_record) {
-    prepare_write(txn, file_id, rid, &old_record, nullptr, true);
+    const RmRecord &old_record, const std::string &table_name) {
+    prepare_write(txn, file_id, rid, &old_record, nullptr, true, table_name);
 }
 
 void TransactionManager::prepare_write(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord *old_record, const RmRecord *new_record, bool deleted) {
+    const RmRecord *old_record, const RmRecord *new_record, bool deleted,
+    const std::string &table_name) {
     if (!uses_mvcc(txn)) {
         return;
     }
@@ -388,11 +451,15 @@ void TransactionManager::prepare_write(
         pending.before = copy_record(old_record);
         pending.deleted = deleted;
         pending.data = copy_record(new_record);
+        pending.table_name = table_name;
         history.push_back(std::move(pending));
         own_pending = &history.back();
     } else {
         own_pending->deleted = deleted;
         own_pending->data = copy_record(new_record);
+        if (!table_name.empty()) {
+            own_pending->table_name = table_name;
+        }
     }
 
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
@@ -451,6 +518,46 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
             for (auto &version : history_it->second) {
                 if (version.owner == txn->get_transaction_id() &&
                     version.commit_ts == INVALID_TS) {
+                    if (!version.table_name.empty()) {
+                        auto file_handle =
+                            sm_manager_->fhs_.at(version.table_name).get();
+                        if (version.before_deleted) {
+                            if (version.deleted) {
+                                try {
+                                    file_handle->delete_record(key.rid, nullptr);
+                                } catch (const RecordNotFoundError &) {
+                                }
+                            } else {
+                                RmRecord after(
+                                    static_cast<int>(version.data.size()),
+                                    const_cast<char *>(version.data.data()));
+                                file_handle->update_record(
+                                    key.rid, after.data, nullptr);
+                                apply_indexes(sm_manager_, version.table_name,
+                                              after, key.rid, txn, true);
+                            }
+                        } else if (version.deleted) {
+                            RmRecord before(
+                                static_cast<int>(version.before.size()),
+                                const_cast<char *>(version.before.data()));
+                            apply_indexes(sm_manager_, version.table_name,
+                                          before, key.rid, txn, false);
+                            file_handle->delete_record(key.rid, nullptr);
+                        } else {
+                            RmRecord before(
+                                static_cast<int>(version.before.size()),
+                                const_cast<char *>(version.before.data()));
+                            RmRecord after(
+                                static_cast<int>(version.data.size()),
+                                const_cast<char *>(version.data.data()));
+                            file_handle->update_record(
+                                key.rid, after.data, nullptr);
+                            apply_indexes(sm_manager_, version.table_name,
+                                          before, key.rid, txn, false);
+                            apply_indexes(sm_manager_, version.table_name,
+                                          after, key.rid, txn, true);
+                        }
+                    }
                     version.commit_ts = commit_ts;
                 }
             }

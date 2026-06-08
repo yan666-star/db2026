@@ -19,6 +19,7 @@ See the Mulan PSL v2 for more details. */
 #include <functional>
 #include <memory>
 #include <shared_mutex>
+#include <string>
 #include <vector>
 
 #include "transaction.h"
@@ -100,6 +101,9 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &rid,
         const RmRecord *physical_record);
 
+    std::vector<Rid> get_mvcc_record_slots(
+        uint64_t file_id, std::vector<Rid> physical_rids);
+
     void register_table_read(Transaction *txn, uint64_t file_id,
                              const std::vector<Condition> &conditions,
                              const std::vector<ColMeta> &columns);
@@ -108,14 +112,17 @@ public:
                               const Rid &rid);
 
     void prepare_insert(Transaction *txn, uint64_t file_id, const Rid &rid,
-                        const RmRecord &new_record);
+                        const RmRecord &new_record,
+                        const std::string &table_name = "");
 
     void prepare_update(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &old_record,
-                        const RmRecord &new_record);
+                        const RmRecord &new_record,
+                        const std::string &table_name = "");
 
     void prepare_delete(Transaction *txn, uint64_t file_id, const Rid &rid,
-                        const RmRecord &old_record);
+                        const RmRecord &old_record,
+                        const std::string &table_name = "");
 
     /**
      * @description: 获取事务ID为txn_id的事务对象
@@ -223,6 +230,7 @@ private:
         std::vector<char> before;
         bool deleted = false;
         std::vector<char> data;
+        std::string table_name;
     };
 
     struct ReadPredicate {
@@ -245,7 +253,8 @@ private:
 
     void prepare_write(Transaction *txn, uint64_t file_id, const Rid &rid,
                        const RmRecord *old_record,
-                       const RmRecord *new_record, bool deleted);
+                       const RmRecord *new_record, bool deleted,
+                       const std::string &table_name);
     bool add_rw_dependency(txn_id_t reader, txn_id_t writer);
     bool dependency_forms_dangerous_structure(txn_id_t reader,
                                               txn_id_t writer) const;
