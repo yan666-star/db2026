@@ -57,7 +57,6 @@ void LogManager::flush_log_to_disk_locked(bool force_sync) {
         disk_manager_->sync_log();
     }
     persist_lsn_ = global_lsn_.load() - 1;
-    memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
     log_buffer_.offset_ = 0;
 }
 

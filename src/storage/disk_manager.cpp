@@ -179,6 +179,7 @@ void DiskManager::close_file(int fd) {
     fd2path_.erase(fd);
     if (log_fd_ == fd) {
         log_fd_ = -1;
+        log_write_offset_ = -1;
     }
     if (close(fd) < 0) {
         throw UnixError();
@@ -269,10 +270,14 @@ void DiskManager::write_log(char *log_data, int size) {
         log_fd_ = open_file(LOG_FILE_NAME);
     }
 
-    off_t file_offset = lseek(log_fd_, 0, SEEK_END);
-    if (file_offset < 0) {
-        throw UnixError();
+    if (log_write_offset_ < 0) {
+        struct stat stat_buf;
+        if (fstat(log_fd_, &stat_buf) < 0) {
+            throw UnixError();
+        }
+        log_write_offset_ = stat_buf.st_size;
     }
+    int64_t file_offset = log_write_offset_;
     int written = 0;
     while (written < size) {
         ssize_t n = pwrite(
@@ -286,6 +291,7 @@ void DiskManager::write_log(char *log_data, int size) {
         }
         written += static_cast<int>(n);
     }
+    log_write_offset_ += size;
 }
 
 void DiskManager::sync_log() {
@@ -307,6 +313,7 @@ void DiskManager::truncate_log(int size) {
     if (ftruncate(log_fd_, size) < 0 || fsync(log_fd_) < 0) {
         throw UnixError();
     }
+    log_write_offset_ = size;
 }
 
 void DiskManager::sync_all_open_files() {

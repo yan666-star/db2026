@@ -103,6 +103,7 @@ class DiskManager {
     static constexpr int MAX_FD = 8192;
 
    private:
+    int64_t log_write_offset_ = -1;
     // 文件打开列表，用于记录文件是否被打开
     std::unordered_map<std::string, int> path2fd_;  //<Page文件磁盘路径,Page fd>哈希表
     std::unordered_map<int, std::string> fd2path_;  //<Page fd,Page文件磁盘路径>哈希表

@@ -52,7 +52,7 @@ class RmFileHandle {
    private:
     struct IntEqualityCache {
         int offset = 0;
-        std::unordered_map<int, std::vector<Rid>> values;
+        std::unordered_multimap<int, Rid> values;
     };
 
     DiskManager *disk_manager_;

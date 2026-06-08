@@ -10,7 +10,6 @@ See the Mulan PSL v2 for more details. */
 
 #include "rm_file_handle.h"
 
-#include <algorithm>
 #include <cstring>
 
 #include "errors.h"
@@ -89,18 +88,19 @@ std::vector<Rid> RmFileHandle::lookup_int_equal_records(int offset, int value) {
                 }
                 const char *record = page_handle.get_slot(slot_no);
                 int key = read_int_key(record, offset);
-                cache.values[key].push_back(Rid{page_no, slot_no});
+                cache.values.emplace(key, Rid{page_no, slot_no});
             }
             buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
         }
         cache_it = int_equality_caches_.emplace(offset, std::move(cache)).first;
     }
 
-    auto value_it = cache_it->second.values.find(value);
-    if (value_it == cache_it->second.values.end()) {
-        return {};
+    std::vector<Rid> result;
+    auto range = cache_it->second.values.equal_range(value);
+    for (auto it = range.first; it != range.second; ++it) {
+        result.push_back(it->second);
     }
-    return value_it->second;
+    return result;
 }
 
 /**
@@ -383,7 +383,7 @@ void RmFileHandle::add_to_int_equality_caches(const Rid &rid, const char *record
     for (auto &entry : int_equality_caches_) {
         IntEqualityCache &cache = entry.second;
         int key = read_int_key(record, cache.offset);
-        cache.values[key].push_back(rid);
+        cache.values.emplace(key, rid);
     }
 }
 
@@ -391,14 +391,12 @@ void RmFileHandle::remove_from_int_equality_caches(const Rid &rid, const char *r
     for (auto &entry : int_equality_caches_) {
         IntEqualityCache &cache = entry.second;
         int key = read_int_key(record, cache.offset);
-        auto value_it = cache.values.find(key);
-        if (value_it == cache.values.end()) {
-            continue;
-        }
-        auto &rids = value_it->second;
-        rids.erase(std::remove(rids.begin(), rids.end(), rid), rids.end());
-        if (rids.empty()) {
-            cache.values.erase(value_it);
+        auto range = cache.values.equal_range(key);
+        for (auto it = range.first; it != range.second; ++it) {
+            if (it->second == rid) {
+                cache.values.erase(it);
+                break;
+            }
         }
     }
 }
@@ -413,14 +411,13 @@ void RmFileHandle::update_int_equality_caches(const Rid &rid, const char *old_re
             continue;
         }
 
-        auto old_it = cache.values.find(old_key);
-        if (old_it != cache.values.end()) {
-            auto &rids = old_it->second;
-            rids.erase(std::remove(rids.begin(), rids.end(), rid), rids.end());
-            if (rids.empty()) {
-                cache.values.erase(old_it);
+        auto range = cache.values.equal_range(old_key);
+        for (auto it = range.first; it != range.second; ++it) {
+            if (it->second == rid) {
+                cache.values.erase(it);
+                break;
             }
         }
-        cache.values[new_key].push_back(rid);
+        cache.values.emplace(new_key, rid);
     }
 }
