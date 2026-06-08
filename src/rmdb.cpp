@@ -61,11 +61,13 @@ void sigint_handler(int) {
 }
 
 // 判断当前正在执行的是显式事务还是单条SQL语句的事务，并更新事务ID
-void SetTransaction(txn_id_t *txn_id, Context *context) {
+void SetTransaction(txn_id_t *txn_id, Context *context,
+                    IsolationLevel session_isolation) {
     context->txn_ = txn_manager->get_transaction(*txn_id);
     if(context->txn_ == nullptr || context->txn_->get_state() == TransactionState::COMMITTED ||
         context->txn_->get_state() == TransactionState::ABORTED) {
-        context->txn_ = txn_manager->begin(nullptr, context->log_mgr_);
+        context->txn_ =
+            txn_manager->begin(nullptr, context->log_mgr_, session_isolation);
         *txn_id = context->txn_->get_transaction_id();
         context->txn_->set_txn_mode(false);
     }
@@ -84,6 +86,7 @@ void *client_handler(void *sock_fd) {
     int offset = 0;
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
+    IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
     if (kVerboseServerLog) {
@@ -136,7 +139,9 @@ void *client_handler(void *sock_fd) {
         offset = 0;
 
         // 开启事务，初始化系统所需的上下文信息（包括事务对象指针、锁管理器指针、日志管理器指针、存放结果的buffer、记录结果长度的变量）
-        auto context_holder = std::make_unique<Context>(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
+        auto context_holder = std::make_unique<Context>(
+            lock_manager.get(), log_manager.get(), nullptr, data_send, &offset,
+            txn_manager.get(), &session_isolation);
         Context *context = context_holder.get();
         bool statement_entered = false;
 
@@ -152,7 +157,7 @@ void *client_handler(void *sock_fd) {
                     if (!is_checkpoint) {
                         txn_manager->enter_statement(txn_id);
                         statement_entered = true;
-                        SetTransaction(&txn_id, context);
+                        SetTransaction(&txn_id, context, session_isolation);
                     }
 
                     // analyze and rewrite

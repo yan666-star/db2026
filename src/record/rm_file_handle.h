@@ -12,6 +12,8 @@ See the Mulan PSL v2 for more details. */
 
 #include <assert.h>
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -58,13 +60,18 @@ class RmFileHandle {
     DiskManager *disk_manager_;
     BufferPoolManager *buffer_pool_manager_;
     int fd_;        // 打开文件后产生的文件句柄
+    inline static std::atomic<uint64_t> next_mvcc_file_id_{0};
+    uint64_t mvcc_file_id_;
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
     std::mutex insert_latch_;
     std::unordered_map<int, IntEqualityCache> int_equality_caches_;
 
    public:
     RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
-        : disk_manager_(disk_manager), buffer_pool_manager_(buffer_pool_manager), fd_(fd) {
+        : disk_manager_(disk_manager),
+          buffer_pool_manager_(buffer_pool_manager),
+          fd_(fd),
+          mvcc_file_id_(next_mvcc_file_id_.fetch_add(1)) {
         // 注意：这里从磁盘中读出文件描述符为fd的文件的file_hdr，读到内存中
         // 这里实际就是初始化file_hdr，只不过是从磁盘中读出进行初始化
         // init file_hdr_
@@ -75,6 +82,7 @@ class RmFileHandle {
 
     RmFileHdr get_file_hdr() { return file_hdr_; }
     int GetFd() { return fd_; }
+    uint64_t GetMvccFileId() const { return mvcc_file_id_; }
 
     /* 判断指定位置上是否已经存在一条记录，通过Bitmap来判断 */
     bool is_record(const Rid &rid) const {
@@ -89,6 +97,8 @@ class RmFileHandle {
     std::vector<std::unique_ptr<RmRecord>> batch_get_records(int page_no, std::vector<Rid> &rids, Context *context) const;
 
     std::vector<Rid> lookup_int_equal_records(int offset, int value);
+
+    std::vector<Rid> all_record_slots();
 
     Rid insert_record(char *buf, Context *context);
 

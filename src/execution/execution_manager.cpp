@@ -198,6 +198,14 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
             break;
         }
         }
+    } else if (auto x = std::dynamic_pointer_cast<SetTransactionIsolationPlan>(plan)) {
+        if (context->session_isolation_ == nullptr) {
+            throw InternalError("Missing session isolation state");
+        }
+        *context->session_isolation_ =
+            x->isolation_level_ == ast::SnapshotIsolation
+                ? IsolationLevel::SNAPSHOT_ISOLATION
+                : IsolationLevel::SERIALIZABLE;
     }
 }
 

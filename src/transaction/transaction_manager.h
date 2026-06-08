@@ -12,10 +12,12 @@ See the Mulan PSL v2 for more details. */
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
 #include <functional>
+#include <memory>
 #include <shared_mutex>
 #include <vector>
 
@@ -60,7 +62,8 @@ public:
     
     ~TransactionManager() = default;
 
-    Transaction* begin(Transaction* txn, LogManager* log_manager);
+    Transaction* begin(Transaction* txn, LogManager* log_manager,
+                       IsolationLevel isolation_level = IsolationLevel::READ_COMMITTED);
 
     void commit(Transaction* txn, LogManager* log_manager);
 
@@ -88,6 +91,31 @@ public:
     void set_concurrency_mode(ConcurrencyMode concurrency_mode) { concurrency_mode_ = concurrency_mode; }
 
     LockManager* get_lock_manager() { return lock_manager_; }
+
+    bool uses_mvcc(const Transaction *txn) const {
+        return txn != nullptr && txn->uses_mvcc();
+    }
+
+    std::unique_ptr<RmRecord> get_visible_record(
+        Transaction *txn, uint64_t file_id, const Rid &rid,
+        const RmRecord *physical_record);
+
+    void register_table_read(Transaction *txn, uint64_t file_id,
+                             const std::vector<Condition> &conditions,
+                             const std::vector<ColMeta> &columns);
+
+    void register_record_read(Transaction *txn, uint64_t file_id,
+                              const Rid &rid);
+
+    void prepare_insert(Transaction *txn, uint64_t file_id, const Rid &rid,
+                        const RmRecord &new_record);
+
+    void prepare_update(Transaction *txn, uint64_t file_id, const Rid &rid,
+                        const RmRecord &old_record,
+                        const RmRecord &new_record);
+
+    void prepare_delete(Transaction *txn, uint64_t file_id, const Rid &rid,
+                        const RmRecord &old_record);
 
     /**
      * @description: 获取事务ID为txn_id的事务对象
@@ -165,6 +193,69 @@ public:
 
 private:
     void finish_transaction(Transaction *txn);
+    void commit_mvcc(Transaction *txn);
+    void abort_mvcc(Transaction *txn);
+
+    struct RecordKey {
+        uint64_t file_id;
+        Rid rid;
+
+        bool operator==(const RecordKey &other) const {
+            return file_id == other.file_id && rid == other.rid;
+        }
+    };
+
+    struct RecordKeyHash {
+        size_t operator()(const RecordKey &key) const {
+            size_t seed = std::hash<uint64_t>()(key.file_id);
+            seed ^= std::hash<int>()(key.rid.page_no) + 0x9e3779b9 +
+                    (seed << 6) + (seed >> 2);
+            seed ^= std::hash<int>()(key.rid.slot_no) + 0x9e3779b9 +
+                    (seed << 6) + (seed >> 2);
+            return seed;
+        }
+    };
+
+    struct MvccVersion {
+        txn_id_t owner = INVALID_TXN_ID;
+        timestamp_t commit_ts = INVALID_TS;
+        bool before_deleted = true;
+        std::vector<char> before;
+        bool deleted = false;
+        std::vector<char> data;
+    };
+
+    struct ReadPredicate {
+        uint64_t file_id;
+        std::vector<Condition> conditions;
+        std::vector<ColMeta> columns;
+    };
+
+    struct MvccTxnState {
+        IsolationLevel isolation_level = IsolationLevel::READ_COMMITTED;
+        timestamp_t start_ts = 0;
+        timestamp_t commit_ts = INVALID_TS;
+        bool aborted = false;
+        std::vector<ReadPredicate> predicates;
+        std::unordered_set<RecordKey, RecordKeyHash> read_records;
+        std::unordered_set<RecordKey, RecordKeyHash> write_records;
+        std::unordered_set<txn_id_t> incoming_rw;
+        std::unordered_set<txn_id_t> outgoing_rw;
+    };
+
+    void prepare_write(Transaction *txn, uint64_t file_id, const Rid &rid,
+                       const RmRecord *old_record,
+                       const RmRecord *new_record, bool deleted);
+    bool add_rw_dependency(txn_id_t reader, txn_id_t writer);
+    bool dependency_forms_dangerous_structure(txn_id_t reader,
+                                              txn_id_t writer) const;
+    bool predicate_matches(const ReadPredicate &predicate,
+                           const std::vector<char> &record) const;
+    bool predicate_affected(const ReadPredicate &predicate,
+                            const MvccVersion &version) const;
+    bool transactions_overlap(const MvccTxnState &left,
+                              const MvccTxnState &right) const;
+    void remove_dependencies(txn_id_t txn_id);
 
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL
     std::atomic<txn_id_t> next_txn_id_{0};  // 用于分发事务ID
@@ -182,4 +273,8 @@ private:
 
     std::atomic<timestamp_t> last_commit_ts_{0};    // 最后提交的时间戳,仅用于MVCC
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC
+
+    mutable std::mutex mvcc_latch_;
+    std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
+    std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;
 };

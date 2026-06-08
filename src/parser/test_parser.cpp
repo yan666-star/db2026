@@ -17,6 +17,8 @@ int main() {
     std::vector<std::string> sqls = {
         "show tables;",
         "create static_checkpoint;",
+        "set transaction isolation level snapshot isolation;",
+        "set transaction isolation level serializable;",
         "desc tb;",
         "create table tb (a int, b float, c char(4));",
         "drop table tb;",

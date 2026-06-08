@@ -37,6 +37,11 @@ enum SetKnobType {
     EnableNestLoop, EnableSortMerge
 };
 
+enum TransactionIsolationLevel {
+    SnapshotIsolation,
+    Serializable
+};
+
 // Base class for tree nodes
 struct TreeNode {
     virtual ~TreeNode() = default;  // enable polymorphism
@@ -326,6 +331,13 @@ struct SetStmt : public TreeNode {
 
     SetStmt(SetKnobType &type, bool bool_value) : 
         set_knob_type_(type), bool_val_(bool_value) { }
+};
+
+struct SetTransactionIsolation : public TreeNode {
+    TransactionIsolationLevel isolation_level_;
+
+    explicit SetTransactionIsolation(TransactionIsolationLevel isolation_level)
+        : isolation_level_(isolation_level) {}
 };
 
 // Semantic value

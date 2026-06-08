@@ -45,7 +45,17 @@ class DeleteExecutor : public AbstractExecutor {
 
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
+            if (rec == nullptr) {
+                continue;
+            }
             RmRecord old_rec(*rec);
+            bool uses_mvcc =
+                context_->txn_mgr_ != nullptr &&
+                context_->txn_mgr_->uses_mvcc(context_->txn_);
+            if (uses_mvcc) {
+                context_->txn_mgr_->prepare_delete(
+                    context_->txn_, fh_->GetMvccFileId(), rid, old_rec);
+            }
             if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
                 DeleteLogRecord log_record(
                     context_->txn_->get_transaction_id(), old_rec, rid, tab_name_);

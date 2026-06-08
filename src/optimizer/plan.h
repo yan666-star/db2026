@@ -47,7 +47,8 @@ typedef enum PlanTag{
     T_Aggregate,
     T_Projection,
     T_Filter,//添加filter plan显示表示
-    T_Union
+    T_Union,
+    T_SetTransactionIsolation
 } PlanTag;
 
 // 查询执行计划
@@ -289,6 +290,16 @@ class SetKnobPlan : public Plan
         }
     ast::SetKnobType set_knob_type_;
     bool bool_value_;
+};
+
+class SetTransactionIsolationPlan : public Plan {
+   public:
+    explicit SetTransactionIsolationPlan(ast::TransactionIsolationLevel isolation_level)
+        : isolation_level_(isolation_level) {
+        Plan::tag = T_SetTransactionIsolation;
+    }
+
+    ast::TransactionIsolationLevel isolation_level_;
 };
 
 class plannerInfo{

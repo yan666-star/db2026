@@ -35,6 +35,7 @@
 alpha [a-zA-Z]
 digit [0-9]
 white_space [ \t]+
+sql_space [ \t\r\n]+
 new_line "\r"|"\n"|"\r\n"
 sign "+"|"-"
 identifier {alpha}(_|{alpha}|{digit})*
@@ -75,6 +76,8 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "FROM" { return FROM; }
 "WHERE" { return WHERE; }
 "UPDATE" { return UPDATE; }
+"SET"{sql_space}"TRANSACTION"{sql_space}"ISOLATION"{sql_space}"LEVEL"{sql_space}"SNAPSHOT"{sql_space}"ISOLATION" { return SET_TXN_SNAPSHOT; }
+"SET"{sql_space}"TRANSACTION"{sql_space}"ISOLATION"{sql_space}"LEVEL"{sql_space}"SERIALIZABLE" { return SET_TXN_SERIALIZABLE; }
 "SET" { return SET; }
 "SELECT" { return SELECT; }
 "INT" { return INT; }

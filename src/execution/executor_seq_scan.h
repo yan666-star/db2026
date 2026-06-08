@@ -35,6 +35,9 @@ class SeqScanExecutor : public AbstractExecutor {
     size_t equality_pos_ = 0;
     bool using_equality_cache_ = false;
     bool enable_equality_cache_ = false;
+    bool track_serializable_reads_ = true;
+    std::vector<Rid> mvcc_rids_;
+    size_t mvcc_pos_ = 0;
     std::unique_ptr<RmRecord> current_rec_;
     bool is_end_ = true;
 
@@ -66,6 +69,10 @@ class SeqScanExecutor : public AbstractExecutor {
     while (!scan_->is_end()) {
         rid_ = scan_->rid();
         auto rec = fh_->get_record(rid_, context_);
+        if (rec == nullptr) {
+            scan_->next();
+            continue;
+        }
 
         if (scan_plan_ != nullptr) {
             scan_plan_->rows_++;//每读取一条原始记录，Scan rows++ 每输出一条满足条件记录，Filter rows++
@@ -74,6 +81,11 @@ class SeqScanExecutor : public AbstractExecutor {
         if (fed_conds_.empty() || eval_conditions(*rec, fed_conds_, cols_)) {
             if (filter_plan_ != nullptr) {
                 filter_plan_->rows_++;
+            }
+            if (track_serializable_reads_ &&
+                context_->txn_mgr_ != nullptr) {
+                context_->txn_mgr_->register_record_read(
+                    context_->txn_, fh_->GetMvccFileId(), rid_);
             }
             current_rec_ = std::move(rec);
             is_end_ = false;
@@ -86,6 +98,35 @@ class SeqScanExecutor : public AbstractExecutor {
     return false;
     }
 
+    bool fetch_mvcc_current() {
+        while (mvcc_pos_ < mvcc_rids_.size()) {
+            rid_ = mvcc_rids_[mvcc_pos_];
+            auto rec = fh_->get_record(rid_, context_);
+            if (scan_plan_ != nullptr) {
+                scan_plan_->rows_++;
+            }
+            if (rec != nullptr &&
+                (fed_conds_.empty() ||
+                 eval_conditions(*rec, fed_conds_, cols_))) {
+                if (filter_plan_ != nullptr) {
+                    filter_plan_->rows_++;
+                }
+                if (track_serializable_reads_ &&
+                    context_->txn_mgr_ != nullptr) {
+                    context_->txn_mgr_->register_record_read(
+                        context_->txn_, fh_->GetMvccFileId(), rid_);
+                }
+                current_rec_ = std::move(rec);
+                is_end_ = false;
+                return true;
+            }
+            mvcc_pos_++;
+        }
+        current_rec_.reset();
+        is_end_ = true;
+        return false;
+    }
+
    public:
     SeqScanExecutor(SmManager *sm_manager,
                 std::string tab_name,
@@ -93,7 +134,8 @@ class SeqScanExecutor : public AbstractExecutor {
                 Context *context,
                 ScanPlan *scan_plan = nullptr,
                 FilterPlan *filter_plan = nullptr,
-                bool enable_equality_cache = false) {
+                bool enable_equality_cache = false,
+                bool track_serializable_reads = true) {
         sm_manager_ = sm_manager;
         tab_name_ = std::move(tab_name);
         conds_ = std::move(conds);
@@ -107,6 +149,11 @@ class SeqScanExecutor : public AbstractExecutor {
         scan_plan_ = scan_plan;
         enable_equality_cache_ = enable_equality_cache;
         filter_plan_ = filter_plan; //添加scan 和 filter plan显示表示
+        track_serializable_reads_ = track_serializable_reads;
+        if (track_serializable_reads_ && context_->txn_mgr_ != nullptr) {
+            context_->txn_mgr_->register_table_read(
+                context_->txn_, fh_->GetMvccFileId(), fed_conds_, cols_);
+        }
     }
 
     size_t tupleLen() const override { return len_; }
@@ -116,11 +163,20 @@ class SeqScanExecutor : public AbstractExecutor {
     bool is_end() const override { return is_end_; }
 
     void beginTuple() override {
+        if (context_->txn_mgr_ != nullptr &&
+            context_->txn_mgr_->uses_mvcc(context_->txn_)) {
+            mvcc_rids_ = fh_->all_record_slots();
+            mvcc_pos_ = 0;
+            fetch_mvcc_current();
+            return;
+        }
         equality_rids_.clear();
         equality_pos_ = 0;
         using_equality_cache_ = false;
         for (const auto &cond : fed_conds_) {
-            if (!enable_equality_cache_) {
+            if (!enable_equality_cache_ ||
+                (context_->txn_mgr_ != nullptr &&
+                 context_->txn_mgr_->uses_mvcc(context_->txn_))) {
                 break;
             }
             if (!cond.is_rhs_val || cond.op != OP_EQ) {
@@ -142,6 +198,12 @@ class SeqScanExecutor : public AbstractExecutor {
 
     void nextTuple() override {
         if (is_end_) {
+            return;
+        }
+        if (context_->txn_mgr_ != nullptr &&
+            context_->txn_mgr_->uses_mvcc(context_->txn_)) {
+            mvcc_pos_++;
+            fetch_mvcc_current();
             return;
         }
         if (using_equality_cache_) {

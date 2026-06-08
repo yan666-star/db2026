@@ -56,7 +56,7 @@ struct UndoLog {
 
 class Transaction {
    public:
-    explicit Transaction(txn_id_t txn_id, IsolationLevel isolation_level = IsolationLevel::SERIALIZABLE)
+    explicit Transaction(txn_id_t txn_id, IsolationLevel isolation_level = IsolationLevel::READ_COMMITTED)
         : state_(TransactionState::DEFAULT), isolation_level_(isolation_level), txn_id_(txn_id) {
         write_set_ = std::make_shared<std::deque<WriteRecord *>>();
         lock_set_ = std::make_shared<std::unordered_set<LockDataId>>();
@@ -79,6 +79,10 @@ class Transaction {
     inline timestamp_t get_start_ts() { return start_ts_; }
 
     inline IsolationLevel get_isolation_level() { return isolation_level_; }
+    inline bool uses_mvcc() const {
+        return isolation_level_ == IsolationLevel::SNAPSHOT_ISOLATION ||
+               isolation_level_ == IsolationLevel::SERIALIZABLE;
+    }
 
     inline TransactionState get_state() { return state_; }
     inline void set_state(TransactionState state) { state_ = state; }
@@ -99,6 +103,8 @@ class Transaction {
 
     inline timestamp_t get_read_ts() const { return read_ts_; }
     inline timestamp_t get_commit_ts() const { return commit_ts_; }
+    inline void set_read_ts(timestamp_t read_ts) { read_ts_ = read_ts; }
+    inline void set_commit_ts(timestamp_t commit_ts) { commit_ts_ = commit_ts; }
 
     /** 修改现有的撤销日志 */
     inline auto ModifyUndoLog(int log_idx, UndoLog new_log) {
@@ -127,7 +133,7 @@ class Transaction {
    private:
     bool txn_mode_;                   // 用于标识当前事务为显式事务还是单条SQL语句的隐式事务
     TransactionState state_;          // 事务状态
-    IsolationLevel isolation_level_;  // 事务的隔离级别，默认隔离级别为可串行化
+    IsolationLevel isolation_level_;  // 事务的隔离级别
     std::thread::id thread_id_;       // 当前事务对应的线程id
     lsn_t prev_lsn_;                  // 当前事务执行的最后一条操作对应的lsn，用于系统故障恢复
     txn_id_t txn_id_;                 // 事务的ID，唯一标识符

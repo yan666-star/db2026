@@ -100,7 +100,9 @@ class Portal
         if (auto x = std::dynamic_pointer_cast<OtherPlan>(plan)) {
             return std::make_shared<PortalStmt>(PORTAL_CMD_UTILITY, std::vector<TabCol>(), std::unique_ptr<AbstractExecutor>(),plan);
         } else if(auto x = std::dynamic_pointer_cast<SetKnobPlan>(plan)) {
-            return std::make_shared<PortalStmt>(PORTAL_CMD_UTILITY, std::vector<TabCol>(), std::unique_ptr<AbstractExecutor>(), plan); 
+            return std::make_shared<PortalStmt>(PORTAL_CMD_UTILITY, std::vector<TabCol>(), std::unique_ptr<AbstractExecutor>(), plan);
+        } else if (auto x = std::dynamic_pointer_cast<SetTransactionIsolationPlan>(plan)) {
+            return std::make_shared<PortalStmt>(PORTAL_CMD_UTILITY, std::vector<TabCol>(), std::unique_ptr<AbstractExecutor>(), plan);
         } else if (auto x = std::dynamic_pointer_cast<DDLPlan>(plan)) {
             return std::make_shared<PortalStmt>(PORTAL_MULTI_QUERY, std::vector<TabCol>(), std::unique_ptr<AbstractExecutor>(),plan);
         } else if (auto x = std::dynamic_pointer_cast<DMLPlan>(plan)) {
@@ -130,7 +132,8 @@ class Portal
                 case T_Update:
                 {
                     std::unique_ptr<AbstractExecutor> scan =
-                        convert_plan_executor(x->subplan_, context, nullptr, true);
+                        convert_plan_executor(
+                            x->subplan_, context, nullptr, true, false);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());
@@ -142,7 +145,8 @@ class Portal
                 case T_Delete:
                 {
                     std::unique_ptr<AbstractExecutor> scan =
-                        convert_plan_executor(x->subplan_, context, nullptr, true);
+                        convert_plan_executor(
+                            x->subplan_, context, nullptr, true, false);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());
@@ -217,11 +221,14 @@ class Portal
     std::unique_ptr<AbstractExecutor> convert_plan_executor(std::shared_ptr<Plan> plan,
                                                         Context *context,
                                                         FilterPlan *filter_plan = nullptr,
-                                                        bool enable_equality_cache = false)
+                                                        bool enable_equality_cache = false,
+                                                        bool track_serializable_reads = true)
     {
         if(auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)){
             return std::make_unique<ProjectionExecutor>(
-                convert_plan_executor(x->subplan_, context, filter_plan),
+                convert_plan_executor(
+                    x->subplan_, context, filter_plan, false,
+                    track_serializable_reads),
                 x->sel_cols_,
                 x.get()
             );
@@ -229,12 +236,17 @@ class Portal
         //此时天剑filter在project和scan之间，所以如果当前节点是filter，就继续往它的子节点找，直到找到scan节点
         else if(auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
             return std::make_unique<FilterExecutor>(
-                convert_plan_executor(x->subplan_, context, nullptr),
+                convert_plan_executor(
+                    x->subplan_, context, nullptr, false,
+                    track_serializable_reads),
                 x->conds_,
                 x.get());
         }//FilterPlan 不创建 FilterExecutor。把自己 x.get() 传给下面的 ScanExecutor。这样 ScanExecutor 每通过一条过滤条件，就能执行 filter_plan_->rows_++。
         else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
-            if(x->tag == T_SeqScan) {
+            bool force_seq_scan =
+                context->txn_mgr_ != nullptr &&
+                context->txn_mgr_->uses_mvcc(context->txn_);
+            if(x->tag == T_SeqScan || force_seq_scan) {
                 return std::make_unique<SeqScanExecutor>(
                     sm_manager_,
                     x->tab_name_,
@@ -242,7 +254,8 @@ class Portal
                     context,
                     x.get(),
                     filter_plan,
-                    enable_equality_cache
+                    enable_equality_cache,
+                    track_serializable_reads
                 );
             }
             else {
@@ -257,8 +270,14 @@ class Portal
             }   //SeqScanExecutor 里面可以做到：scan_plan_->rows_++;filter_plan_->rows_++;
         }
         else if(auto x = std::dynamic_pointer_cast<JoinPlan>(plan)) {
-            std::unique_ptr<AbstractExecutor> left = convert_plan_executor(x->left_, context, nullptr);
-            std::unique_ptr<AbstractExecutor> right = convert_plan_executor(x->right_, context, nullptr);
+            std::unique_ptr<AbstractExecutor> left =
+                convert_plan_executor(
+                    x->left_, context, nullptr, false,
+                    track_serializable_reads);
+            std::unique_ptr<AbstractExecutor> right =
+                convert_plan_executor(
+                    x->right_, context, nullptr, false,
+                    track_serializable_reads);
             std::unique_ptr<AbstractExecutor> join = std::make_unique<NestedLoopJoinExecutor>(
                                 std::move(left), 
                                 std::move(right),
@@ -267,18 +286,24 @@ class Portal
             return join;
         } else if(auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
             return std::make_unique<SortExecutor>(
-                convert_plan_executor(x->subplan_, context, filter_plan),
+                convert_plan_executor(
+                    x->subplan_, context, filter_plan, false,
+                    track_serializable_reads),
                 x.get());
         } else if (auto x = std::dynamic_pointer_cast<UnionPlan>(plan)) {
             std::vector<std::unique_ptr<AbstractExecutor>> branch_execs;
             branch_execs.reserve(x->branches_.size());
             for (auto &branch : x->branches_) {
-                branch_execs.push_back(convert_plan_executor(branch, context, filter_plan));
+                branch_execs.push_back(convert_plan_executor(
+                    branch, context, filter_plan, false,
+                    track_serializable_reads));
             }
             return std::make_unique<UnionExecutor>(std::move(branch_execs), x.get());
         } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
             return std::make_unique<AggregationExecutor>(
-                convert_plan_executor(x->subplan_, context, filter_plan),
+                convert_plan_executor(
+                    x->subplan_, context, filter_plan, false,
+                    track_serializable_reads),
                 x.get()
             );
         }

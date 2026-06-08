@@ -25,6 +25,7 @@ using namespace ast;
 WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY ENABLE_NESTLOOP ENABLE_SORTMERGE
 EXPLAIN ANALYZE ON AS
 GROUP HAVING LIMIT COUNT MAX MIN SUM AVG UNION
+SET_TXN_SNAPSHOT SET_TXN_SERIALIZABLE
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
@@ -136,6 +137,14 @@ setStmt:
         SET set_knob_type '=' VALUE_BOOL
     {
         $$ = std::make_shared<SetStmt>($2, $4);
+    }
+    |   SET_TXN_SNAPSHOT
+    {
+        $$ = std::make_shared<SetTransactionIsolation>(SnapshotIsolation);
+    }
+    |   SET_TXN_SERIALIZABLE
+    {
+        $$ = std::make_shared<SetTransactionIsolation>(Serializable);
     }
     ;
 

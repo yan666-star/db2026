@@ -47,6 +47,9 @@ class UpdateExecutor : public AbstractExecutor {
 
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
+            if (rec == nullptr) {
+                continue;
+            }
             RmRecord old_rec(*rec);
             auto rec_new = std::make_unique<RmRecord>(*rec);
             for (auto &set_clause : set_clauses_) {
@@ -75,6 +78,12 @@ class UpdateExecutor : public AbstractExecutor {
                 }
             }
 
+            if (context_->txn_mgr_ != nullptr &&
+                context_->txn_mgr_->uses_mvcc(context_->txn_)) {
+                context_->txn_mgr_->prepare_update(
+                    context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
+                    *rec_new);
+            }
             if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
                 UpdateLogRecord log_record(
                     context_->txn_->get_transaction_id(), old_rec, *rec_new, rid, tab_name_);
