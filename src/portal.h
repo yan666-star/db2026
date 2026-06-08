@@ -133,7 +133,7 @@ class Portal
                 {
                     std::unique_ptr<AbstractExecutor> scan =
                         convert_plan_executor(
-                            x->subplan_, context, nullptr, true, true);
+                            x->subplan_, context, nullptr, true, false);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());
@@ -146,7 +146,7 @@ class Portal
                 {
                     std::unique_ptr<AbstractExecutor> scan =
                         convert_plan_executor(
-                            x->subplan_, context, nullptr, true, true);
+                            x->subplan_, context, nullptr, true, false);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());

@@ -72,29 +72,23 @@ class InsertExecutor : public AbstractExecutor {
             delete[] key;
         }
 
-        bool uses_mvcc =
-            context_->txn_mgr_ != nullptr &&
-            context_->txn_mgr_->uses_mvcc(context_->txn_);
-
         rid_ = fh_->insert_record(rec.data, context_, tab_name_);
         if (context_->txn_ != nullptr) {
             context_->txn_->append_write_record(
                 new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
         }
 
-        if (!uses_mvcc) {
-            for (auto &index : tab_.indexes) {
-                auto ih =
-                    sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-                char *key = new char[index.col_tot_len];
-                int offset = 0;
-                for (int j = 0; j < index.col_num; ++j) {
-                    memcpy(key + offset, rec.data + index.cols[j].offset, index.cols[j].len);
-                    offset += index.cols[j].len;
-                }
-                ih->insert_entry(key, rid_, context_->txn_);
-                delete[] key;
+        for (auto &index : tab_.indexes) {
+            auto ih =
+                sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            char *key = new char[index.col_tot_len];
+            int offset = 0;
+            for (int j = 0; j < index.col_num; ++j) {
+                memcpy(key + offset, rec.data + index.cols[j].offset, index.cols[j].len);
+                offset += index.cols[j].len;
             }
+            ih->insert_entry(key, rid_, context_->txn_);
+            delete[] key;
         }
         return nullptr;
     }

@@ -156,7 +156,7 @@ Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std:
         Rid rid{file_hdr_.num_pages, 0};
         RmRecord record(file_hdr_.record_size, buf);
         context->txn_mgr_->prepare_insert(
-            context->txn_, mvcc_file_id_, rid, record, *table_name);
+            context->txn_, mvcc_file_id_, rid, record);
         mvcc_prepared = true;
     }
 
@@ -169,7 +169,7 @@ Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std:
         RmRecord record(file_hdr_.record_size, buf);
         try {
             context->txn_mgr_->prepare_insert(
-                context->txn_, mvcc_file_id_, rid, record, *table_name);
+                context->txn_, mvcc_file_id_, rid, record);
         } catch (...) {
             buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, true);
             throw;

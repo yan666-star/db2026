@@ -165,8 +165,7 @@ class SeqScanExecutor : public AbstractExecutor {
     void beginTuple() override {
         if (context_->txn_mgr_ != nullptr &&
             context_->txn_mgr_->uses_mvcc(context_->txn_)) {
-            mvcc_rids_ = context_->txn_mgr_->get_mvcc_record_slots(
-                fh_->GetMvccFileId(), fh_->all_record_slots());
+            mvcc_rids_ = fh_->all_record_slots();
             mvcc_pos_ = 0;
             fetch_mvcc_current();
             return;
