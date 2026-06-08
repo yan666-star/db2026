@@ -21,3 +21,4 @@ statement_recovery_db/
 statement_tpcc_db/
 public_single_db/
 .reference_db2026*/
+q9_runtime_db/
