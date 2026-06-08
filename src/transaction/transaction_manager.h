@@ -117,6 +117,9 @@ public:
     void prepare_delete(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &old_record);
 
+    void check_write_conflict(Transaction *txn, uint64_t file_id,
+                              const Rid &rid);
+
     /**
      * @description: 获取事务ID为txn_id的事务对象
      * @return {Transaction*} 事务对象的指针

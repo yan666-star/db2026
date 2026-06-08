@@ -344,6 +344,36 @@ void TransactionManager::prepare_delete(
     prepare_write(txn, file_id, rid, &old_record, nullptr, true);
 }
 
+void TransactionManager::check_write_conflict(
+    Transaction *txn, uint64_t file_id, const Rid &rid) {
+    if (!uses_mvcc(txn)) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    RecordKey key{file_id, rid};
+    auto history_it = record_versions_.find(key);
+    if (history_it == record_versions_.end()) {
+        return;
+    }
+
+    timestamp_t latest_commit = 0;
+    for (const auto &version : history_it->second) {
+        if (version.commit_ts == INVALID_TS) {
+            if (version.owner != txn->get_transaction_id()) {
+                throw TransactionAbortException(
+                    txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+            }
+        } else {
+            latest_commit = std::max(latest_commit, version.commit_ts);
+        }
+    }
+    if (latest_commit > txn->get_start_ts()) {
+        throw TransactionAbortException(
+            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+    }
+}
+
 void TransactionManager::prepare_write(
     Transaction *txn, uint64_t file_id, const Rid &rid,
     const RmRecord *old_record, const RmRecord *new_record, bool deleted) {

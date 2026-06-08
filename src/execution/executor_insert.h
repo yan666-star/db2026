@@ -54,6 +54,10 @@ class InsertExecutor : public AbstractExecutor {
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
 
+        bool uses_mvcc =
+            context_->txn_mgr_ != nullptr &&
+            context_->txn_mgr_->uses_mvcc(context_->txn_);
+
         // 先检查所有唯一索引，再写表和索引（与 RMDB2025 一致）
         for (auto &index : tab_.indexes) {
             auto ih =
@@ -66,8 +70,39 @@ class InsertExecutor : public AbstractExecutor {
             }
             std::vector<Rid> result;
             if (ih->get_value(key, &result, context_->txn_)) {
+                if (uses_mvcc) {
+                    for (const auto &dup_rid : result) {
+                        context_->txn_mgr_->check_write_conflict(
+                            context_->txn_, fh_->GetMvccFileId(), dup_rid);
+                    }
+                }
                 delete[] key;
                 throw RMDBError("failure");
+            }
+            if (uses_mvcc) {
+                for (const auto &rid : fh_->all_record_slots()) {
+                    auto existing = fh_->get_record(rid, context_);
+                    if (existing == nullptr) {
+                        continue;
+                    }
+                    offset = 0;
+                    bool same_key = true;
+                    for (int j = 0; j < index.col_num; ++j) {
+                        if (memcmp(key + offset,
+                                   existing->data + index.cols[j].offset,
+                                   index.cols[j].len) != 0) {
+                            same_key = false;
+                            break;
+                        }
+                        offset += index.cols[j].len;
+                    }
+                    if (same_key) {
+                        context_->txn_mgr_->check_write_conflict(
+                            context_->txn_, fh_->GetMvccFileId(), rid);
+                        delete[] key;
+                        throw RMDBError("failure");
+                    }
+                }
             }
             delete[] key;
         }
