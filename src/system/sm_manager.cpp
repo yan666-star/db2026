@@ -553,7 +553,7 @@ void SmManager::rollback_insert(const std::string& table_name, Rid& rid, Context
     auto file_handle = fhs_.at(table_name).get();
     std::unique_ptr<RmRecord> inserted_record;
     try {
-        inserted_record = file_handle->get_record(rid, context);
+        inserted_record = file_handle->get_record(rid, nullptr);
     } catch (const RecordNotFoundError&) {
         return;
     }
@@ -596,7 +596,7 @@ void SmManager::rollback_update(const std::string& table_name, Rid& rid, RmRecor
     auto file_handle = fhs_.at(table_name).get();
     std::unique_ptr<RmRecord> new_record;
     try {
-        new_record = file_handle->get_record(rid, context);
+        new_record = file_handle->get_record(rid, nullptr);
     } catch (const RecordNotFoundError&) {
         return;
     }
