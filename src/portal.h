@@ -251,7 +251,8 @@ class Portal
                     x->tab_name_,
                     x->conds_,
                     x->index_col_names_,
-                    context
+                    context,
+                    x.get()
                 );
             }   //SeqScanExecutor 里面可以做到：scan_plan_->rows_++;filter_plan_->rows_++;
         }

@@ -46,6 +46,10 @@ class AbstractExecutor {
 
     virtual ColMeta get_col_offset(const TabCol &target) { return ColMeta();};
 
+    virtual bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) {
+        return false;
+    }
+
     std::vector<ColMeta>::const_iterator get_col(const std::vector<ColMeta> &rec_cols, const TabCol &target) {
         auto pos = std::find_if(rec_cols.begin(), rec_cols.end(), [&](const ColMeta &col) {
             return col.tab_name == target.tab_name && col.name == target.col_name;

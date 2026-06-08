@@ -170,6 +170,50 @@ std::string get_plan_table_name(std::shared_ptr<Plan> plan) {
     return "";
 }
 
+static ScanPlan *get_base_scan(const std::shared_ptr<Plan> &plan) {
+    if (auto scan = std::dynamic_pointer_cast<ScanPlan>(plan)) {
+        return scan.get();
+    }
+    if (auto filter = std::dynamic_pointer_cast<FilterPlan>(plan)) {
+        return get_base_scan(filter->subplan_);
+    }
+    if (auto project = std::dynamic_pointer_cast<ProjectionPlan>(plan)) {
+        return get_base_scan(project->subplan_);
+    }
+    return nullptr;
+}
+
+static bool select_inner_join_index(SmManager *sm_manager,
+                                    const std::string &inner_table,
+                                    const std::vector<Condition> &join_conds,
+                                    const std::shared_ptr<Plan> &inner_plan) {
+    ScanPlan *scan = get_base_scan(inner_plan);
+    if (scan == nullptr) {
+        return false;
+    }
+    TabMeta &tab = sm_manager->db_.get_table(inner_table);
+    for (const auto &cond : join_conds) {
+        if (cond.is_rhs_val || cond.op != OP_EQ) {
+            continue;
+        }
+        std::string inner_col;
+        if (cond.lhs_col.tab_name == inner_table) {
+            inner_col = cond.lhs_col.col_name;
+        } else if (cond.rhs_col.tab_name == inner_table) {
+            inner_col = cond.rhs_col.col_name;
+        } else {
+            continue;
+        }
+        std::vector<std::string> index_cols{inner_col};
+        if (tab.is_index(index_cols)) {
+            scan->tag = T_IndexScan;
+            scan->index_col_names_ = std::move(index_cols);
+            return true;
+        }
+    }
+    return false;
+}
+
 std::shared_ptr<Plan> pop_scan(int *scantbl,
                                std::string table,
                                std::vector<std::string> &joined_tables,
@@ -379,6 +423,8 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query)
                 ++it;
             }
         }
+
+        select_inner_join_index(sm_manager_, tables[i], join_conds, table_scan_executors[i]);
 
         table_join_executors = std::make_shared<JoinPlan>(
             T_NestLoop,

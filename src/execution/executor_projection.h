@@ -119,4 +119,7 @@ class ProjectionExecutor : public AbstractExecutor {
 
     Rid &rid() override { return _abstract_rid; }
     ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
+    bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) override {
+        return prev_->set_index_lookup(target, data, type, len);
+    }
 };

@@ -514,10 +514,10 @@ tableList:
         $1.tables.push_back($3);
         $$ = $1;
     }
-    |   tableList JOIN tableRef ON condition
+    |   tableList JOIN tableRef ON whereClause
     {
         $1.tables.push_back($3);
-        $1.conds.push_back($5);
+        $1.conds.insert($1.conds.end(), $5.begin(), $5.end());
         $$ = $1;
     }
     ;

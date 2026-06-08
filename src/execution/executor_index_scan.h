@@ -45,12 +45,17 @@ class IndexScanExecutor : public AbstractExecutor {
     std::vector<Rid> batch_rids_;
     size_t batch_index_ = 0;
     std::unordered_map<int, std::vector<Rid>> batch_rids_map_;
+    ScanPlan *scan_plan_ = nullptr;
+    std::vector<char> lookup_key_;
+    bool has_lookup_key_ = false;
 
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
-                      std::vector<std::string> index_col_names, Context *context) {
+                      std::vector<std::string> index_col_names, Context *context,
+                      ScanPlan *scan_plan = nullptr) {
         sm_manager_ = sm_manager;
         context_ = context;
+        scan_plan_ = scan_plan;
         tab_name_ = std::move(tab_name);
         tab_ = sm_manager_->db_.get_table(tab_name_);
         conds_ = std::move(conds);
@@ -97,8 +102,13 @@ class IndexScanExecutor : public AbstractExecutor {
 
         char *lower_key = new char[index_meta_.col_tot_len];
         char *upper_key = new char[index_meta_.col_tot_len];
-        build_lower_key(lower_key);
-        build_upper_key(upper_key);
+        if (has_lookup_key_) {
+            memcpy(lower_key, lookup_key_.data(), index_meta_.col_tot_len);
+            memcpy(upper_key, lookup_key_.data(), index_meta_.col_tot_len);
+        } else {
+            build_lower_key(lower_key);
+            build_upper_key(upper_key);
+        }
         if (compare_index_key(upper_key, lower_key, index_meta_) < 0) {
             is_end_ = true;
             delete[] lower_key;
@@ -154,6 +164,17 @@ class IndexScanExecutor : public AbstractExecutor {
 
     const std::vector<ColMeta> &cols() const override { return cols_; }
 
+    bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) override {
+        if (target.tab_name != tab_name_ || index_meta_.col_num != 1 ||
+            index_meta_.cols[0].name != target.col_name ||
+            index_meta_.cols[0].type != type || index_meta_.cols[0].len != len) {
+            return false;
+        }
+        lookup_key_.assign(data, data + len);
+        has_lookup_key_ = true;
+        return true;
+    }
+
    private:
     void load_next_batch() {
         batch_recs_.clear();
@@ -190,6 +211,9 @@ class IndexScanExecutor : public AbstractExecutor {
             }
 
             for (size_t i = 0; i < tmp_batch_recs.size(); ++i) {
+                if (scan_plan_ != nullptr) {
+                    scan_plan_->rows_++;
+                }
                 if (eval_conditions(*tmp_batch_recs[i], conds_, cols_)) {
                     batch_recs_.push_back(std::move(tmp_batch_recs[i]));
                     batch_rids_.push_back(tmp_batch_rids[i]);

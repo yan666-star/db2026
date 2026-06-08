@@ -77,4 +77,8 @@ class FilterExecutor : public AbstractExecutor {
     Rid &rid() override { return _abstract_rid; }
 
     ColMeta get_col_offset(const TabCol &target) override { return prev_->get_col_offset(target); }
+
+    bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) override {
+        return prev_->set_index_lookup(target, data, type, len);
+    }
 };

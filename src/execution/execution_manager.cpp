@@ -444,10 +444,18 @@ static void append_plan_tree(std::ostringstream &out, std::shared_ptr<Plan> plan
     if (auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
         out << indent
             << "Scan(table="
-            << x->tab_name_
-            << ", type=SeqScan, rows="
-            << x->rows_
-            << ")\n";
+            << x->tab_name_;
+        if (x->tag == T_IndexScan) {
+            out << ", type=IndexScan, using_index=("
+                << join_sorted_strings(x->index_col_names_)
+                << "), rows="
+                << x->rows_
+                << ")\n";
+        } else {
+            out << ", type=SeqScan, rows="
+                << x->rows_
+                << ")\n";
+        }
         return;
     }
 
