@@ -57,14 +57,6 @@ class UpdateExecutor : public AbstractExecutor {
                 memcpy(rec_new->data + col->offset, set_clause.rhs.raw->data, col->len);
             }
 
-            bool uses_mvcc =
-                context_->txn_mgr_ != nullptr &&
-                context_->txn_mgr_->uses_mvcc(context_->txn_);
-            if (uses_mvcc) {
-                context_->txn_mgr_->check_write_conflict(
-                    context_->txn_, fh_->GetMvccFileId(), rid);
-            }
-
             int max_key_len = 0;
             for (auto &index : tab_.indexes) {
                 max_key_len = std::max(max_key_len, index.col_tot_len);
@@ -81,21 +73,13 @@ class UpdateExecutor : public AbstractExecutor {
                 std::vector<Rid> dup;
                 if (ih->get_value(key, &dup, context_->txn_) &&
                     !(dup.size() == 1 && dup[0] == rid)) {
-                    if (uses_mvcc) {
-                        for (const auto &dup_rid : dup) {
-                            if (!(dup_rid == rid)) {
-                                context_->txn_mgr_->check_write_conflict(
-                                    context_->txn_, fh_->GetMvccFileId(),
-                                    dup_rid);
-                            }
-                        }
-                    }
                     delete[] key;
                     throw RMDBError("failure");
                 }
             }
 
-            if (uses_mvcc) {
+            if (context_->txn_mgr_ != nullptr &&
+                context_->txn_mgr_->uses_mvcc(context_->txn_)) {
                 context_->txn_mgr_->prepare_update(
                     context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
                     *rec_new);
