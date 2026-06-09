@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include <fstream>
 
 #include "errors.h"
+#include "transaction/transaction_manager.h"
 #include "index/ix.h"
 #include "record/rm.h"
 #include "record_printer.h"
@@ -576,7 +577,12 @@ void SmManager::rollback_insert(const std::string& table_name, Rid& rid, Context
 
 void SmManager::rollback_delete(const std::string& table_name, Rid& rid, RmRecord& record, Context* context) {
     auto file_handle = fhs_.at(table_name).get();
-    file_handle->insert_record(rid, record.data);
+
+    bool uses_mvcc = context != nullptr && context->txn_mgr_ != nullptr &&
+                     context->txn_mgr_->uses_mvcc(context->txn_);
+    if (!uses_mvcc) {
+        file_handle->insert_record(rid, record.data);
+    }
 
     for (auto& index_meta : db_.get_table(table_name).indexes) {
         auto index_name = ix_manager_->get_index_name(table_name, index_meta.cols);

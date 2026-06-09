@@ -31,38 +31,6 @@ class UpdateExecutor : public AbstractExecutor {
                context_->txn_mgr_->uses_mvcc(context_->txn_);
     }
 
-    bool same_first_col(const RmRecord &lhs, const RmRecord &rhs) const {
-        if (tab_.cols.empty()) {
-            return false;
-        }
-        const auto &col = tab_.cols.front();
-        return memcmp(lhs.data + col.offset, rhs.data + col.offset, col.len) == 0;
-    }
-
-    void check_no_index_logical_conflicts(
-        const Rid &target_rid, const RmRecord &old_rec,
-        const RmRecord &new_rec) {
-        if (!uses_mvcc() || !tab_.indexes.empty() || tab_.cols.empty()) {
-            return;
-        }
-
-        auto file_id = fh_->GetMvccFileId();
-        for (const auto &scan_rid : fh_->all_record_slots()) {
-            if (scan_rid == target_rid) {
-                continue;
-            }
-            auto visible = fh_->get_record(scan_rid, context_);
-            if (visible == nullptr) {
-                continue;
-            }
-            if (same_first_col(*visible, old_rec) ||
-                same_first_col(*visible, new_rec)) {
-                context_->txn_mgr_->check_write_conflict(
-                    context_->txn_, file_id, scan_rid);
-            }
-        }
-    }
-
    public:
     UpdateExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<SetClause> set_clauses,
                    std::vector<Condition> conds, std::vector<Rid> rids, Context *context) {
@@ -98,7 +66,6 @@ class UpdateExecutor : public AbstractExecutor {
             if (mvcc) {
                 context_->txn_mgr_->check_write_conflict(
                     context_->txn_, fh_->GetMvccFileId(), rid);
-                check_no_index_logical_conflicts(rid, old_rec, *rec_new);
             }
 
             int max_key_len = 0;
