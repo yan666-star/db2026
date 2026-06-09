@@ -74,19 +74,6 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
 
     if (txn->uses_mvcc()) {
         commit_mvcc(txn);
-
-        // Physically clean up deleted records so non-MVCC queries see correct state
-        auto write_set = txn->get_write_set();
-        for (auto* write_record : *write_set) {
-            if (write_record->GetWriteType() == WType::DELETE_TUPLE) {
-                auto& tab_name = write_record->GetTableName();
-                auto& rid = write_record->GetRid();
-                if (sm_manager_->fhs_.count(tab_name) > 0) {
-                    auto fh = sm_manager_->fhs_.at(tab_name).get();
-                    fh->delete_record(rid, nullptr);
-                }
-            }
-        }
     }
 
     for (const auto &lock_id : *txn->get_lock_set()) {
