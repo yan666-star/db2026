@@ -265,6 +265,8 @@ private:
                             const MvccVersion &version) const;
     bool transactions_overlap(const MvccTxnState &left,
                               const MvccTxnState &right) const;
+    bool mvcc_txn_aborted(txn_id_t txn_id) const;
+    void mark_mvcc_txn_aborted(txn_id_t txn_id);
     void remove_dependencies(txn_id_t txn_id);
 
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL

@@ -305,6 +305,18 @@ bool TransactionManager::dependency_forms_dangerous_structure(
     return false;
 }
 
+bool TransactionManager::mvcc_txn_aborted(txn_id_t txn_id) const {
+    auto it = mvcc_txns_.find(txn_id);
+    return it != mvcc_txns_.end() && it->second.aborted;
+}
+
+void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
+    auto it = mvcc_txns_.find(txn_id);
+    if (it != mvcc_txns_.end()) {
+        it->second.aborted = true;
+    }
+}
+
 void TransactionManager::register_table_read(
     Transaction *txn, uint64_t file_id,
     const std::vector<Condition> &conditions,
@@ -340,6 +352,7 @@ void TransactionManager::register_table_read(
                 txn_id_t writer = version.owner;
                 if (add_rw_dependency(reader, writer) &&
                     dependency_forms_dangerous_structure(reader, writer)) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
                     throw TransactionAbortException(
                         txn->get_transaction_id(),
                         AbortReason::SERIALIZATION_FAILURE);
@@ -399,6 +412,10 @@ void TransactionManager::check_write_conflict(
     for (const auto &version : history_it->second) {
         if (version.commit_ts == INVALID_TS) {
             if (version.owner != txn->get_transaction_id()) {
+                if (mvcc_txn_aborted(version.owner)) {
+                    continue;
+                }
+                mark_mvcc_txn_aborted(txn->get_transaction_id());
                 throw TransactionAbortException(
                     txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
             }
@@ -407,6 +424,7 @@ void TransactionManager::check_write_conflict(
         }
     }
     if (latest_commit > txn->get_start_ts()) {
+        mark_mvcc_txn_aborted(txn->get_transaction_id());
         throw TransactionAbortException(
             txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
     }
@@ -442,7 +460,9 @@ void TransactionManager::check_unique_key_conflict(
         for (const auto &version : history) {
             if (version.commit_ts == INVALID_TS) {
                 if (version.owner != txn->get_transaction_id() &&
+                    !mvcc_txn_aborted(version.owner) &&
                     !version.deleted && same_key(version.data)) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
                     throw TransactionAbortException(
                         txn->get_transaction_id(),
                         AbortReason::WRITE_CONFLICT);
@@ -459,6 +479,7 @@ void TransactionManager::check_unique_key_conflict(
             latest_committed->commit_ts > txn->get_start_ts() &&
             !latest_committed->deleted &&
             same_key(latest_committed->data)) {
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
             throw TransactionAbortException(
                 txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
         }
@@ -489,6 +510,10 @@ void TransactionManager::prepare_write(
     for (auto &version : history) {
         if (version.commit_ts == INVALID_TS) {
             if (version.owner != txn->get_transaction_id()) {
+                if (mvcc_txn_aborted(version.owner)) {
+                    continue;
+                }
+                mark_mvcc_txn_aborted(txn->get_transaction_id());
                 throw TransactionAbortException(
                     txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
             }
@@ -498,6 +523,7 @@ void TransactionManager::prepare_write(
         }
     }
     if (own_pending == nullptr && latest_commit > txn->get_start_ts()) {
+        mark_mvcc_txn_aborted(txn->get_transaction_id());
         throw TransactionAbortException(
             txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
     }
@@ -553,6 +579,7 @@ void TransactionManager::prepare_write(
                 if (add_rw_dependency(reader_id, writer_id) &&
                     dependency_forms_dangerous_structure(
                         reader_id, writer_id)) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
                     throw TransactionAbortException(
                         txn->get_transaction_id(),
                         AbortReason::SERIALIZATION_FAILURE);

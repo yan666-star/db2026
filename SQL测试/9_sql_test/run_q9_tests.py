@@ -2,6 +2,7 @@
 import argparse
 import re
 import socket
+import threading
 
 
 class SqlClient:
@@ -477,6 +478,89 @@ class Q9Tests:
             "SI reverse deadlock rolls back all victim writes",
         )
 
+    def si_deadlock_simultaneous(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_deadlock_sim (id int, val int);",
+                "INSERT INTO q9_deadlock_sim VALUES (1, 10);",
+                "INSERT INTO q9_deadlock_sim VALUES (2, 20);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        barrier = threading.Barrier(3)
+        responses = [None, None]
+
+        def execute_cross(index, client, statement):
+            barrier.wait()
+            responses[index] = client.execute(statement)
+
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1,
+                "UPDATE q9_deadlock_sim SET val = 11 WHERE id = 1;",
+            )
+            self.execute_empty(
+                t2,
+                "UPDATE q9_deadlock_sim SET val = 22 WHERE id = 2;",
+            )
+
+            workers = [
+                threading.Thread(
+                    target=execute_cross,
+                    args=(
+                        0,
+                        t1,
+                        "UPDATE q9_deadlock_sim SET val = 12 "
+                        "WHERE id = 2;",
+                    ),
+                ),
+                threading.Thread(
+                    target=execute_cross,
+                    args=(
+                        1,
+                        t2,
+                        "UPDATE q9_deadlock_sim SET val = 21 "
+                        "WHERE id = 1;",
+                    ),
+                ),
+            ]
+            for worker in workers:
+                worker.start()
+            barrier.wait()
+            for worker in workers:
+                worker.join()
+
+            abort_count = responses.count("abort\n")
+            empty_count = responses.count("")
+            if abort_count != 1 or empty_count != 1:
+                raise AssertionError(
+                    "SI simultaneous deadlock must choose one victim: "
+                    f"got responses {responses!r}"
+                )
+
+            self.execute_empty(t1, "COMMIT;")
+            self.execute_empty(t2, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+
+        expected = (
+            [(1, 11), (2, 12)]
+            if responses[0] == ""
+            else [(1, 21), (2, 22)]
+        )
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_deadlock_sim;",
+                "SNAPSHOT ISOLATION",
+            ),
+            expected,
+            "SI simultaneous deadlock final state",
+        )
+
     def si_lost_update_index_change(self):
         self.setup(
             [
@@ -899,6 +983,7 @@ class Q9Tests:
             self.si_deadlock,
             self.si_non_repeatable_read_lost_update,
             self.si_deadlock_reverse_multi_row,
+            self.si_deadlock_simultaneous,
             self.si_lost_update_index_change,
             self.si_delete_insert_conflict,
             self.si_update_edge_cases,
