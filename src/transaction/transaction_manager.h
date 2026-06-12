@@ -112,7 +112,8 @@ public:
 
     void prepare_update(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &old_record,
-                        const RmRecord &new_record);
+                        const RmRecord &new_record,
+                        const std::string &table_name = "");
 
     void prepare_delete(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &old_record);
@@ -226,6 +227,7 @@ private:
         std::vector<char> before;
         bool deleted = false;
         std::vector<char> data;
+        std::string table_name;
     };
 
     struct ReadPredicate {
@@ -248,7 +250,8 @@ private:
 
     void prepare_write(Transaction *txn, uint64_t file_id, const Rid &rid,
                        const RmRecord *old_record,
-                       const RmRecord *new_record, bool deleted);
+                       const RmRecord *new_record, bool deleted,
+                       const std::string &table_name = "");
     bool add_rw_dependency(txn_id_t reader, txn_id_t writer);
     bool dependency_forms_dangerous_structure(txn_id_t reader,
                                               txn_id_t writer) const;

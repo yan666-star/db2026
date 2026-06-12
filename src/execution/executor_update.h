@@ -100,7 +100,7 @@ class UpdateExecutor : public AbstractExecutor {
             if (mvcc) {
                 context_->txn_mgr_->prepare_update(
                     context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
-                    *rec_new);
+                    *rec_new, tab_name_);
             }
             if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
                 UpdateLogRecord log_record(
@@ -114,27 +114,29 @@ class UpdateExecutor : public AbstractExecutor {
                     new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rid, old_rec));
             }
 
-            fh_->update_record(rid, rec_new->data, context_);
+            if (!mvcc) {
+                fh_->update_record(rid, rec_new->data, context_);
 
-            for (auto &index : tab_.indexes) {
-                auto ih =
-                    sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-                int offset = 0;
-                for (int i = 0; i < index.col_num; ++i) {
-                    memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
-                    offset += index.cols[i].len;
+                for (auto &index : tab_.indexes) {
+                    auto ih =
+                        sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                    int offset = 0;
+                    for (int i = 0; i < index.col_num; ++i) {
+                        memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                        offset += index.cols[i].len;
+                    }
+                    std::vector<Rid> old_rids;
+                    if (ih->get_value(key, &old_rids, context_->txn_) && !old_rids.empty() &&
+                        old_rids[0] == rid) {
+                        ih->delete_entry(key, context_->txn_);
+                    }
+                    offset = 0;
+                    for (int i = 0; i < index.col_num; ++i) {
+                        memcpy(key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
+                        offset += index.cols[i].len;
+                    }
+                    ih->insert_entry(key, rid, context_->txn_);
                 }
-                std::vector<Rid> old_rids;
-                if (ih->get_value(key, &old_rids, context_->txn_) && !old_rids.empty() &&
-                    old_rids[0] == rid) {
-                    ih->delete_entry(key, context_->txn_);
-                }
-                offset = 0;
-                for (int i = 0; i < index.col_num; ++i) {
-                    memcpy(key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
-                    offset += index.cols[i].len;
-                }
-                ih->insert_entry(key, rid, context_->txn_);
             }
             delete[] key;
         }

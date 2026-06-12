@@ -87,8 +87,8 @@ class Q9Tests:
         finally:
             client.close()
 
-    def final_rows(self, statement):
-        client = self.client()
+    def final_rows(self, statement, level=None):
+        client = self.client(level)
         try:
             return client.execute(statement)
         finally:
@@ -123,7 +123,7 @@ class Q9Tests:
             t1.close()
             t2.close()
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_insert;"),
+            self.final_rows("SELECT * FROM q9_insert;", "SNAPSHOT ISOLATION"),
             [(1, 10)],
             "SI committed insert",
         )
@@ -164,7 +164,10 @@ class Q9Tests:
             t1.close()
             t2.close()
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_dirty WHERE id = 1;"),
+            self.final_rows(
+                "SELECT * FROM q9_dirty WHERE id = 1;",
+                "SNAPSHOT ISOLATION",
+            ),
             [(1, 200)],
             "SI final committed update",
         )
@@ -210,7 +213,7 @@ class Q9Tests:
             t4.close()
 
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_ww;"),
+            self.final_rows("SELECT * FROM q9_ww;", "SNAPSHOT ISOLATION"),
             [(1, 120), (2, 130)],
             "SI write/write conflict final state",
         )
@@ -248,7 +251,7 @@ class Q9Tests:
             t1.close()
             t2.close()
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_delete;"),
+            self.final_rows("SELECT * FROM q9_delete;", "SNAPSHOT ISOLATION"),
             [],
             "SI delete conflict final state",
         )
@@ -290,9 +293,133 @@ class Q9Tests:
             t1.close()
             t2.close()
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_si_duty;"),
+            self.final_rows(
+                "SELECT * FROM q9_si_duty;", "SNAPSHOT ISOLATION"
+            ),
             [(1, 0), (2, 0)],
             "SI permits write skew",
+        )
+
+    def si_deadlock(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_deadlock (id int, val int);",
+                "INSERT INTO q9_deadlock VALUES (1, 10);",
+                "INSERT INTO q9_deadlock VALUES (2, 20);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1, "UPDATE q9_deadlock SET val = 11 WHERE id = 1;"
+            )
+            self.execute_empty(
+                t2, "UPDATE q9_deadlock SET val = 22 WHERE id = 2;"
+            )
+            self.expect_abort(
+                t1.execute(
+                    "UPDATE q9_deadlock SET val = 12 WHERE id = 2;"
+                ),
+                "SI deadlock victim",
+            )
+            self.execute_empty(
+                t2, "UPDATE q9_deadlock SET val = 33 WHERE id = 1;"
+            )
+            self.execute_empty(t2, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_deadlock;", "SNAPSHOT ISOLATION"
+            ),
+            [(1, 33), (2, 22)],
+            "SI deadlock final state",
+        )
+
+    def si_non_repeatable_read_lost_update(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_lost_update (id int, val int);",
+                "INSERT INTO q9_lost_update VALUES (1, 100);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.expect_rows(
+                t1.execute(
+                    "SELECT * FROM q9_lost_update WHERE id = 1;"
+                ),
+                [(1, 100)],
+                "SI lost update first read",
+            )
+            self.execute_empty(
+                t2, "UPDATE q9_lost_update SET val = 200 WHERE id = 1;"
+            )
+            self.execute_empty(t2, "COMMIT;")
+            self.expect_rows(
+                t1.execute(
+                    "SELECT * FROM q9_lost_update WHERE id = 1;"
+                ),
+                [(1, 100)],
+                "SI lost update repeatable read",
+            )
+            self.expect_abort(
+                t1.execute(
+                    "UPDATE q9_lost_update SET val = 150 WHERE id = 1;"
+                ),
+                "SI stale writer abort",
+            )
+        finally:
+            t1.close()
+            t2.close()
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_lost_update;",
+                "SNAPSHOT ISOLATION",
+            ),
+            [(1, 200)],
+            "SI lost update final state",
+        )
+
+    def si_delete_insert_conflict(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_delete_insert (id int, val int);",
+                "INSERT INTO q9_delete_insert VALUES (1, 100);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1, "DELETE FROM q9_delete_insert WHERE id = 1;"
+            )
+            self.expect_abort(
+                t2.execute(
+                    "INSERT INTO q9_delete_insert VALUES (1, 200);"
+                ),
+                "SI delete/insert write conflict",
+            )
+            self.execute_empty(t1, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_delete_insert;",
+                "SNAPSHOT ISOLATION",
+            ),
+            [],
+            "SI delete/insert final state",
         )
 
     def ser_repeatable_read(self):
@@ -326,7 +453,7 @@ class Q9Tests:
             t1.close()
             t2.close()
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_ser_rr;"),
+            self.final_rows("SELECT * FROM q9_ser_rr;", "SERIALIZABLE"),
             [(1, 200)],
             "SER repeatable-read final state",
         )
@@ -359,7 +486,7 @@ class Q9Tests:
             t1.close()
             t2.close()
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_phantom;"),
+            self.final_rows("SELECT * FROM q9_phantom;", "SERIALIZABLE"),
             [(2, 20)],
             "SER empty-predicate final state",
         )
@@ -403,7 +530,7 @@ class Q9Tests:
             t1.close()
             t2.close()
         self.expect_rows(
-            self.final_rows("SELECT * FROM q9_ser_duty;"),
+            self.final_rows("SELECT * FROM q9_ser_duty;", "SERIALIZABLE"),
             [(1, 0), (2, 1)],
             "SER write-skew final state",
         )
@@ -415,6 +542,9 @@ class Q9Tests:
             self.si_update_conflicts,
             self.si_delete_conflict,
             self.si_write_skew,
+            self.si_deadlock,
+            self.si_non_repeatable_read_lost_update,
+            self.si_delete_insert_conflict,
             self.ser_repeatable_read,
             self.ser_empty_predicate,
             self.ser_write_skew,

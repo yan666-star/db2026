@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "transaction_manager.h"
 
 #include <algorithm>
+#include <cstring>
 #include "common/context.h"
 #include "execution/execution_eval.h"
 #include "record/rm_file_handle.h"
@@ -58,6 +59,38 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
     return txn;
 }
 
+static void update_indexes(SmManager *sm_manager,
+                           const std::string &table_name,
+                           const RmRecord &old_record,
+                           const RmRecord &new_record,
+                           const Rid &rid, Transaction *txn) {
+    auto &tab = sm_manager->db_.get_table(table_name);
+    for (auto &index_meta : tab.indexes) {
+        auto index_name =
+            sm_manager->get_ix_manager()->get_index_name(table_name,
+                                                         index_meta.cols);
+        auto index_handle = sm_manager->ihs_.at(index_name).get();
+        std::vector<char> old_key(index_meta.col_tot_len);
+        std::vector<char> new_key(index_meta.col_tot_len);
+        int key_offset = 0;
+        for (int i = 0; i < index_meta.col_num; ++i) {
+            memcpy(old_key.data() + key_offset,
+                   old_record.data + index_meta.cols[i].offset,
+                   index_meta.cols[i].len);
+            memcpy(new_key.data() + key_offset,
+                   new_record.data + index_meta.cols[i].offset,
+                   index_meta.cols[i].len);
+            key_offset += index_meta.cols[i].len;
+        }
+        if (memcmp(old_key.data(), new_key.data(),
+                   index_meta.col_tot_len) == 0) {
+            continue;
+        }
+        index_handle->delete_entry(old_key.data(), txn);
+        index_handle->insert_entry(new_key.data(), rid, txn);
+    }
+}
+
 void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
     if (txn == nullptr || txn->get_state() == TransactionState::COMMITTED ||
         txn->get_state() == TransactionState::ABORTED) {
@@ -74,17 +107,6 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
 
     if (txn->uses_mvcc()) {
         commit_mvcc(txn);
-        for (auto *write_record : *txn->get_write_set()) {
-            if (write_record->GetWriteType() != WType::DELETE_TUPLE) {
-                continue;
-            }
-            auto file_handle =
-                sm_manager_->fhs_.at(write_record->GetTableName()).get();
-            try {
-                file_handle->delete_record(write_record->GetRid(), nullptr);
-            } catch (const RecordNotFoundError &) {
-            }
-        }
     }
 
     for (const auto &lock_id : *txn->get_lock_set()) {
@@ -106,7 +128,10 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     auto write_set = txn->get_write_set();
     while (!write_set->empty()) {
         WriteRecord *write_record = write_set->back();
-        sm_manager_->rollback(write_record, &context);
+        if (!txn->uses_mvcc() ||
+            write_record->GetWriteType() != WType::UPDATE_TUPLE) {
+            sm_manager_->rollback(write_record, &context);
+        }
         write_set->pop_back();
         delete write_record;
     }
@@ -345,8 +370,10 @@ void TransactionManager::prepare_insert(
 
 void TransactionManager::prepare_update(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord &old_record, const RmRecord &new_record) {
-    prepare_write(txn, file_id, rid, &old_record, &new_record, false);
+    const RmRecord &old_record, const RmRecord &new_record,
+    const std::string &table_name) {
+    prepare_write(txn, file_id, rid, &old_record, &new_record, false,
+                  table_name);
 }
 
 void TransactionManager::prepare_delete(
@@ -387,7 +414,8 @@ void TransactionManager::check_write_conflict(
 
 void TransactionManager::prepare_write(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord *old_record, const RmRecord *new_record, bool deleted) {
+    const RmRecord *old_record, const RmRecord *new_record, bool deleted,
+    const std::string &table_name) {
     if (!uses_mvcc(txn)) {
         return;
     }
@@ -428,11 +456,15 @@ void TransactionManager::prepare_write(
         pending.before = copy_record(old_record);
         pending.deleted = deleted;
         pending.data = copy_record(new_record);
+        pending.table_name = table_name;
         history.push_back(std::move(pending));
         own_pending = &history.back();
     } else {
         own_pending->deleted = deleted;
         own_pending->data = copy_record(new_record);
+        if (!table_name.empty()) {
+            own_pending->table_name = table_name;
+        }
     }
 
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
@@ -491,6 +523,21 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
             for (auto &version : history_it->second) {
                 if (version.owner == txn->get_transaction_id() &&
                     version.commit_ts == INVALID_TS) {
+                    if (!version.table_name.empty() &&
+                        !version.before_deleted && !version.deleted) {
+                        auto file_handle =
+                            sm_manager_->fhs_.at(version.table_name).get();
+                        RmRecord before(
+                            static_cast<int>(version.before.size()),
+                            const_cast<char *>(version.before.data()));
+                        RmRecord after(
+                            static_cast<int>(version.data.size()),
+                            const_cast<char *>(version.data.data()));
+                        file_handle->update_record(key.rid, after.data,
+                                                   nullptr);
+                        update_indexes(sm_manager_, version.table_name,
+                                       before, after, key.rid, txn);
+                    }
                     version.commit_ts = commit_ts;
                 }
             }
