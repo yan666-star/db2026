@@ -104,8 +104,8 @@ class Q9Tests:
         response = client.execute(statement)
         self.expect_empty(response, label or statement)
 
-    def setup(self, statements):
-        client = self.client()
+    def setup(self, statements, level=None):
+        client = self.client(level)
         try:
             table_names = []
             for statement in statements:
@@ -254,6 +254,47 @@ class Q9Tests:
             self.final_rows("SELECT * FROM q9_ww;", "SNAPSHOT ISOLATION"),
             [(1, 120), (2, 130)],
             "SI write/write conflict final state",
+        )
+
+    def si_aborted_transaction_stays_aborted(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_abort_state (id int, val int);",
+                "INSERT INTO q9_abort_state VALUES (1, 10);",
+                "INSERT INTO q9_abort_state VALUES (2, 20);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1, "UPDATE q9_abort_state SET val = 11 WHERE id = 1;"
+            )
+            self.expect_abort(
+                t2.execute(
+                    "UPDATE q9_abort_state SET val = 12 WHERE id = 1;"
+                ),
+                "SI explicit transaction write conflict",
+            )
+            self.execute_empty(
+                t2,
+                "UPDATE q9_abort_state SET val = 99 WHERE id = 2;",
+                "SI aborted transaction must not restart implicitly",
+            )
+            self.execute_empty(t2, "COMMIT;")
+            self.execute_empty(t1, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_abort_state;", "SNAPSHOT ISOLATION"
+            ),
+            [(1, 11), (2, 20)],
+            "SI aborted explicit transaction remains rolled back",
         )
 
     def si_delete_conflict(self):
@@ -621,6 +662,126 @@ class Q9Tests:
             "SI indexed lost update final state",
         )
 
+    def si_initialized_snapshot_updates(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_si_setup (id int, val int);",
+                "INSERT INTO q9_si_setup VALUES (1, 100);",
+                "INSERT INTO q9_si_setup VALUES (2, 200);",
+            ],
+            "SNAPSHOT ISOLATION",
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.expect_rows(
+                t1.execute("SELECT * FROM q9_si_setup WHERE id = 1;"),
+                [(1, 100)],
+                "SI-initialized snapshot first read",
+            )
+            self.execute_empty(
+                t2, "UPDATE q9_si_setup SET val = 220 WHERE id = 2;"
+            )
+            self.execute_empty(t2, "COMMIT;")
+            self.expect_rows(
+                t1.execute("SELECT * FROM q9_si_setup WHERE id = 2;"),
+                [(2, 200)],
+                "SI-initialized snapshot repeatable read",
+            )
+            self.expect_abort(
+                t1.execute(
+                    "UPDATE q9_si_setup SET val = 150 WHERE id = 2;"
+                ),
+                "SI-initialized stale writer abort",
+            )
+            self.execute_empty(t1, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_si_setup;", "SNAPSHOT ISOLATION"
+            ),
+            [(1, 100), (2, 220)],
+            "SI-initialized update final state",
+        )
+
+    def si_typed_update_conflict(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_typed_update "
+                "(id int, name char(8), score float);",
+                "INSERT INTO q9_typed_update "
+                "VALUES (1, 'xiaohong', 90.0);",
+                "INSERT INTO q9_typed_update "
+                "VALUES (2, 'xiaoming', 95.0);",
+            ],
+            "SNAPSHOT ISOLATION",
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1,
+                "UPDATE q9_typed_update SET name = 'updated', "
+                "score = 100.0 WHERE id = 2;",
+            )
+            self.expect_abort(
+                t2.execute(
+                    "UPDATE q9_typed_update SET score = 75.5 "
+                    "WHERE id = 2;"
+                ),
+                "SI typed update conflict",
+            )
+            self.execute_empty(t1, "COMMIT;")
+            self.execute_empty(t2, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+
+        expected = self.table_output(
+            ("id", "name", "score"),
+            [(2, "updated", "100.000000")],
+        )
+        response = self.final_rows(
+            "SELECT * FROM q9_typed_update WHERE id = 2;",
+            "SNAPSHOT ISOLATION",
+        )
+        if response != expected:
+            raise AssertionError(
+                "SI typed update output/state mismatch\n"
+                f"expected {expected!r}\nactual   {response!r}"
+            )
+
+    def si_implicit_update(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_implicit_update (id int, val int);",
+                "INSERT INTO q9_implicit_update VALUES (1, 10);",
+            ],
+            "SNAPSHOT ISOLATION",
+        )
+        client = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(
+                client,
+                "UPDATE q9_implicit_update SET val = 20 WHERE id = 1;",
+            )
+            self.expect_rows(
+                client.execute(
+                    "SELECT * FROM q9_implicit_update WHERE id = 1;"
+                ),
+                [(1, 20)],
+                "SI implicit update commits before next statement",
+            )
+        finally:
+            client.close()
+
     def si_delete_insert_conflict(self):
         self.setup(
             [
@@ -978,6 +1139,7 @@ class Q9Tests:
             self.si_insert,
             self.si_dirty_read,
             self.si_update_conflicts,
+            self.si_aborted_transaction_stays_aborted,
             self.si_delete_conflict,
             self.si_write_skew,
             self.si_deadlock,
@@ -985,6 +1147,9 @@ class Q9Tests:
             self.si_deadlock_reverse_multi_row,
             self.si_deadlock_simultaneous,
             self.si_lost_update_index_change,
+            self.si_initialized_snapshot_updates,
+            self.si_typed_update_conflict,
+            self.si_implicit_update,
             self.si_delete_insert_conflict,
             self.si_update_edge_cases,
             self.si_multi_row_update_conflict,
