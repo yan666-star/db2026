@@ -86,7 +86,6 @@ void *client_handler(void *sock_fd) {
     int offset = 0;
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
-    bool explicit_txn_aborted = false;
     IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
@@ -152,22 +151,7 @@ void *client_handler(void *sock_fd) {
         YY_BUFFER_STATE buf = yy_scan_string(data_recv);
         if (yyparse() == 0) {
             if (ast::parse_tree != nullptr) {
-                bool is_txn_terminator =
-                    std::dynamic_pointer_cast<ast::TxnCommit>(
-                        ast::parse_tree) != nullptr ||
-                    std::dynamic_pointer_cast<ast::TxnRollback>(
-                        ast::parse_tree) != nullptr ||
-                    std::dynamic_pointer_cast<ast::TxnAbort>(
-                        ast::parse_tree) != nullptr;
-                if (explicit_txn_aborted) {
-                    if (is_txn_terminator) {
-                        explicit_txn_aborted = false;
-                    }
-                    yy_delete_buffer(buf);
-                    finish_analyze = true;
-                    pthread_mutex_unlock(buffer_mutex);
-                } else {
-                    try {
+                try {
                     bool is_checkpoint =
                         std::dynamic_pointer_cast<ast::StaticCheckpoint>(ast::parse_tree) != nullptr;
                     if (!is_checkpoint) {
@@ -187,7 +171,7 @@ void *client_handler(void *sock_fd) {
                     std::shared_ptr<PortalStmt> portalStmt = portal->start(plan, context);
                     portal->run(portalStmt, ql_manager.get(), &txn_id, context);
                     portal->drop();
-                    } catch (TransactionAbortException &e) {
+                } catch (TransactionAbortException &e) {
                     // 事务需要回滚，需要把abort信息返回给客户端并写入output.txt文件中
                     std::string str = "abort\n";
                     memcpy(data_send, str.c_str(), str.length());
@@ -195,14 +179,10 @@ void *client_handler(void *sock_fd) {
                     offset = str.length();
 
                     // 回滚事务
-                    bool was_explicit =
-                        context->txn_ != nullptr &&
-                        context->txn_->get_txn_mode();
                     txn_manager->abort(context->txn_, log_manager.get());
                     txn_manager->release_transaction(context->txn_);
                     context->txn_ = nullptr;
                     txn_id = INVALID_TXN_ID;
-                    explicit_txn_aborted = was_explicit;
                     if (kVerboseServerLog) {
                         std::cout << e.GetInfo() << std::endl;
                     }
@@ -211,7 +191,7 @@ void *client_handler(void *sock_fd) {
                     outfile.open("output.txt", std::ios::out | std::ios::app);
                     outfile << str;
                     outfile.close();
-                    } catch (RMDBError &e) {
+                } catch (RMDBError &e) {
                     // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
                     if (kVerboseServerLog) {
                         std::cerr << e.what() << std::endl;
@@ -236,7 +216,7 @@ void *client_handler(void *sock_fd) {
                         context->txn_ = nullptr;
                         txn_id = INVALID_TXN_ID;
                     }
-                    } catch (const std::exception &e) {
+                } catch (const std::exception &e) {
                     if (kVerboseServerLog) {
                         std::cerr << e.what() << std::endl;
                     }
@@ -254,7 +234,6 @@ void *client_handler(void *sock_fd) {
                         txn_manager->release_transaction(context->txn_);
                         context->txn_ = nullptr;
                         txn_id = INVALID_TXN_ID;
-                    }
                     }
                 }
             }

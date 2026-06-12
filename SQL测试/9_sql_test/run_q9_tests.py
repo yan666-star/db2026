@@ -256,45 +256,87 @@ class Q9Tests:
             "SI write/write conflict final state",
         )
 
-    def si_aborted_transaction_stays_aborted(self):
+    def si_delete_tuple_reconstruction(self):
         self.setup(
             [
-                "CREATE TABLE q9_abort_state (id int, val int);",
-                "INSERT INTO q9_abort_state VALUES (1, 10);",
-                "INSERT INTO q9_abort_state VALUES (2, 20);",
+                "CREATE TABLE q9_delete_reconstruct (id int, val int);",
+                "INSERT INTO q9_delete_reconstruct VALUES (1, 10);",
+                "CREATE INDEX q9_delete_reconstruct (id);",
             ]
         )
-        t1 = self.client("SNAPSHOT ISOLATION")
-        t2 = self.client("SNAPSHOT ISOLATION")
+        reader = self.client("SNAPSHOT ISOLATION")
+        writer = self.client("SNAPSHOT ISOLATION")
         try:
-            self.execute_empty(t1, "BEGIN;")
-            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(reader, "BEGIN;")
+            self.execute_empty(writer, "BEGIN;")
             self.execute_empty(
-                t1, "UPDATE q9_abort_state SET val = 11 WHERE id = 1;"
+                writer,
+                "DELETE FROM q9_delete_reconstruct WHERE id = 1;",
             )
-            self.expect_abort(
-                t2.execute(
-                    "UPDATE q9_abort_state SET val = 12 WHERE id = 1;"
+            self.expect_rows(
+                writer.execute(
+                    "SELECT * FROM q9_delete_reconstruct WHERE id = 1;"
                 ),
-                "SI explicit transaction write conflict",
+                [],
+                "SI deleting transaction sees its tombstone",
             )
-            self.execute_empty(
-                t2,
-                "UPDATE q9_abort_state SET val = 99 WHERE id = 2;",
-                "SI aborted transaction must not restart implicitly",
+            self.expect_rows(
+                reader.execute(
+                    "SELECT * FROM q9_delete_reconstruct WHERE id = 1;"
+                ),
+                [(1, 10)],
+                "SI old snapshot reconstructs pending delete",
             )
-            self.execute_empty(t2, "COMMIT;")
-            self.execute_empty(t1, "COMMIT;")
+            self.execute_empty(writer, "ROLLBACK;")
+            self.execute_empty(reader, "COMMIT;")
         finally:
-            t1.close()
-            t2.close()
+            reader.close()
+            writer.close()
 
         self.expect_rows(
             self.final_rows(
-                "SELECT * FROM q9_abort_state;", "SNAPSHOT ISOLATION"
+                "SELECT * FROM q9_delete_reconstruct WHERE id = 1;"
             ),
-            [(1, 11), (2, 20)],
-            "SI aborted explicit transaction remains rolled back",
+            [(1, 10)],
+            "SI delete rollback preserves physical row and index",
+        )
+
+        reader = self.client("SNAPSHOT ISOLATION")
+        writer = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(reader, "BEGIN;")
+            self.execute_empty(writer, "BEGIN;")
+            self.execute_empty(
+                writer,
+                "DELETE FROM q9_delete_reconstruct WHERE id = 1;",
+            )
+            self.execute_empty(writer, "COMMIT;")
+            self.expect_rows(
+                reader.execute(
+                    "SELECT * FROM q9_delete_reconstruct WHERE id = 1;"
+                ),
+                [(1, 10)],
+                "SI old snapshot reconstructs committed delete",
+            )
+            self.execute_empty(reader, "COMMIT;")
+        finally:
+            reader.close()
+            writer.close()
+
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_delete_reconstruct WHERE id = 1;",
+                "SNAPSHOT ISOLATION",
+            ),
+            [],
+            "SI new snapshot sees committed delete",
+        )
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_delete_reconstruct WHERE id = 1;"
+            ),
+            [],
+            "Committed SI delete removes the index entry",
         )
 
     def si_delete_conflict(self):
@@ -1139,7 +1181,7 @@ class Q9Tests:
             self.si_insert,
             self.si_dirty_read,
             self.si_update_conflicts,
-            self.si_aborted_transaction_stays_aborted,
+            self.si_delete_tuple_reconstruction,
             self.si_delete_conflict,
             self.si_write_skew,
             self.si_deadlock,

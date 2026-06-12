@@ -91,6 +91,33 @@ static void update_indexes(SmManager *sm_manager,
     }
 }
 
+static void delete_indexes(SmManager *sm_manager,
+                           const std::string &table_name,
+                           const RmRecord &record,
+                           const Rid &rid, Transaction *txn) {
+    auto &tab = sm_manager->db_.get_table(table_name);
+    for (auto &index_meta : tab.indexes) {
+        auto index_name =
+            sm_manager->get_ix_manager()->get_index_name(table_name,
+                                                         index_meta.cols);
+        auto index_handle = sm_manager->ihs_.at(index_name).get();
+        std::vector<char> key(index_meta.col_tot_len);
+        int key_offset = 0;
+        for (int i = 0; i < index_meta.col_num; ++i) {
+            memcpy(key.data() + key_offset,
+                   record.data + index_meta.cols[i].offset,
+                   index_meta.cols[i].len);
+            key_offset += index_meta.cols[i].len;
+        }
+        std::vector<Rid> indexed_rids;
+        if (index_handle->get_value(key.data(), &indexed_rids, txn) &&
+            std::find(indexed_rids.begin(), indexed_rids.end(), rid) !=
+                indexed_rids.end()) {
+            index_handle->delete_entry(key.data(), txn);
+        }
+    }
+}
+
 void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
     if (txn == nullptr || txn->get_state() == TransactionState::COMMITTED ||
         txn->get_state() == TransactionState::ABORTED) {
@@ -129,7 +156,8 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     while (!write_set->empty()) {
         WriteRecord *write_record = write_set->back();
         if (!txn->uses_mvcc() ||
-            write_record->GetWriteType() != WType::UPDATE_TUPLE) {
+            (write_record->GetWriteType() != WType::UPDATE_TUPLE &&
+             write_record->GetWriteType() != WType::DELETE_TUPLE)) {
             sm_manager_->rollback(write_record, &context);
         }
         write_set->pop_back();
@@ -391,8 +419,9 @@ void TransactionManager::prepare_update(
 
 void TransactionManager::prepare_delete(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord &old_record) {
-    prepare_write(txn, file_id, rid, &old_record, nullptr, true);
+    const RmRecord &old_record, const std::string &table_name) {
+    prepare_write(txn, file_id, rid, &old_record, nullptr, true,
+                  table_name);
 }
 
 void TransactionManager::check_write_conflict(
@@ -608,7 +637,15 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                 if (version.owner == txn->get_transaction_id() &&
                     version.commit_ts == INVALID_TS) {
                     if (!version.table_name.empty() &&
-                        !version.before.empty() && !version.deleted) {
+                        !version.before.empty() && version.deleted) {
+                        RmRecord before(
+                            static_cast<int>(version.before.size()),
+                            const_cast<char *>(version.before.data()));
+                        delete_indexes(sm_manager_, version.table_name,
+                                       before, key.rid, txn);
+                    } else if (!version.table_name.empty() &&
+                               !version.before.empty() &&
+                               !version.deleted) {
                         auto file_handle =
                             sm_manager_->fhs_.at(version.table_name).get();
                         RmRecord before(

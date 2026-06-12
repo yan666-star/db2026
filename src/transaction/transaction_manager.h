@@ -116,7 +116,8 @@ public:
                         const std::string &table_name = "");
 
     void prepare_delete(Transaction *txn, uint64_t file_id, const Rid &rid,
-                        const RmRecord &old_record);
+                        const RmRecord &old_record,
+                        const std::string &table_name = "");
 
     void check_write_conflict(Transaction *txn, uint64_t file_id,
                               const Rid &rid);
