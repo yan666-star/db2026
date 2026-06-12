@@ -74,6 +74,17 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
 
     if (txn->uses_mvcc()) {
         commit_mvcc(txn);
+        for (auto *write_record : *txn->get_write_set()) {
+            if (write_record->GetWriteType() != WType::DELETE_TUPLE) {
+                continue;
+            }
+            auto file_handle =
+                sm_manager_->fhs_.at(write_record->GetTableName()).get();
+            try {
+                file_handle->delete_record(write_record->GetRid(), nullptr);
+            } catch (const RecordNotFoundError &) {
+            }
+        }
     }
 
     for (const auto &lock_id : *txn->get_lock_set()) {
