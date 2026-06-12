@@ -74,6 +74,11 @@ class UpdateExecutor : public AbstractExecutor {
             }
             char *key = max_key_len > 0 ? new char[max_key_len] : nullptr;
             for (auto &index : tab_.indexes) {
+                if (mvcc) {
+                    context_->txn_mgr_->check_unique_key_conflict(
+                        context_->txn_, fh_->GetMvccFileId(), rid,
+                        *rec_new, index.cols);
+                }
                 auto ih =
                     sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                 int offset = 0;

@@ -412,6 +412,59 @@ void TransactionManager::check_write_conflict(
     }
 }
 
+void TransactionManager::check_unique_key_conflict(
+    Transaction *txn, uint64_t file_id, const Rid &target_rid,
+    const RmRecord &new_record, const std::vector<ColMeta> &index_cols) {
+    if (!uses_mvcc(txn)) {
+        return;
+    }
+
+    auto same_key = [&](const std::vector<char> &data) {
+        if (data.empty()) {
+            return false;
+        }
+        for (const auto &col : index_cols) {
+            if (memcmp(data.data() + col.offset,
+                       new_record.data + col.offset, col.len) != 0) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    for (const auto &[key, history] : record_versions_) {
+        if (key.file_id != file_id || key.rid == target_rid) {
+            continue;
+        }
+
+        const MvccVersion *latest_committed = nullptr;
+        for (const auto &version : history) {
+            if (version.commit_ts == INVALID_TS) {
+                if (version.owner != txn->get_transaction_id() &&
+                    !version.deleted && same_key(version.data)) {
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(),
+                        AbortReason::WRITE_CONFLICT);
+                }
+                continue;
+            }
+            if (latest_committed == nullptr ||
+                version.commit_ts > latest_committed->commit_ts) {
+                latest_committed = &version;
+            }
+        }
+
+        if (latest_committed != nullptr &&
+            latest_committed->commit_ts > txn->get_start_ts() &&
+            !latest_committed->deleted &&
+            same_key(latest_committed->data)) {
+            throw TransactionAbortException(
+                txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+        }
+    }
+}
+
 void TransactionManager::prepare_write(
     Transaction *txn, uint64_t file_id, const Rid &rid,
     const RmRecord *old_record, const RmRecord *new_record, bool deleted,

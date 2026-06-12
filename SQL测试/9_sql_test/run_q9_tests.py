@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import re
 import socket
 
 
@@ -68,11 +69,34 @@ class Q9Tests:
                 pass
         return result
 
-    def expect_rows(self, response, expected, label):
+    @staticmethod
+    def table_output(columns, rows):
+        separator = "".join("+" + "-" * 18 for _ in columns) + "+\n"
+
+        def record(values):
+            return "".join(f"| {str(value):>16} " for value in values) + "|\n"
+
+        return (
+            separator
+            + record(columns)
+            + separator
+            + "".join(record(row) for row in rows)
+            + separator
+            + f"Total record(s): {len(rows)}\n"
+        )
+
+    def expect_rows(self, response, expected, label, columns=("id", "val")):
         actual = self.rows(response)
-        if sorted(actual) != sorted(expected):
+        if actual != expected:
             raise AssertionError(
                 f"{label}: expected rows {expected}, got {actual}\n{response}"
+            )
+        exact = self.table_output(columns, expected)
+        if response != exact:
+            raise AssertionError(
+                f"{label}: table output differs from the required format\n"
+                f"expected {exact!r}\n"
+                f"actual   {response!r}"
             )
 
     def execute_empty(self, client, statement, label=None):
@@ -82,6 +106,19 @@ class Q9Tests:
     def setup(self, statements):
         client = self.client()
         try:
+            table_names = []
+            for statement in statements:
+                match = re.match(
+                    r"\s*CREATE\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    statement,
+                    re.IGNORECASE,
+                )
+                if match:
+                    table_names.append(match.group(1))
+            for table_name in reversed(table_names):
+                # The server has no DROP TABLE IF EXISTS syntax. Ignore failure
+                # when a table is absent so the test suite remains rerunnable.
+                client.execute(f"DROP TABLE {table_name};")
             for statement in statements:
                 self.execute_empty(client, statement)
         finally:
@@ -273,11 +310,13 @@ class Q9Tests:
                 t1.execute("SELECT * FROM q9_si_duty WHERE doctor_id = 2;"),
                 [(2, 1)],
                 "SI write skew T1 read",
+                ("doctor_id", "on_call"),
             )
             self.expect_rows(
                 t2.execute("SELECT * FROM q9_si_duty WHERE doctor_id = 1;"),
                 [(1, 1)],
                 "SI write skew T2 read",
+                ("doctor_id", "on_call"),
             )
             self.execute_empty(
                 t1,
@@ -298,6 +337,7 @@ class Q9Tests:
             ),
             [(1, 0), (2, 0)],
             "SI permits write skew",
+            ("doctor_id", "on_call"),
         )
 
     def si_deadlock(self):
@@ -422,6 +462,133 @@ class Q9Tests:
             "SI delete/insert final state",
         )
 
+    def si_update_edge_cases(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_update_edges (id int, val int);",
+                "INSERT INTO q9_update_edges VALUES (1, 10);",
+                "INSERT INTO q9_update_edges VALUES (2, 20);",
+                "CREATE INDEX q9_update_edges (id);",
+            ]
+        )
+
+        t1 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(
+                t1, "UPDATE q9_update_edges SET val = 11 WHERE id = 1;"
+            )
+            self.execute_empty(
+                t1, "UPDATE q9_update_edges SET val = 12 WHERE id = 1;"
+            )
+            self.expect_rows(
+                t1.execute("SELECT * FROM q9_update_edges WHERE id = 1;"),
+                [(1, 12)],
+                "SI repeated update reads its final pending version",
+            )
+            self.execute_empty(t1, "ROLLBACK;")
+        finally:
+            t1.close()
+
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_update_edges;", "SNAPSHOT ISOLATION"
+            ),
+            [(1, 10), (2, 20)],
+            "SI repeated update rollback",
+        )
+
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t2, "UPDATE q9_update_edges SET id = 3 WHERE id = 1;"
+            )
+            self.expect_rows(
+                t2.execute("SELECT * FROM q9_update_edges WHERE id = 3;"),
+                [(3, 10)],
+                "SI indexed update is visible to its writer",
+            )
+            self.execute_empty(t2, "COMMIT;")
+        finally:
+            t2.close()
+
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_update_edges;", "SNAPSHOT ISOLATION"
+            ),
+            [(3, 10), (2, 20)],
+            "SI indexed update final state",
+        )
+
+    def si_multi_row_update_conflict(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_multi_update (id int, val int);",
+                "INSERT INTO q9_multi_update VALUES (1, 10);",
+                "INSERT INTO q9_multi_update VALUES (2, 20);",
+                "INSERT INTO q9_multi_update VALUES (3, 30);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1, "UPDATE q9_multi_update SET val = 200 WHERE id = 2;"
+            )
+            self.expect_abort(
+                t2.execute("UPDATE q9_multi_update SET val = 999;"),
+                "SI multi-row update conflict",
+            )
+            self.execute_empty(t1, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_multi_update;", "SNAPSHOT ISOLATION"
+            ),
+            [(1, 10), (2, 200), (3, 30)],
+            "SI multi-row conflict rolls back earlier rows",
+        )
+
+    def si_unique_update_conflict(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_unique_update (id int, val int);",
+                "INSERT INTO q9_unique_update VALUES (1, 10);",
+                "INSERT INTO q9_unique_update VALUES (2, 20);",
+                "CREATE INDEX q9_unique_update (id);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1, "UPDATE q9_unique_update SET id = 3 WHERE id = 1;"
+            )
+            self.expect_abort(
+                t2.execute(
+                    "UPDATE q9_unique_update SET id = 3 WHERE id = 2;"
+                ),
+                "SI concurrent unique-key update conflict",
+            )
+            self.execute_empty(t1, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_unique_update;", "SNAPSHOT ISOLATION"
+            ),
+            [(3, 10), (2, 20)],
+            "SI concurrent unique-key update final state",
+        )
+
     def ser_repeatable_read(self):
         self.setup(
             [
@@ -508,11 +675,13 @@ class Q9Tests:
                 t1.execute("SELECT * FROM q9_ser_duty WHERE doctor_id = 2;"),
                 [(2, 1)],
                 "SER write skew T1 read",
+                ("doctor_id", "on_call"),
             )
             self.expect_rows(
                 t2.execute("SELECT * FROM q9_ser_duty WHERE doctor_id = 1;"),
                 [(1, 1)],
                 "SER write skew T2 read",
+                ("doctor_id", "on_call"),
             )
             self.execute_empty(
                 t1,
@@ -533,6 +702,7 @@ class Q9Tests:
             self.final_rows("SELECT * FROM q9_ser_duty;", "SERIALIZABLE"),
             [(1, 0), (2, 1)],
             "SER write-skew final state",
+            ("doctor_id", "on_call"),
         )
 
     def run(self):
@@ -545,6 +715,9 @@ class Q9Tests:
             self.si_deadlock,
             self.si_non_repeatable_read_lost_update,
             self.si_delete_insert_conflict,
+            self.si_update_edge_cases,
+            self.si_multi_row_update_conflict,
+            self.si_unique_update_conflict,
             self.ser_repeatable_read,
             self.ser_empty_predicate,
             self.ser_write_skew,

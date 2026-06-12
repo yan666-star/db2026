@@ -121,6 +121,10 @@ public:
     void check_write_conflict(Transaction *txn, uint64_t file_id,
                               const Rid &rid);
 
+    void check_unique_key_conflict(
+        Transaction *txn, uint64_t file_id, const Rid &target_rid,
+        const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
+
     /**
      * @description: 获取事务ID为txn_id的事务对象
      * @return {Transaction*} 事务对象的指针
