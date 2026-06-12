@@ -428,6 +428,115 @@ class Q9Tests:
             "SI lost update final state",
         )
 
+    def si_deadlock_reverse_multi_row(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_deadlock_reverse (id int, val int);",
+                "INSERT INTO q9_deadlock_reverse VALUES (1, 10);",
+                "INSERT INTO q9_deadlock_reverse VALUES (2, 20);",
+                "INSERT INTO q9_deadlock_reverse VALUES (3, 30);",
+                "CREATE INDEX q9_deadlock_reverse (id);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t1,
+                "UPDATE q9_deadlock_reverse SET val = 11 WHERE id = 1;",
+            )
+            self.execute_empty(
+                t2,
+                "UPDATE q9_deadlock_reverse SET val = 22 WHERE id = 2;",
+            )
+            self.expect_abort(
+                t1.execute(
+                    "UPDATE q9_deadlock_reverse SET val = 99 "
+                    "WHERE id >= 1;"
+                ),
+                "SI reverse deadlock multi-row victim",
+            )
+            self.execute_empty(
+                t2,
+                "UPDATE q9_deadlock_reverse SET val = 33 WHERE id = 1;",
+            )
+            self.execute_empty(t1, "COMMIT;")
+            self.execute_empty(t2, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_deadlock_reverse;",
+                "SNAPSHOT ISOLATION",
+            ),
+            [(1, 33), (2, 22), (3, 30)],
+            "SI reverse deadlock rolls back all victim writes",
+        )
+
+    def si_lost_update_index_change(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_lost_index (id int, val int);",
+                "INSERT INTO q9_lost_index VALUES (1, 100);",
+                "CREATE INDEX q9_lost_index (id);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(t2, "BEGIN;")
+            self.expect_rows(
+                t1.execute(
+                    "SELECT * FROM q9_lost_index WHERE id = 1;"
+                ),
+                [(1, 100)],
+                "SI indexed lost update first read",
+            )
+            self.execute_empty(
+                t2,
+                "UPDATE q9_lost_index SET id = 2, val = 200 "
+                "WHERE id = 1;",
+            )
+            self.execute_empty(t2, "COMMIT;")
+            self.expect_rows(
+                t1.execute(
+                    "SELECT * FROM q9_lost_index WHERE id = 1;"
+                ),
+                [(1, 100)],
+                "SI old snapshot retains the old index key",
+            )
+            self.expect_rows(
+                t1.execute(
+                    "SELECT * FROM q9_lost_index WHERE id = 2;"
+                ),
+                [],
+                "SI old snapshot excludes the new index key",
+            )
+            self.expect_abort(
+                t1.execute(
+                    "UPDATE q9_lost_index SET val = 150 WHERE id = 1;"
+                ),
+                "SI stale indexed writer abort",
+            )
+            self.execute_empty(t1, "COMMIT;")
+        finally:
+            t1.close()
+            t2.close()
+
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_lost_index;",
+                "SNAPSHOT ISOLATION",
+            ),
+            [(2, 200)],
+            "SI indexed lost update final state",
+        )
+
     def si_delete_insert_conflict(self):
         self.setup(
             [
@@ -552,6 +661,81 @@ class Q9Tests:
             ),
             [(1, 10), (2, 200), (3, 30)],
             "SI multi-row conflict rolls back earlier rows",
+        )
+
+    def si_insert_then_update(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_insert_update (id int, val int);",
+                "CREATE INDEX q9_insert_update (id);",
+            ]
+        )
+        t1 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t1, "BEGIN;")
+            self.execute_empty(
+                t1, "INSERT INTO q9_insert_update VALUES (1, 10);"
+            )
+            self.execute_empty(
+                t1,
+                "UPDATE q9_insert_update SET id = 2, val = 20 "
+                "WHERE id = 1;",
+            )
+            self.expect_rows(
+                t1.execute("SELECT * FROM q9_insert_update;"),
+                [(2, 20)],
+                "SI insert/update is visible to its writer",
+            )
+            self.execute_empty(t1, "COMMIT;")
+        finally:
+            t1.close()
+
+        self.expect_rows(
+            self.final_rows("SELECT * FROM q9_insert_update;"),
+            [(2, 20)],
+            "SI insert/update physical final state",
+        )
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_insert_update WHERE id = 2;"
+            ),
+            [(2, 20)],
+            "SI insert/update new index key",
+        )
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_insert_update WHERE id = 1;"
+            ),
+            [],
+            "SI insert/update removes old index key",
+        )
+        self.expect_rows(
+            self.final_rows(
+                "SELECT * FROM q9_insert_update;", "SNAPSHOT ISOLATION"
+            ),
+            [(2, 20)],
+            "SI insert/update snapshot final state",
+        )
+
+        t2 = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(t2, "BEGIN;")
+            self.execute_empty(
+                t2, "INSERT INTO q9_insert_update VALUES (3, 30);"
+            )
+            self.execute_empty(
+                t2,
+                "UPDATE q9_insert_update SET id = 4, val = 40 "
+                "WHERE id = 3;",
+            )
+            self.execute_empty(t2, "ROLLBACK;")
+        finally:
+            t2.close()
+
+        self.expect_rows(
+            self.final_rows("SELECT * FROM q9_insert_update;"),
+            [(2, 20)],
+            "SI insert/update rollback physical state",
         )
 
     def si_unique_update_conflict(self):
@@ -714,9 +898,12 @@ class Q9Tests:
             self.si_write_skew,
             self.si_deadlock,
             self.si_non_repeatable_read_lost_update,
+            self.si_deadlock_reverse_multi_row,
+            self.si_lost_update_index_change,
             self.si_delete_insert_conflict,
             self.si_update_edge_cases,
             self.si_multi_row_update_conflict,
+            self.si_insert_then_update,
             self.si_unique_update_conflict,
             self.ser_repeatable_read,
             self.ser_empty_predicate,

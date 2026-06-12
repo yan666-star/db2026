@@ -513,6 +513,10 @@ void TransactionManager::prepare_write(
         history.push_back(std::move(pending));
         own_pending = &history.back();
     } else {
+        if (own_pending->before_deleted && own_pending->before.empty() &&
+            !own_pending->deleted && old_record != nullptr) {
+            own_pending->before = own_pending->data;
+        }
         own_pending->deleted = deleted;
         own_pending->data = copy_record(new_record);
         if (!table_name.empty()) {
@@ -577,7 +581,7 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                 if (version.owner == txn->get_transaction_id() &&
                     version.commit_ts == INVALID_TS) {
                     if (!version.table_name.empty() &&
-                        !version.before_deleted && !version.deleted) {
+                        !version.before.empty() && !version.deleted) {
                         auto file_handle =
                             sm_manager_->fhs_.at(version.table_name).get();
                         RmRecord before(
