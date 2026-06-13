@@ -29,6 +29,8 @@ int main() {
         "insert into tb values (1, 3.14, 'pi');",
         "delete from tb where a = 1;",
         "update tb set a = 1, b = 2.2, c = 'xyz' where x = 2 and y < 1.1 and z > 'abc';",
+        "update tb set a = a + 1, b = b - 2.2 where a = 1;",
+        "update tb set a=a*2, b=b/2.0 where a=1;",
         "select * from tb;",
         "select * from tb where x <> 2 and y >= 3. and z <= '123' and b < tb.a;",
         "select x.a, y.b from x, y where x.a = y.b and c = d;",

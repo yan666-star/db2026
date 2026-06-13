@@ -127,6 +127,10 @@ private:
         } else if (auto x = std::dynamic_pointer_cast<SetClause>(node)) {
             std::cout << "SET_CLAUSE\n";
             print_val(x->col_name, offset);
+            if (x->arithmetic_op != '\0') {
+                print_val(x->rhs_col_name, offset);
+                print_val(x->arithmetic_op, offset);
+            }
             print_node(x->val, offset);
         } else if (auto x = std::dynamic_pointer_cast<BinaryExpr>(node)) {
             std::cout << "BINARY_EXPR\n";

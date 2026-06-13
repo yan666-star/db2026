@@ -196,10 +196,19 @@ struct HavingExpr : public TreeNode {
 
 struct SetClause : public TreeNode {
     std::string col_name;
+    std::string rhs_col_name;
+    char arithmetic_op = '\0';
     std::shared_ptr<Value> val;
 
     SetClause(std::string col_name_, std::shared_ptr<Value> val_) :
             col_name(std::move(col_name_)), val(std::move(val_)) {}
+
+    SetClause(std::string col_name_, std::string rhs_col_name_,
+              char arithmetic_op_, std::shared_ptr<Value> val_) :
+            col_name(std::move(col_name_)),
+            rhs_col_name(std::move(rhs_col_name_)),
+            arithmetic_op(arithmetic_op_),
+            val(std::move(val_)) {}
 };
 
 struct BinaryExpr : public TreeNode {

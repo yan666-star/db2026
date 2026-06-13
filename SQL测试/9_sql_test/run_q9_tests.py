@@ -917,6 +917,60 @@ class Q9Tests:
             "SI indexed update final state",
         )
 
+    def si_update_arithmetic_expressions(self):
+        self.setup(
+            [
+                "CREATE TABLE q9_update_expr (id int, score float, level int);",
+                "INSERT INTO q9_update_expr VALUES (1, 80.0, 1);",
+            ]
+        )
+
+        client = self.client("SNAPSHOT ISOLATION")
+        try:
+            self.execute_empty(client, "BEGIN;")
+            self.execute_empty(
+                client,
+                "UPDATE q9_update_expr "
+                "SET score = score + 5.5, level = level + 1 "
+                "WHERE id = 1;",
+                "SI arithmetic update must not emit extra output",
+            )
+            expected = self.table_output(
+                ("id", "score", "level"), [(1, "85.500000", 2)]
+            )
+            response = client.execute(
+                "SELECT * FROM q9_update_expr WHERE id = 1;"
+            )
+            if response != expected:
+                raise AssertionError(
+                    "SI arithmetic update output mismatch\n"
+                    f"expected {expected!r}\n"
+                    f"actual   {response!r}"
+                )
+
+            self.execute_empty(
+                client,
+                "UPDATE q9_update_expr "
+                "SET score=score-5.5, level=level*2 WHERE id=1;",
+                "SI compact arithmetic update must not emit extra output",
+            )
+            self.execute_empty(client, "COMMIT;")
+        finally:
+            client.close()
+
+        expected = self.table_output(
+            ("id", "score", "level"), [(1, "80.000000", 4)]
+        )
+        response = self.final_rows(
+            "SELECT * FROM q9_update_expr;", "SNAPSHOT ISOLATION"
+        )
+        if response != expected:
+            raise AssertionError(
+                "SI arithmetic update final state mismatch\n"
+                f"expected {expected!r}\n"
+                f"actual   {response!r}"
+            )
+
     def si_multi_row_update_conflict(self):
         self.setup(
             [
@@ -1194,6 +1248,7 @@ class Q9Tests:
             self.si_implicit_update,
             self.si_delete_insert_conflict,
             self.si_update_edge_cases,
+            self.si_update_arithmetic_expressions,
             self.si_multi_row_update_conflict,
             self.si_insert_then_update,
             self.si_unique_update_conflict,

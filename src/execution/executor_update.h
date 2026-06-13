@@ -59,7 +59,56 @@ class UpdateExecutor : public AbstractExecutor {
             auto rec_new = std::make_unique<RmRecord>(*rec);
             for (auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
-                memcpy(rec_new->data + col->offset, set_clause.rhs.raw->data, col->len);
+                if (!set_clause.is_arithmetic) {
+                    memcpy(rec_new->data + col->offset,
+                           set_clause.rhs.raw->data, col->len);
+                    continue;
+                }
+
+                auto rhs_col = tab_.get_col(set_clause.rhs_col.col_name);
+                if (col->type == TYPE_INT) {
+                    int current;
+                    memcpy(&current, rec->data + rhs_col->offset,
+                           sizeof(current));
+                    int operand = set_clause.rhs.int_val;
+                    int result;
+                    switch (set_clause.arithmetic_op) {
+                        case '+': result = current + operand; break;
+                        case '-': result = current - operand; break;
+                        case '*': result = current * operand; break;
+                        case '/':
+                            if (operand == 0) {
+                                throw RMDBError("failure");
+                            }
+                            result = current / operand;
+                            break;
+                        default: throw RMDBError("failure");
+                    }
+                    memcpy(rec_new->data + col->offset, &result,
+                           sizeof(result));
+                } else if (col->type == TYPE_FLOAT) {
+                    float current;
+                    memcpy(&current, rec->data + rhs_col->offset,
+                           sizeof(current));
+                    float operand = set_clause.rhs.float_val;
+                    float result;
+                    switch (set_clause.arithmetic_op) {
+                        case '+': result = current + operand; break;
+                        case '-': result = current - operand; break;
+                        case '*': result = current * operand; break;
+                        case '/':
+                            if (operand == 0.0f) {
+                                throw RMDBError("failure");
+                            }
+                            result = current / operand;
+                            break;
+                        default: throw RMDBError("failure");
+                    }
+                    memcpy(rec_new->data + col->offset, &result,
+                           sizeof(result));
+                } else {
+                    throw RMDBError("failure");
+                }
             }
 
             bool mvcc = uses_mvcc();

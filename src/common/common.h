@@ -113,5 +113,8 @@ struct Condition {
 
 struct SetClause {
     TabCol lhs;
+    bool is_arithmetic = false;
+    TabCol rhs_col;
+    char arithmetic_op = '\0';
     Value rhs;
 };
