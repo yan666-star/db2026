@@ -142,6 +142,9 @@ SpecialTxnCommand parse_special_txn_command(const std::string &sql) {
         (second.empty() || second == "transaction" || second == "work")) {
         return SpecialTxnCommand::Commit;
     }
+    if (first == "end" && second.empty()) {
+        return SpecialTxnCommand::Commit;
+    }
     if ((first == "rollback" || first == "abort") &&
         (second.empty() || second == "transaction" || second == "work")) {
         return SpecialTxnCommand::Rollback;

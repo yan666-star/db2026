@@ -16,6 +16,7 @@ DEFAULT_SQL_FILES = [
     "02_create_primary_indexes.sql",
     "03_output_and_aggregate_smoke.sql",
     "04_tpcc_new_order_smoke.sql",
+    "05_transaction_syntax_smoke.sql",
 ]
 NO_SEMICOLON_COMMANDS = {"set output_file off"}
 
@@ -204,6 +205,14 @@ def run_files(args, output_file: Path):
                 if lowered.startswith("select min(name)"):
                     if "apple" not in response or "pear" not in response:
                         raise AssertionError("string MIN/MAX probe did not return apple and pear")
+
+                if lowered.startswith("select h_data") and "2026-07-01 10:00:01" in lowered:
+                    if "syntax-commit" not in response:
+                        raise AssertionError("COMMIT TRANSACTION did not persist the inserted row")
+
+                if lowered.startswith("select h_data") and "2026-07-01 10:00:02" in lowered:
+                    if "syntax-rollback" in response:
+                        raise AssertionError("ROLLBACK WORK left an inserted row behind")
 
                 time.sleep(args.delay)
     finally:
