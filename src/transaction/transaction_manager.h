@@ -96,7 +96,6 @@ public:
     bool uses_mvcc(const Transaction *txn) const {
         return txn != nullptr && txn->uses_mvcc();
     }
-    bool is_uncommitted_mvcc_insert(uint64_t file_id, const Rid &rid) const;
 
     std::unique_ptr<RmRecord> get_visible_record(
         Transaction *txn, uint64_t file_id, const Rid &rid,
