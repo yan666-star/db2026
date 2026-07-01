@@ -510,6 +510,14 @@ void *client_handler(void *sock_fd) {
             offset = client_msg.length() + 1;
 
             write_failure_if_enabled();
+            Transaction *open_txn = txn_manager->get_transaction(txn_id);
+            if (open_txn != nullptr &&
+                open_txn->get_state() != TransactionState::COMMITTED &&
+                open_txn->get_state() != TransactionState::ABORTED) {
+                txn_manager->abort(open_txn, log_manager.get());
+                txn_manager->release_transaction(open_txn);
+                txn_id = INVALID_TXN_ID;
+            }
         }
         if(finish_analyze == false) {
             yy_delete_buffer(buf);

@@ -46,6 +46,10 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
         return context->txn_mgr_->get_visible_record(
             context->txn_, mvcc_file_id_, rid, physical_record.get());
     }
+    if (exists && context != nullptr && context->txn_mgr_ != nullptr &&
+        context->txn_mgr_->is_uncommitted_mvcc_insert(mvcc_file_id_, rid)) {
+        return nullptr;
+    }
     if (!exists) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
@@ -65,6 +69,8 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
     const bool uses_mvcc =
         context != nullptr && context->txn_mgr_ != nullptr &&
         context->txn_mgr_->uses_mvcc(context->txn_);
+    const bool hide_uncommitted_mvcc_insert =
+        context != nullptr && context->txn_mgr_ != nullptr && !uses_mvcc;
     for (const auto &rid : rids) {
         if (rid.page_no != page_no) {
             continue;
@@ -82,6 +88,11 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
                 records.push_back(std::move(visible));
                 valid_rids.push_back(rid);
             }
+        } else if (physical_record != nullptr &&
+                   hide_uncommitted_mvcc_insert &&
+                   context->txn_mgr_->is_uncommitted_mvcc_insert(
+                       mvcc_file_id_, rid)) {
+            continue;
         } else if (physical_record != nullptr) {
             records.push_back(std::move(physical_record));
             valid_rids.push_back(rid);
