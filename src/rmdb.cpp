@@ -14,9 +14,15 @@ See the Mulan PSL v2 for more details. */
 #include <setjmp.h>
 #include <signal.h>
 #include <unistd.h>
+#include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <fstream>
+#include <sstream>
 
+#include "common/config.h"
 #include "errors.h"
+#include "execution/executor_insert.h"
 #include "optimizer/optimizer.h"
 #include "recovery/log_recovery.h"
 #include "optimizer/plan.h"
@@ -49,6 +55,172 @@ pthread_mutex_t *buffer_mutex;
 pthread_mutex_t *sockfd_mutex;
 
 static constexpr bool kVerboseServerLog = false;
+
+namespace {
+
+std::string trim_copy(const std::string &value) {
+    size_t begin = 0;
+    while (begin < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[begin]))) {
+        begin++;
+    }
+    size_t end = value.size();
+    while (end > begin &&
+           std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        end--;
+    }
+    return value.substr(begin, end - begin);
+}
+
+std::string lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return std::tolower(ch); });
+    return value;
+}
+
+bool iequals(const std::string &lhs, const std::string &rhs) {
+    return lower_copy(lhs) == lower_copy(rhs);
+}
+
+bool parse_load_command(const std::string &sql, std::string &file_name,
+                        std::string &table_name) {
+    std::string text = trim_copy(sql);
+    if (!text.empty() && text.back() == ';') {
+        text.pop_back();
+        text = trim_copy(text);
+    }
+
+    std::istringstream iss(text);
+    std::string load_kw;
+    std::string into_kw;
+    std::string extra;
+    if (!(iss >> load_kw >> file_name >> into_kw >> table_name)) {
+        return false;
+    }
+    if (iss >> extra) {
+        return false;
+    }
+    return iequals(load_kw, "load") && iequals(into_kw, "into") &&
+           !file_name.empty() && !table_name.empty();
+}
+
+std::vector<std::string> parse_csv_line(const std::string &line) {
+    std::vector<std::string> fields;
+    std::string field;
+    bool in_quotes = false;
+
+    for (size_t i = 0; i < line.size(); i++) {
+        char ch = line[i];
+        if (in_quotes) {
+            if (ch == '"') {
+                if (i + 1 < line.size() && line[i + 1] == '"') {
+                    field.push_back('"');
+                    i++;
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push_back(ch);
+            }
+            continue;
+        }
+
+        if (ch == '"') {
+            in_quotes = true;
+        } else if (ch == ',') {
+            fields.push_back(field);
+            field.clear();
+        } else {
+            field.push_back(ch);
+        }
+    }
+
+    if (in_quotes) {
+        throw RMDBError("failure");
+    }
+    fields.push_back(field);
+    return fields;
+}
+
+Value csv_field_to_value(const std::string &raw, ColType type) {
+    std::string field = trim_copy(raw);
+    Value value;
+    try {
+        if (type == TYPE_INT) {
+            value.set_int(std::stoi(field));
+        } else if (type == TYPE_FLOAT) {
+            value.set_float(std::stof(field));
+            value.from_float_literal = true;
+        } else {
+            value.set_str(field);
+        }
+    } catch (const std::exception &) {
+        throw RMDBError("failure");
+    }
+    return value;
+}
+
+size_t execute_load_command(const std::string &file_name,
+                            const std::string &table_name,
+                            Context *context) {
+    if (!sm_manager->db_.is_table(table_name)) {
+        throw TableNotFoundError(table_name);
+    }
+
+    std::ifstream input(file_name);
+    if (!input.is_open()) {
+        throw RMDBError("failure");
+    }
+
+    const TabMeta &table = sm_manager->db_.get_table(table_name);
+    std::string line;
+    size_t loaded = 0;
+    bool saw_header = false;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (!saw_header) {
+            saw_header = true;
+            continue;
+        }
+        if (line.empty()) {
+            continue;
+        }
+
+        std::vector<std::string> fields = parse_csv_line(line);
+        if (fields.size() != table.cols.size()) {
+            throw InvalidValueCountError();
+        }
+
+        std::vector<Value> values;
+        values.reserve(table.cols.size());
+        for (size_t i = 0; i < table.cols.size(); i++) {
+            values.push_back(csv_field_to_value(fields[i], table.cols[i].type));
+        }
+
+        InsertExecutor insert(sm_manager.get(), table_name, std::move(values),
+                              context);
+        insert.Next();
+        loaded++;
+    }
+
+    if (!input.eof()) {
+        throw RMDBError("failure");
+    }
+    return loaded;
+}
+
+void write_failure_if_enabled() {
+    if (!enable_output_file.load()) {
+        return;
+    }
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    outfile << "failure\n";
+}
+
+}  // namespace
 
 static jmp_buf jmpbuf;
 void sigint_handler(int) {
@@ -144,6 +316,102 @@ void *client_handler(void *sock_fd) {
             txn_manager.get(), &session_isolation);
         Context *context = context_holder.get();
         bool statement_entered = false;
+        bool special_handled = false;
+
+        auto set_failure_response = [&]() {
+            std::string client_msg = "failure\n";
+            memcpy(data_send, client_msg.c_str(), client_msg.size());
+            data_send[client_msg.size()] = '\0';
+            offset = static_cast<int>(client_msg.size());
+            write_failure_if_enabled();
+        };
+
+        std::string raw_sql = trim_copy(data_recv);
+        try {
+            if (iequals(raw_sql, "set output_file off")) {
+                enable_output_file.store(false);
+                special_handled = true;
+            } else if (iequals(raw_sql, "set output_file on")) {
+                enable_output_file.store(true);
+                special_handled = true;
+            } else {
+                std::string load_file;
+                std::string load_table;
+                if (parse_load_command(raw_sql, load_file, load_table)) {
+                    txn_manager->enter_statement(txn_id);
+                    statement_entered = true;
+                    SetTransaction(&txn_id, context, session_isolation);
+                    execute_load_command(load_file, load_table, context);
+                    if (context->txn_ != nullptr &&
+                        context->txn_->get_txn_mode() == false) {
+                        txn_manager->commit(context->txn_, context->log_mgr_);
+                        txn_manager->release_transaction(context->txn_);
+                        context->txn_ = nullptr;
+                        txn_id = INVALID_TXN_ID;
+                    }
+                    special_handled = true;
+                }
+            }
+        } catch (TransactionAbortException &e) {
+            std::string str = "abort\n";
+            memcpy(data_send, str.c_str(), str.length());
+            data_send[str.length()] = '\0';
+            offset = str.length();
+
+            txn_manager->abort(context->txn_, log_manager.get());
+            txn_manager->release_transaction(context->txn_);
+            context->txn_ = nullptr;
+            txn_id = INVALID_TXN_ID;
+            if (kVerboseServerLog) {
+                std::cout << e.GetInfo() << std::endl;
+            }
+            if (enable_output_file.load()) {
+                std::fstream outfile;
+                outfile.open("output.txt", std::ios::out | std::ios::app);
+                outfile << str;
+                outfile.close();
+            }
+            special_handled = true;
+        } catch (RMDBError &e) {
+            if (kVerboseServerLog) {
+                std::cerr << e.what() << std::endl;
+            }
+            set_failure_response();
+            if (context->txn_ != nullptr &&
+                context->txn_->get_state() != TransactionState::COMMITTED &&
+                context->txn_->get_state() != TransactionState::ABORTED) {
+                txn_manager->abort(context->txn_, log_manager.get());
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+            }
+            special_handled = true;
+        } catch (const std::exception &e) {
+            if (kVerboseServerLog) {
+                std::cerr << e.what() << std::endl;
+            }
+            set_failure_response();
+            if (context->txn_ != nullptr &&
+                context->txn_->get_state() != TransactionState::COMMITTED &&
+                context->txn_->get_state() != TransactionState::ABORTED) {
+                txn_manager->abort(context->txn_, log_manager.get());
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+            }
+            special_handled = true;
+        }
+
+        if (special_handled) {
+            if (statement_entered) {
+                txn_manager->leave_statement();
+            }
+            bool write_failed = write(fd, data_send, offset + 1) == -1;
+            if (write_failed) {
+                break;
+            }
+            continue;
+        }
 
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
         bool finish_analyze = false;
@@ -187,10 +455,12 @@ void *client_handler(void *sock_fd) {
                         std::cout << e.GetInfo() << std::endl;
                     }
 
-                    std::fstream outfile;
-                    outfile.open("output.txt", std::ios::out | std::ios::app);
-                    outfile << str;
-                    outfile.close();
+                    if (enable_output_file.load()) {
+                        std::fstream outfile;
+                        outfile.open("output.txt", std::ios::out | std::ios::app);
+                        outfile << str;
+                        outfile.close();
+                    }
                 } catch (RMDBError &e) {
                     // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
                     if (kVerboseServerLog) {
@@ -204,10 +474,7 @@ void *client_handler(void *sock_fd) {
                     offset = client_msg.length() + 1;
 
                     // 将报错信息写入output.txt
-                    std::fstream outfile;
-                    outfile.open("output.txt",std::ios::out | std::ios::app);
-                    outfile << "failure\n";
-                    outfile.close();
+                    write_failure_if_enabled();
                     if (context->txn_ != nullptr &&
                         context->txn_->get_state() != TransactionState::COMMITTED &&
                         context->txn_->get_state() != TransactionState::ABORTED) {
@@ -224,9 +491,7 @@ void *client_handler(void *sock_fd) {
                     memcpy(data_send, client_msg.c_str(), client_msg.size());
                     data_send[client_msg.size()] = '\0';
                     offset = static_cast<int>(client_msg.size());
-                    std::fstream outfile(
-                        "output.txt", std::ios::out | std::ios::app);
-                    outfile << "failure\n";
+                    write_failure_if_enabled();
                     if (context->txn_ != nullptr &&
                         context->txn_->get_state() != TransactionState::COMMITTED &&
                         context->txn_->get_state() != TransactionState::ABORTED) {
@@ -244,10 +509,7 @@ void *client_handler(void *sock_fd) {
             data_send[client_msg.length() + 1] = '\0';
             offset = client_msg.length() + 1;
 
-            std::fstream outfile;
-            outfile.open("output.txt", std::ios::out | std::ios::app);
-            outfile << "failure\n";
-            outfile.close();
+            write_failure_if_enabled();
         }
         if(finish_analyze == false) {
             yy_delete_buffer(buf);

@@ -515,6 +515,61 @@ void TransactionManager::check_unique_key_conflict(
     }
 }
 
+std::vector<std::pair<Rid, std::unique_ptr<RmRecord>>>
+TransactionManager::collect_visible_records(
+    Transaction *txn, uint64_t file_id,
+    const std::vector<Condition> &conditions,
+    const std::vector<ColMeta> &columns,
+    const std::vector<Rid> &exclude_rids) {
+    std::vector<std::pair<Rid, std::unique_ptr<RmRecord>>> result;
+    if (!uses_mvcc(txn)) {
+        return result;
+    }
+
+    std::unordered_set<RecordKey, RecordKeyHash> excluded;
+    excluded.reserve(exclude_rids.size());
+    for (const auto &rid : exclude_rids) {
+        excluded.insert(RecordKey{file_id, rid});
+    }
+
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    for (const auto &[key, history] : record_versions_) {
+        if (key.file_id != file_id || excluded.count(key) != 0) {
+            continue;
+        }
+
+        const MvccVersion *visible = nullptr;
+        for (auto it = history.rbegin(); it != history.rend(); ++it) {
+            if (it->owner == txn->get_transaction_id() &&
+                it->commit_ts == INVALID_TS) {
+                visible = &*it;
+                break;
+            }
+        }
+        if (visible == nullptr) {
+            for (const auto &version : history) {
+                if (version.commit_ts != INVALID_TS &&
+                    version.commit_ts <= txn->get_start_ts() &&
+                    (visible == nullptr ||
+                     version.commit_ts > visible->commit_ts)) {
+                    visible = &version;
+                }
+            }
+        }
+        if (visible == nullptr || visible->deleted) {
+            continue;
+        }
+
+        auto record = make_record(visible->data);
+        if (record != nullptr &&
+            (conditions.empty() ||
+             eval_conditions(*record, conditions, columns))) {
+            result.emplace_back(key.rid, std::move(record));
+        }
+    }
+    return result;
+}
+
 void TransactionManager::prepare_write(
     Transaction *txn, uint64_t file_id, const Rid &rid,
     const RmRecord *old_record, const RmRecord *new_record, bool deleted,

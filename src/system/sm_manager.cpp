@@ -307,8 +307,10 @@ void SmManager::close_db() {
  */
 void SmManager::show_tables(Context* context) {
     std::fstream outfile;
-    outfile.open("output.txt", std::ios::out | std::ios::app);
-    outfile << "| Tables |\n";
+    if (enable_output_file.load()) {
+        outfile.open("output.txt", std::ios::out | std::ios::app);
+        outfile << "| Tables |\n";
+    }
     RecordPrinter printer(1);
     printer.print_separator(context);
     printer.print_record({"Tables"}, context);
@@ -316,10 +318,14 @@ void SmManager::show_tables(Context* context) {
     for (auto &entry : db_.tabs_) {
         auto &tab = entry.second;
         printer.print_record({tab.name}, context);
-        outfile << "| " << tab.name << " |\n";
+        if (outfile.is_open()) {
+            outfile << "| " << tab.name << " |\n";
+        }
     }
     printer.print_separator(context);
-    outfile.close();
+    if (outfile.is_open()) {
+        outfile.close();
+    }
 }
 
 /**
@@ -516,7 +522,9 @@ void SmManager::show_index(const std::string& tab_name, Context* context) {
         return;
     }
     std::fstream outfile;
-    outfile.open("output.txt", std::ios::out | std::ios::app);
+    if (enable_output_file.load()) {
+        outfile.open("output.txt", std::ios::out | std::ios::app);
+    }
     RecordPrinter printer(3);
     printer.print_separator(context);
     for (auto& index : tab.indexes) {
@@ -527,10 +535,14 @@ void SmManager::show_index(const std::string& tab_name, Context* context) {
         col_str.pop_back();
         col_str += ")";
         printer.print_record({tab_name, "unique", col_str}, context);
-        outfile << "| " << tab.name << " | unique | " << col_str << " |\n";
+        if (outfile.is_open()) {
+            outfile << "| " << tab.name << " | unique | " << col_str << " |\n";
+        }
         printer.print_separator(context);
     }
-    outfile.close();
+    if (outfile.is_open()) {
+        outfile.close();
+    }
 }
 
 void SmManager::rollback(WriteRecord* record, Context* context) {

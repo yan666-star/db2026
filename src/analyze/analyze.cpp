@@ -374,8 +374,7 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
                         check_column(all_cols, {.tab_name = sv_agg->col->tab_name, .col_name = sv_agg->col->col_name},
                                      query->alias_to_table);
                     auto col_meta = *find_col_meta(all_cols, item.agg.col);
-                    if (item.agg.type == AGG_MAX || item.agg.type == AGG_MIN || item.agg.type == AGG_SUM ||
-                        item.agg.type == AGG_AVG) {
+                    if (item.agg.type == AGG_SUM || item.agg.type == AGG_AVG) {
                         if (col_meta.type != TYPE_INT && col_meta.type != TYPE_FLOAT) {
                             throw RMDBError("failure");
                         }
@@ -407,19 +406,28 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
         h.op = convert_sv_comp_op(sv_having->op);
         h.rhs_val = convert_sv_value(sv_having->rhs);
         ColType lhs_type = TYPE_INT;
+        int lhs_len = sizeof(int);
         if (h.lhs.type == AGG_COUNT) {
             lhs_type = TYPE_INT;
+            lhs_len = sizeof(int);
         } else if (h.lhs.type == AGG_AVG) {
             lhs_type = TYPE_FLOAT;
+            lhs_len = sizeof(float);
         } else if (!h.lhs.is_star) {
             auto col_meta = *find_col_meta(all_cols, h.lhs.col);
+            if ((h.lhs.type == AGG_SUM || h.lhs.type == AGG_AVG) &&
+                col_meta.type != TYPE_INT && col_meta.type != TYPE_FLOAT) {
+                throw RMDBError("failure");
+            }
             lhs_type = (h.lhs.type == AGG_SUM && col_meta.type == TYPE_INT) ? TYPE_INT : TYPE_FLOAT;
+            lhs_len = lhs_type == TYPE_INT ? sizeof(int) : sizeof(float);
             if (h.lhs.type == AGG_MAX || h.lhs.type == AGG_MIN) {
                 lhs_type = col_meta.type;
+                lhs_len = col_meta.len;
             }
         }
         cast_val_to_col(h.rhs_val, lhs_type);
-        h.rhs_val.init_raw(lhs_type == TYPE_INT ? sizeof(int) : (lhs_type == TYPE_FLOAT ? sizeof(float) : 0));
+        h.rhs_val.init_raw(lhs_len);
         query->havings.push_back(h);
         query->has_agg = true;
     }

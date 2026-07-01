@@ -62,17 +62,30 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
     RmPageHandle page_handle = fetch_page_handle(page_no);
     std::vector<Rid> valid_rids;
     valid_rids.reserve(rids.size());
+    const bool uses_mvcc =
+        context != nullptr && context->txn_mgr_ != nullptr &&
+        context->txn_mgr_->uses_mvcc(context->txn_);
     for (const auto &rid : rids) {
         if (rid.page_no != page_no) {
             continue;
         }
-        if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
-            continue;
+        std::unique_ptr<RmRecord> physical_record;
+        if (Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
+            physical_record = std::make_unique<RmRecord>(file_hdr_.record_size);
+            memcpy(physical_record->data, page_handle.get_slot(rid.slot_no),
+                   file_hdr_.record_size);
         }
-        auto record = std::make_unique<RmRecord>(file_hdr_.record_size);
-        memcpy(record->data, page_handle.get_slot(rid.slot_no), file_hdr_.record_size);
-        records.push_back(std::move(record));
-        valid_rids.push_back(rid);
+        if (uses_mvcc) {
+            auto visible = context->txn_mgr_->get_visible_record(
+                context->txn_, mvcc_file_id_, rid, physical_record.get());
+            if (visible != nullptr) {
+                records.push_back(std::move(visible));
+                valid_rids.push_back(rid);
+            }
+        } else if (physical_record != nullptr) {
+            records.push_back(std::move(physical_record));
+            valid_rids.push_back(rid);
+        }
     }
     buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
     rids = std::move(valid_rids);
