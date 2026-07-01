@@ -104,6 +104,51 @@ bool parse_load_command(const std::string &sql, std::string &file_name,
            !file_name.empty() && !table_name.empty();
 }
 
+enum class SpecialTxnCommand {
+    None,
+    Begin,
+    Commit,
+    Rollback,
+};
+
+SpecialTxnCommand parse_special_txn_command(const std::string &sql) {
+    std::string text = trim_copy(sql);
+    if (!text.empty() && text.back() == ';') {
+        text.pop_back();
+        text = trim_copy(text);
+    }
+
+    std::istringstream iss(text);
+    std::string first;
+    std::string second;
+    std::string extra;
+    if (!(iss >> first)) {
+        return SpecialTxnCommand::None;
+    }
+    if (iss >> second && iss >> extra) {
+        return SpecialTxnCommand::None;
+    }
+
+    first = lower_copy(first);
+    second = lower_copy(second);
+    if (first == "begin" &&
+        (second.empty() || second == "transaction" || second == "work")) {
+        return SpecialTxnCommand::Begin;
+    }
+    if (first == "start" && second == "transaction") {
+        return SpecialTxnCommand::Begin;
+    }
+    if (first == "commit" &&
+        (second.empty() || second == "transaction" || second == "work")) {
+        return SpecialTxnCommand::Commit;
+    }
+    if ((first == "rollback" || first == "abort") &&
+        (second.empty() || second == "transaction" || second == "work")) {
+        return SpecialTxnCommand::Rollback;
+    }
+    return SpecialTxnCommand::None;
+}
+
 std::vector<std::string> parse_csv_line(const std::string &line) {
     std::vector<std::string> fields;
     std::string field;
@@ -335,9 +380,34 @@ void *client_handler(void *sock_fd) {
                 enable_output_file.store(true);
                 special_handled = true;
             } else {
+                SpecialTxnCommand txn_cmd =
+                    parse_special_txn_command(raw_sql);
+                if (txn_cmd != SpecialTxnCommand::None) {
+                    txn_manager->enter_statement(txn_id);
+                    statement_entered = true;
+                    SetTransaction(&txn_id, context, session_isolation);
+                    if (txn_cmd == SpecialTxnCommand::Begin) {
+                        context->txn_->set_txn_mode(true);
+                    } else if (txn_cmd == SpecialTxnCommand::Commit) {
+                        context->txn_->set_txn_mode(false);
+                        txn_manager->commit(context->txn_, context->log_mgr_);
+                        txn_manager->release_transaction(context->txn_);
+                        context->txn_ = nullptr;
+                        txn_id = INVALID_TXN_ID;
+                    } else {
+                        context->txn_->set_txn_mode(false);
+                        txn_manager->abort(context->txn_, context->log_mgr_);
+                        txn_manager->release_transaction(context->txn_);
+                        context->txn_ = nullptr;
+                        txn_id = INVALID_TXN_ID;
+                    }
+                    special_handled = true;
+                }
+
                 std::string load_file;
                 std::string load_table;
-                if (parse_load_command(raw_sql, load_file, load_table)) {
+                if (!special_handled &&
+                    parse_load_command(raw_sql, load_file, load_table)) {
                     txn_manager->enter_statement(txn_id);
                     statement_entered = true;
                     SetTransaction(&txn_id, context, session_isolation);
