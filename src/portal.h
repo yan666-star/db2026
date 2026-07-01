@@ -245,7 +245,6 @@ class Portal
         }//FilterPlan 不创建 FilterExecutor。把自己 x.get() 传给下面的 ScanExecutor。这样 ScanExecutor 每通过一条过滤条件，就能执行 filter_plan_->rows_++。
         else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
             bool force_seq_scan =
-                !allow_mvcc_index_scan &&
                 context->txn_mgr_ != nullptr &&
                 context->txn_mgr_->uses_mvcc(context->txn_);
             if(x->tag == T_SeqScan || force_seq_scan) {
