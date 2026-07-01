@@ -10,8 +10,6 @@ See the Mulan PSL v2 for more details. */
 
 #include "planner.h"
 
-#include <deque>
-#include <map>
 #include <memory>
 #include <set>
 
@@ -236,106 +234,6 @@ std::shared_ptr<Plan> pop_scan(int *scantbl,
 
 std::shared_ptr<Query> Planner::logical_optimization(std::shared_ptr<Query> query, Context *context)
 {
-    // Propagate constants across equality classes, e.g.
-    // a.x = b.y AND b.y = 1  ==>  a.x = 1.
-    // This is a general predicate inference rule and helps compound indexes
-    // whose leading column is constrained through a join equality.
-    std::map<TabCol, std::set<TabCol>> equal_cols;
-    std::map<TabCol, std::vector<Value>> constants;
-
-    auto same_col = [](const TabCol &lhs, const TabCol &rhs) {
-        return lhs.tab_name == rhs.tab_name && lhs.col_name == rhs.col_name;
-    };
-
-    auto same_value = [](const Value &lhs, const Value &rhs) {
-        if (lhs.type != rhs.type) {
-            return false;
-        }
-        if (lhs.type == TYPE_INT) {
-            return lhs.int_val == rhs.int_val;
-        }
-        if (lhs.type == TYPE_FLOAT) {
-            return lhs.float_val == rhs.float_val;
-        }
-        return lhs.str_val == rhs.str_val;
-    };
-
-    for (const auto &cond : query->conds) {
-        if (cond.op != OP_EQ) {
-            continue;
-        }
-        if (cond.is_rhs_val) {
-            constants[cond.lhs_col].push_back(cond.rhs_val);
-        } else {
-            equal_cols[cond.lhs_col].insert(cond.rhs_col);
-            equal_cols[cond.rhs_col].insert(cond.lhs_col);
-        }
-    }
-
-    auto condition_exists = [&](const TabCol &col, const Value &value) {
-        for (const auto &cond : query->conds) {
-            if (!cond.is_rhs_val || cond.op != OP_EQ ||
-                !same_col(cond.lhs_col, col)) {
-                continue;
-            }
-            if (same_value(cond.rhs_val, value)) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    auto normalize_value_for_col = [&](const TabCol &col, const Value &value) {
-        Value out = value;
-        out.raw = nullptr;
-        if (!sm_manager_->db_.is_table(col.tab_name)) {
-            return out;
-        }
-        auto col_it = sm_manager_->db_.get_table(col.tab_name).get_col(col.col_name);
-        out.init_raw(col_it->len);
-        return out;
-    };
-
-    for (const auto &entry : constants) {
-        const TabCol &source = entry.first;
-        std::set<TabCol> visited;
-        std::deque<TabCol> work;
-        visited.insert(source);
-        work.push_back(source);
-
-        while (!work.empty()) {
-            TabCol current = work.front();
-            work.pop_front();
-
-            auto adj_it = equal_cols.find(current);
-            if (adj_it == equal_cols.end()) {
-                continue;
-            }
-            for (const auto &next : adj_it->second) {
-                if (visited.insert(next).second) {
-                    work.push_back(next);
-                }
-            }
-        }
-
-        for (const auto &target : visited) {
-            if (same_col(target, source)) {
-                continue;
-            }
-            for (const auto &value : entry.second) {
-                if (condition_exists(target, value)) {
-                    continue;
-                }
-                Condition inferred;
-                inferred.lhs_col = target;
-                inferred.op = OP_EQ;
-                inferred.is_rhs_val = true;
-                inferred.rhs_val = normalize_value_for_col(target, value);
-                query->conds.push_back(std::move(inferred));
-            }
-        }
-    }
-
     return query;
 }
 
