@@ -18,7 +18,9 @@ See the Mulan PSL v2 for more details. */
 #include <atomic>
 #include <cctype>
 #include <fstream>
+#include <optional>
 #include <sstream>
+#include <vector>
 
 #include "common/config.h"
 #include "errors.h"
@@ -150,6 +152,35 @@ SpecialTxnCommand parse_special_txn_command(const std::string &sql) {
         return SpecialTxnCommand::Rollback;
     }
     return SpecialTxnCommand::None;
+}
+
+std::optional<IsolationLevel> parse_special_isolation_command(
+    const std::string &sql) {
+    std::string text = trim_copy(sql);
+    if (!text.empty() && text.back() == ';') {
+        text.pop_back();
+        text = trim_copy(text);
+    }
+
+    std::istringstream iss(text);
+    std::vector<std::string> words;
+    std::string word;
+    while (iss >> word) {
+        words.push_back(lower_copy(word));
+    }
+
+    if (words.size() == 6 && words[0] == "set" &&
+        words[1] == "transaction" && words[2] == "isolation" &&
+        words[3] == "level" && words[4] == "snapshot" &&
+        words[5] == "isolation") {
+        return IsolationLevel::SNAPSHOT_ISOLATION;
+    }
+    if (words.size() == 5 && words[0] == "set" &&
+        words[1] == "transaction" && words[2] == "isolation" &&
+        words[3] == "level" && words[4] == "serializable") {
+        return IsolationLevel::SERIALIZABLE;
+    }
+    return std::nullopt;
 }
 
 std::vector<std::string> parse_csv_line(const std::string &line) {
@@ -406,6 +437,10 @@ void *client_handler(void *sock_fd) {
                 special_handled = true;
             } else if (iequals(raw_sql, "set output_file on")) {
                 enable_output_file.store(true);
+                special_handled = true;
+            } else if (auto isolation =
+                           parse_special_isolation_command(raw_sql)) {
+                session_isolation = *isolation;
                 special_handled = true;
             } else {
                 SpecialTxnCommand txn_cmd = raw_txn_cmd;

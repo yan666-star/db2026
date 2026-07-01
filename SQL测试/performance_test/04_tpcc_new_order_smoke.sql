@@ -1,7 +1,7 @@
 -- A compact NewOrder-shaped transaction. It is intentionally tiny: the goal is
 -- to validate query/update paths used by the real performance workload, not to
 -- reproduce the official timed benchmark.
-SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION;
+set transaction isolation level snapshot isolation;
 
 BEGIN;
 
