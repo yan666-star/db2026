@@ -183,7 +183,11 @@ def run_files(args, output_file: Path):
                     print(response.rstrip())
 
                 lowered = statement.lower()
-                if "failure" in response.lower():
+                expected_failure = (
+                    lowered.startswith("insert into orders") and
+                    "'2026-07-01 10:00:03'" in lowered
+                )
+                if "failure" in response.lower() and not expected_failure:
                     raise AssertionError(f"statement failed: {statement}")
 
                 if lowered in NO_SEMICOLON_COMMANDS:
@@ -213,6 +217,14 @@ def run_files(args, output_file: Path):
                 if lowered.startswith("select h_data") and "2026-07-01 10:00:02" in lowered:
                     if "syntax-rollback" in response:
                         raise AssertionError("ROLLBACK WORK left an inserted row behind")
+
+                if lowered.startswith("select h_data") and "2026-07-01 10:00:03" in lowered:
+                    if "failed-before-conflict" in response:
+                        raise AssertionError("failed transaction kept writes before the conflict")
+
+                if lowered.startswith("select h_data") and "2026-07-01 10:00:04" in lowered:
+                    if "failed-after-conflict" in response:
+                        raise AssertionError("failed transaction executed statements after abort")
 
                 time.sleep(args.delay)
     finally:

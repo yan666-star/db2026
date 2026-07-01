@@ -47,6 +47,10 @@ class SeqScanExecutor : public AbstractExecutor {
         while (equality_pos_ < equality_rids_.size()) {
             rid_ = equality_rids_[equality_pos_];
             auto rec = fh_->get_record(rid_, context_);
+            if (rec == nullptr) {
+                equality_pos_++;
+                continue;
+            }
             if (scan_plan_ != nullptr) {
                 scan_plan_->rows_++;
             }
