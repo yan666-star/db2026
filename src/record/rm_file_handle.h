@@ -112,13 +112,17 @@ class RmFileHandle {
 
     bool record_exists(const Rid &rid) const;
 
-    void upsert_record_for_recovery(const Rid &rid, const char *buf);
+    void upsert_record_for_recovery(const Rid &rid, const char *buf,
+                                    lsn_t page_lsn = INVALID_LSN);
 
-    void delete_record_for_recovery(const Rid &rid);
+    void delete_record_for_recovery(const Rid &rid,
+                                    lsn_t page_lsn = INVALID_LSN);
 
     void rebuild_free_page_list();
 
     void flush_file_header() const;
+
+    lsn_t get_page_lsn(int page_no) const;
 
     RmPageHandle create_new_page_handle();
 

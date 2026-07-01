@@ -171,6 +171,7 @@ Rid RmFileHandle::insert_record(char *buf, Context *context, const std::string &
 
 Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std::string *table_name) {
     std::lock_guard<std::mutex> lock(insert_latch_);
+    lsn_t page_lsn = INVALID_LSN;
     bool uses_mvcc_insert =
         context != nullptr && context->txn_mgr_ != nullptr &&
         context->txn_mgr_->uses_mvcc(context->txn_) && table_name != nullptr;
@@ -207,11 +208,15 @@ Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std:
         log_record.prev_lsn_ = context->txn_->get_prev_lsn();
         lsn_t lsn = context->log_mgr_->add_log_to_buffer(&log_record);
         context->txn_->set_prev_lsn(lsn);
+        page_lsn = lsn;
     }
 
     Bitmap::set(page_handle.bitmap, slot_no);
     memcpy(page_handle.get_slot(slot_no), buf, file_hdr_.record_size);
     page_handle.page_hdr->num_records++;
+    if (page_lsn != INVALID_LSN) {
+        page_handle.page->set_page_lsn(page_lsn);
+    }
     add_to_int_equality_caches(rid, buf);
 
     if (page_handle.page_hdr->num_records == file_hdr_.num_records_per_page) {
@@ -270,6 +275,10 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
     remove_from_int_equality_caches(rid, page_handle.get_slot(rid.slot_no));
     Bitmap::reset(page_handle.bitmap, rid.slot_no);
     page_handle.page_hdr->num_records--;
+    if (context != nullptr && context->txn_ != nullptr &&
+        context->txn_->get_prev_lsn() != INVALID_LSN) {
+        page_handle.page->set_page_lsn(context->txn_->get_prev_lsn());
+    }
 
     if (was_full) {
         release_page_handle(page_handle);
@@ -295,6 +304,10 @@ void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
     char *slot = page_handle.get_slot(rid.slot_no);
     update_int_equality_caches(rid, slot, buf);
     memcpy(slot, buf, file_hdr_.record_size);
+    if (context != nullptr && context->txn_ != nullptr &&
+        context->txn_->get_prev_lsn() != INVALID_LSN) {
+        page_handle.page->set_page_lsn(context->txn_->get_prev_lsn());
+    }
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
 }
 
@@ -309,7 +322,8 @@ bool RmFileHandle::record_exists(const Rid &rid) const {
     return exists;
 }
 
-void RmFileHandle::upsert_record_for_recovery(const Rid &rid, const char *buf) {
+void RmFileHandle::upsert_record_for_recovery(const Rid &rid, const char *buf,
+                                              lsn_t page_lsn) {
     if (rid.page_no < RM_FIRST_RECORD_PAGE || rid.slot_no < 0 ||
         rid.slot_no >= file_hdr_.num_records_per_page) {
         throw InternalError("Invalid RID in recovery log");
@@ -322,16 +336,22 @@ void RmFileHandle::upsert_record_for_recovery(const Rid &rid, const char *buf) {
         page_handle.page_hdr->num_records++;
     }
     memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
+    if (page_lsn != INVALID_LSN) {
+        page_handle.page->set_page_lsn(page_lsn);
+    }
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
 }
 
-void RmFileHandle::delete_record_for_recovery(const Rid &rid) {
+void RmFileHandle::delete_record_for_recovery(const Rid &rid, lsn_t page_lsn) {
     if (!record_exists(rid)) {
         return;
     }
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     Bitmap::reset(page_handle.bitmap, rid.slot_no);
     page_handle.page_hdr->num_records--;
+    if (page_lsn != INVALID_LSN) {
+        page_handle.page->set_page_lsn(page_lsn);
+    }
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
 }
 
@@ -353,6 +373,16 @@ void RmFileHandle::rebuild_free_page_list() {
 void RmFileHandle::flush_file_header() const {
     disk_manager_->write_page(
         fd_, RM_FILE_HDR_PAGE, reinterpret_cast<const char *>(&file_hdr_), sizeof(file_hdr_));
+}
+
+lsn_t RmFileHandle::get_page_lsn(int page_no) const {
+    if (page_no < RM_FIRST_RECORD_PAGE || page_no >= file_hdr_.num_pages) {
+        return INVALID_LSN;
+    }
+    RmPageHandle page_handle = fetch_page_handle(page_no);
+    lsn_t page_lsn = page_handle.page->get_page_lsn();
+    buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
+    return page_lsn;
 }
 
 /**
@@ -381,6 +411,7 @@ RmPageHandle RmFileHandle::create_new_page_handle() {
     Page *page = buffer_pool_manager_->new_page(&page_id);
 
     RmPageHandle page_handle(&file_hdr_, page);
+    page->set_page_lsn(INVALID_LSN);
     page_handle.page_hdr->next_free_page_no = file_hdr_.first_free_page_no;
     page_handle.page_hdr->num_records = 0;
     Bitmap::init(page_handle.bitmap, file_hdr_.bitmap_size);

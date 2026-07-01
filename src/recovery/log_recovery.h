@@ -60,9 +60,11 @@ private:
     void undo_update(const UpdateLogRecord &record);
     void install_record(const std::string &table_name, const Rid &rid,
                         const RmRecord &record,
-                        const RmRecord *known_old_record = nullptr);
+                        const RmRecord *known_old_record = nullptr,
+                        lsn_t page_lsn = INVALID_LSN);
     void remove_record(const std::string &table_name, const Rid &rid,
-                       const RmRecord *known_record = nullptr);
+                       const RmRecord *known_record = nullptr,
+                       lsn_t page_lsn = INVALID_LSN);
     void insert_index_entries(const std::string &table_name,
                               const RmRecord &record, const Rid &rid);
     void delete_index_entries(const std::string &table_name,
