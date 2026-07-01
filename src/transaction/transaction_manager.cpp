@@ -338,6 +338,24 @@ bool TransactionManager::mvcc_txn_aborted(txn_id_t txn_id) const {
     return it != mvcc_txns_.end() && it->second.aborted;
 }
 
+bool TransactionManager::has_uncommitted_mvcc_insert(
+    uint64_t file_id, const Rid &rid) const {
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    RecordKey key{file_id, rid};
+    auto history_it = record_versions_.find(key);
+    if (history_it == record_versions_.end()) {
+        return false;
+    }
+    for (const auto &version : history_it->second) {
+        if (version.commit_ts == INVALID_TS &&
+            version.owner != INVALID_TXN_ID &&
+            version.before_deleted) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
     auto it = mvcc_txns_.find(txn_id);
     if (it != mvcc_txns_.end()) {
