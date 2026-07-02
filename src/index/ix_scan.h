@@ -10,11 +10,14 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <mutex>
+
 #include "ix_defs.h"
 #include "ix_index_handle.h"
 
 class IxScan : public RecScan {
-    const IxIndexHandle *ih_;
+    IxIndexHandle *ih_;
+    std::unique_lock<std::mutex> tree_lock_;
     Iid iid_;
     Iid end_;
     BufferPoolManager *bpm_;
@@ -23,9 +26,10 @@ class IxScan : public RecScan {
     std::vector<Rid> batch_rids_;
 
    public:
-    IxScan(const IxIndexHandle *ih, const Iid &lower, const Iid &upper, BufferPoolManager *bpm)
-        : ih_(ih), iid_(lower), end_(upper), bpm_(bpm) {
+    IxScan(IxIndexHandle *ih, const Iid &lower, const Iid &upper, BufferPoolManager *bpm)
+        : ih_(ih), tree_lock_(ih_->root_latch_), iid_(lower), end_(upper), bpm_(bpm) {
         if (is_end()) {
+            tree_lock_.unlock();
             return;
         }
         auto node = ih_->fetch_node(iid_.page_no);
