@@ -31,15 +31,19 @@ int read_int_key(const char *record, int offset) {
  * @return {unique_ptr<RmRecord>} rid对应的记录对象指针
  */
 std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* context) const {
-    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
-    bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
+    bool exists = false;
     std::unique_ptr<RmRecord> physical_record;
-    if (exists) {
-        physical_record = std::make_unique<RmRecord>(file_hdr_.record_size);
-        memcpy(physical_record->data, page_handle.get_slot(rid.slot_no),
-               file_hdr_.record_size);
+    {
+        std::lock_guard<std::mutex> lock(insert_latch_);
+        RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+        exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
+        if (exists) {
+            physical_record = std::make_unique<RmRecord>(file_hdr_.record_size);
+            memcpy(physical_record->data, page_handle.get_slot(rid.slot_no),
+                   file_hdr_.record_size);
+        }
+        buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
     }
-    buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
 
     if (context != nullptr && context->txn_mgr_ != nullptr &&
         context->txn_mgr_->uses_mvcc(context->txn_)) {

@@ -63,7 +63,7 @@ class RmFileHandle {
     inline static std::atomic<uint64_t> next_mvcc_file_id_{0};
     uint64_t mvcc_file_id_;
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
-    std::mutex insert_latch_;
+    mutable std::mutex insert_latch_;
     std::unordered_map<int, IntEqualityCache> int_equality_caches_;
 
    public:

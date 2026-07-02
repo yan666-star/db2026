@@ -57,6 +57,8 @@ pthread_mutex_t *buffer_mutex;
 pthread_mutex_t *sockfd_mutex;
 
 static constexpr bool kVerboseServerLog = false;
+static std::atomic<int> default_session_isolation{
+    static_cast<int>(IsolationLevel::READ_COMMITTED)};
 
 namespace {
 
@@ -337,7 +339,9 @@ void *client_handler(void *sock_fd) {
     int offset = 0;
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
-    IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
+    IsolationLevel session_isolation = static_cast<IsolationLevel>(
+        default_session_isolation.load());
+    bool session_isolation_overridden = false;
     bool explicit_txn_failed = false;
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
@@ -406,6 +410,11 @@ void *client_handler(void *sock_fd) {
             write_failure_if_enabled();
         };
 
+        if (!session_isolation_overridden) {
+            session_isolation = static_cast<IsolationLevel>(
+                default_session_isolation.load());
+        }
+
         std::string raw_sql = trim_copy(data_recv);
         SpecialTxnCommand raw_txn_cmd = parse_special_txn_command(raw_sql);
         if (explicit_txn_failed) {
@@ -441,6 +450,8 @@ void *client_handler(void *sock_fd) {
             } else if (auto isolation =
                            parse_special_isolation_command(raw_sql)) {
                 session_isolation = *isolation;
+                session_isolation_overridden = true;
+                default_session_isolation.store(static_cast<int>(*isolation));
                 special_handled = true;
             } else {
                 SpecialTxnCommand txn_cmd = raw_txn_cmd;
