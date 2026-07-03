@@ -839,12 +839,8 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                         RmRecord after(
                             static_cast<int>(version.data.size()),
                             const_cast<char *>(version.data.data()));
-                        if (file_handle->record_exists(key.rid)) {
-                            file_handle->update_record(key.rid, after.data,
-                                                       nullptr);
-                        } else {
-                            file_handle->insert_record(key.rid, after.data);
-                        }
+                        file_handle->update_record(key.rid, after.data,
+                                                   nullptr);
                         update_indexes(sm_manager_, version.table_name,
                                        before, after, key.rid, txn);
                     }
