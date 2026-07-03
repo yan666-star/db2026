@@ -284,7 +284,6 @@ def execute_explicit_txn(statements, host, port, timeout):
 
 def new_order_statements(order_id, district_id, quantities):
     statements = [
-        "set transaction isolation level snapshot isolation;",
         "BEGIN;",
         f"SELECT d_next_o_id FROM district WHERE d_w_id = 1 AND d_id = {district_id};",
         f"UPDATE district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = 1 AND d_id = {district_id};",
@@ -303,7 +302,6 @@ def new_order_statements(order_id, district_id, quantities):
 
 def failure_probe_statements(order_id, district_id, stage):
     statements = [
-        "set transaction isolation level snapshot isolation;",
         "BEGIN;",
         f"UPDATE district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = 1 AND d_id = {district_id};",
     ]

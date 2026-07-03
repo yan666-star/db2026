@@ -58,7 +58,7 @@ class InsertExecutor : public AbstractExecutor {
             context_->txn_mgr_ != nullptr &&
             context_->txn_mgr_->uses_mvcc(context_->txn_);
 
-        auto table_write_guard = sm_manager_->acquire_table_write_lock(tab_name_);
+        auto table_write_guard = acquire_dml_table_write_lock(sm_manager_, tab_name_);
 
         if (uses_mvcc && tab_.indexes.empty() && !tab_.cols.empty()) {
             const ColMeta &identity_col = tab_.cols.front();

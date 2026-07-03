@@ -148,6 +148,7 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
     }
     txn->get_lock_set()->clear();
     clear_write_set(txn);
+    txn->clear_table_write_locks();
     txn->set_state(TransactionState::COMMITTED);
     finish_transaction(txn);
 }
@@ -190,6 +191,7 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     if (txn->uses_mvcc()) {
         abort_mvcc(txn);
     }
+    txn->clear_table_write_locks();
     txn->set_state(TransactionState::ABORTED);
     finish_transaction(txn);
 }
