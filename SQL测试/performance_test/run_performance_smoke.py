@@ -386,6 +386,16 @@ def run_concurrent_consistency_probe(args):
             else:
                 aborted.append((workload, responses))
 
+    if aborted:
+        rendered = []
+        for workload, responses in aborted:
+            rendered.append(f"workload={workload}")
+            rendered.extend(f"  {sql} => {resp!r}" for sql, resp in responses)
+        raise AssertionError(
+            "default READ_COMMITTED new-order probe aborted unexpectedly\n" +
+            "\n".join(rendered)
+        )
+
     failure_probes = [
         (3101, 1, "district"),
         (3102, 1, "orders"),

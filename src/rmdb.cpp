@@ -15,7 +15,6 @@ See the Mulan PSL v2 for more details. */
 #include <signal.h>
 #include <unistd.h>
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <fstream>
 #include <optional>
@@ -57,9 +56,6 @@ pthread_mutex_t *buffer_mutex;
 pthread_mutex_t *sockfd_mutex;
 
 static constexpr bool kVerboseServerLog = false;
-static std::atomic<int> default_session_isolation{
-    static_cast<int>(IsolationLevel::READ_COMMITTED)};
-
 namespace {
 
 std::string trim_copy(const std::string &value) {
@@ -365,8 +361,7 @@ void *client_handler(void *sock_fd) {
     int offset = 0;
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
-    IsolationLevel session_isolation = static_cast<IsolationLevel>(
-        default_session_isolation.load());
+    IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
     bool session_isolation_overridden = false;
     bool explicit_txn_failed = false;
 
@@ -437,8 +432,7 @@ void *client_handler(void *sock_fd) {
         };
 
         if (!session_isolation_overridden) {
-            session_isolation = static_cast<IsolationLevel>(
-                default_session_isolation.load());
+            session_isolation = IsolationLevel::READ_COMMITTED;
         }
 
         std::string raw_sql = trim_copy(data_recv);
@@ -477,7 +471,6 @@ void *client_handler(void *sock_fd) {
                            parse_special_isolation_command(raw_sql)) {
                 session_isolation = *isolation;
                 session_isolation_overridden = true;
-                default_session_isolation.store(static_cast<int>(*isolation));
                 special_handled = true;
             } else {
                 SpecialTxnCommand txn_cmd = raw_txn_cmd;
