@@ -211,6 +211,7 @@ public:
 
 private:
     void finish_transaction(Transaction *txn);
+    void validate_mvcc_commit(Transaction *txn);
     void commit_mvcc(Transaction *txn);
     void abort_mvcc(Transaction *txn);
 
@@ -296,6 +297,7 @@ private:
     std::atomic<timestamp_t> last_commit_ts_{0};    // 最后提交的时间戳,仅用于MVCC
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC
 
+    std::mutex mvcc_commit_latch_;
     mutable std::mutex mvcc_latch_;
     std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
     std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;

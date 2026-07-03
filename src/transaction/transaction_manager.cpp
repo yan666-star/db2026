@@ -124,6 +124,13 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         return;
     }
 
+    bool mvcc_txn = txn->uses_mvcc();
+    std::unique_lock<std::mutex> mvcc_commit_lock;
+    if (mvcc_txn) {
+        mvcc_commit_lock = std::unique_lock<std::mutex>(mvcc_commit_latch_);
+        validate_mvcc_commit(txn);
+    }
+
     if (log_manager != nullptr) {
         CommitLogRecord commit_log(txn->get_transaction_id());
         commit_log.prev_lsn_ = txn->get_prev_lsn();
@@ -132,7 +139,7 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         log_manager->flush_log_to_disk();
     }
 
-    if (txn->uses_mvcc()) {
+    if (mvcc_txn) {
         commit_mvcc(txn);
     }
 
@@ -691,15 +698,118 @@ void TransactionManager::prepare_write(
     }
 }
 
+void TransactionManager::validate_mvcc_commit(Transaction *txn) {
+    if (!uses_mvcc(txn)) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+    if (state_it == mvcc_txns_.end()) {
+        return;
+    }
+    if (state_it->second.aborted) {
+        throw TransactionAbortException(txn->get_transaction_id(),
+                                        AbortReason::WRITE_CONFLICT);
+    }
+
+    for (const auto &key : state_it->second.write_records) {
+        auto history_it = record_versions_.find(key);
+        if (history_it == record_versions_.end()) {
+            state_it->second.aborted = true;
+            throw TransactionAbortException(txn->get_transaction_id(),
+                                            AbortReason::WRITE_CONFLICT);
+        }
+
+        bool found_pending = false;
+        for (const auto &version : history_it->second) {
+            if (version.owner != txn->get_transaction_id() ||
+                version.commit_ts != INVALID_TS) {
+                continue;
+            }
+            found_pending = true;
+            if (!version.table_name.empty()) {
+                if (!sm_manager_->db_.is_table(version.table_name) ||
+                    sm_manager_->fhs_.find(version.table_name) ==
+                        sm_manager_->fhs_.end()) {
+                    state_it->second.aborted = true;
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                }
+                const auto &tab = sm_manager_->db_.get_table(version.table_name);
+                for (const auto &index_meta : tab.indexes) {
+                    auto index_name = sm_manager_->get_ix_manager()->get_index_name(
+                        version.table_name, index_meta.cols);
+                    if (sm_manager_->ihs_.find(index_name) ==
+                        sm_manager_->ihs_.end()) {
+                        state_it->second.aborted = true;
+                        throw TransactionAbortException(
+                            txn->get_transaction_id(),
+                            AbortReason::WRITE_CONFLICT);
+                    }
+                }
+            }
+            break;
+        }
+        if (!found_pending) {
+            state_it->second.aborted = true;
+            throw TransactionAbortException(txn->get_transaction_id(),
+                                            AbortReason::WRITE_CONFLICT);
+        }
+    }
+}
+
 void TransactionManager::commit_mvcc(Transaction *txn) {
     if (!uses_mvcc(txn)) {
         return;
     }
+
+    std::vector<std::string> table_names;
+    {
+        std::lock_guard<std::mutex> lock(mvcc_latch_);
+        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+        if (state_it == mvcc_txns_.end()) {
+            return;
+        }
+        if (state_it->second.aborted) {
+            throw TransactionAbortException(txn->get_transaction_id(),
+                                            AbortReason::WRITE_CONFLICT);
+        }
+        for (const auto &key : state_it->second.write_records) {
+            auto history_it = record_versions_.find(key);
+            if (history_it == record_versions_.end()) {
+                continue;
+            }
+            for (const auto &version : history_it->second) {
+                if (version.owner == txn->get_transaction_id() &&
+                    version.commit_ts == INVALID_TS &&
+                    !version.table_name.empty()) {
+                    table_names.push_back(version.table_name);
+                    break;
+                }
+            }
+        }
+    }
+
+    std::sort(table_names.begin(), table_names.end());
+    table_names.erase(std::unique(table_names.begin(), table_names.end()),
+                      table_names.end());
+    std::vector<std::unique_lock<std::recursive_mutex>> table_write_guards;
+    table_write_guards.reserve(table_names.size());
+    for (const auto &table_name : table_names) {
+        table_write_guards.emplace_back(
+            sm_manager_->acquire_table_write_lock(table_name));
+    }
+
     std::lock_guard<std::mutex> lock(mvcc_latch_);
     timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
     txn->set_commit_ts(commit_ts);
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
     if (state_it != mvcc_txns_.end()) {
+        if (state_it->second.aborted) {
+            throw TransactionAbortException(txn->get_transaction_id(),
+                                            AbortReason::WRITE_CONFLICT);
+        }
         state_it->second.commit_ts = commit_ts;
         for (const auto &key : state_it->second.write_records) {
             auto history_it = record_versions_.find(key);
@@ -713,12 +823,14 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                         !version.before.empty() && version.deleted) {
                         auto file_handle =
                             sm_manager_->fhs_.at(version.table_name).get();
-                        RmRecord before(
-                            static_cast<int>(version.before.size()),
-                            const_cast<char *>(version.before.data()));
-                        delete_indexes(sm_manager_, version.table_name,
-                                       before, key.rid, txn);
-                        file_handle->delete_record(key.rid, nullptr);
+                        if (file_handle->record_exists(key.rid)) {
+                            RmRecord before(
+                                static_cast<int>(version.before.size()),
+                                const_cast<char *>(version.before.data()));
+                            delete_indexes(sm_manager_, version.table_name,
+                                           before, key.rid, txn);
+                            file_handle->delete_record(key.rid, nullptr);
+                        }
                     } else if (!version.table_name.empty() &&
                                !version.before.empty() &&
                                !version.deleted) {
@@ -730,8 +842,12 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                         RmRecord after(
                             static_cast<int>(version.data.size()),
                             const_cast<char *>(version.data.data()));
-                        file_handle->update_record(key.rid, after.data,
-                                                   nullptr);
+                        if (file_handle->record_exists(key.rid)) {
+                            file_handle->update_record(key.rid, after.data,
+                                                       nullptr);
+                        } else {
+                            file_handle->insert_record(key.rid, after.data);
+                        }
                         update_indexes(sm_manager_, version.table_name,
                                        before, after, key.rid, txn);
                     }
@@ -741,6 +857,7 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
         }
     }
 }
+
 
 void TransactionManager::remove_dependencies(txn_id_t txn_id) {
     auto state_it = mvcc_txns_.find(txn_id);

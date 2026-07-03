@@ -326,6 +326,32 @@ void SetTransaction(txn_id_t *txn_id, Context *context,
     }
 }
 
+bool abort_current_transaction(Context *context, txn_id_t *txn_id,
+                               bool *explicit_txn_failed) {
+    if (context == nullptr || context->txn_ == nullptr) {
+        if (txn_id != nullptr) {
+            *txn_id = INVALID_TXN_ID;
+        }
+        return false;
+    }
+
+    Transaction *txn = context->txn_;
+    bool was_explicit_txn = txn->get_txn_mode();
+    if (txn->get_state() != TransactionState::COMMITTED &&
+        txn->get_state() != TransactionState::ABORTED) {
+        txn_manager->abort(txn, context->log_mgr_);
+    }
+    txn_manager->release_transaction(txn);
+    context->txn_ = nullptr;
+    if (txn_id != nullptr) {
+        *txn_id = INVALID_TXN_ID;
+    }
+    if (explicit_txn_failed != nullptr) {
+        *explicit_txn_failed = was_explicit_txn;
+    }
+    return was_explicit_txn;
+}
+
 void *client_handler(void *sock_fd) {
     int fd = *((int *)sock_fd);
     pthread_mutex_unlock(sockfd_mutex);
@@ -501,13 +527,7 @@ void *client_handler(void *sock_fd) {
             data_send[str.length()] = '\0';
             offset = str.length();
 
-            bool was_explicit_txn =
-                context->txn_ != nullptr && context->txn_->get_txn_mode();
-            txn_manager->abort(context->txn_, log_manager.get());
-            txn_manager->release_transaction(context->txn_);
-            context->txn_ = nullptr;
-            txn_id = INVALID_TXN_ID;
-            explicit_txn_failed = was_explicit_txn;
+            abort_current_transaction(context, &txn_id, &explicit_txn_failed);
             if (kVerboseServerLog) {
                 std::cout << e.GetInfo() << std::endl;
             }
@@ -523,32 +543,14 @@ void *client_handler(void *sock_fd) {
                 std::cerr << e.what() << std::endl;
             }
             set_failure_response();
-            if (context->txn_ != nullptr &&
-                context->txn_->get_state() != TransactionState::COMMITTED &&
-                context->txn_->get_state() != TransactionState::ABORTED) {
-                bool was_explicit_txn = context->txn_->get_txn_mode();
-                txn_manager->abort(context->txn_, log_manager.get());
-                txn_manager->release_transaction(context->txn_);
-                context->txn_ = nullptr;
-                txn_id = INVALID_TXN_ID;
-                explicit_txn_failed = was_explicit_txn;
-            }
+            abort_current_transaction(context, &txn_id, &explicit_txn_failed);
             special_handled = true;
         } catch (const std::exception &e) {
             if (kVerboseServerLog) {
                 std::cerr << e.what() << std::endl;
             }
             set_failure_response();
-            if (context->txn_ != nullptr &&
-                context->txn_->get_state() != TransactionState::COMMITTED &&
-                context->txn_->get_state() != TransactionState::ABORTED) {
-                bool was_explicit_txn = context->txn_->get_txn_mode();
-                txn_manager->abort(context->txn_, log_manager.get());
-                txn_manager->release_transaction(context->txn_);
-                context->txn_ = nullptr;
-                txn_id = INVALID_TXN_ID;
-                explicit_txn_failed = was_explicit_txn;
-            }
+            abort_current_transaction(context, &txn_id, &explicit_txn_failed);
             special_handled = true;
         }
 
@@ -597,14 +599,7 @@ void *client_handler(void *sock_fd) {
                     offset = str.length();
 
                     // 回滚事务
-                    bool was_explicit_txn =
-                        context->txn_ != nullptr &&
-                        context->txn_->get_txn_mode();
-                    txn_manager->abort(context->txn_, log_manager.get());
-                    txn_manager->release_transaction(context->txn_);
-                    context->txn_ = nullptr;
-                    txn_id = INVALID_TXN_ID;
-                    explicit_txn_failed = was_explicit_txn;
+                    abort_current_transaction(context, &txn_id, &explicit_txn_failed);
                     if (kVerboseServerLog) {
                         std::cout << e.GetInfo() << std::endl;
                     }
@@ -629,16 +624,7 @@ void *client_handler(void *sock_fd) {
 
                     // 将报错信息写入output.txt
                     write_failure_if_enabled();
-                    if (context->txn_ != nullptr &&
-                        context->txn_->get_state() != TransactionState::COMMITTED &&
-                        context->txn_->get_state() != TransactionState::ABORTED) {
-                        bool was_explicit_txn = context->txn_->get_txn_mode();
-                        txn_manager->abort(context->txn_, log_manager.get());
-                        txn_manager->release_transaction(context->txn_);
-                        context->txn_ = nullptr;
-                        txn_id = INVALID_TXN_ID;
-                        explicit_txn_failed = was_explicit_txn;
-                    }
+                    abort_current_transaction(context, &txn_id, &explicit_txn_failed);
                 } catch (const std::exception &e) {
                     if (kVerboseServerLog) {
                         std::cerr << e.what() << std::endl;
@@ -648,16 +634,7 @@ void *client_handler(void *sock_fd) {
                     data_send[client_msg.size()] = '\0';
                     offset = static_cast<int>(client_msg.size());
                     write_failure_if_enabled();
-                    if (context->txn_ != nullptr &&
-                        context->txn_->get_state() != TransactionState::COMMITTED &&
-                        context->txn_->get_state() != TransactionState::ABORTED) {
-                        bool was_explicit_txn = context->txn_->get_txn_mode();
-                        txn_manager->abort(context->txn_, log_manager.get());
-                        txn_manager->release_transaction(context->txn_);
-                        context->txn_ = nullptr;
-                        txn_id = INVALID_TXN_ID;
-                        explicit_txn_failed = was_explicit_txn;
-                    }
+                    abort_current_transaction(context, &txn_id, &explicit_txn_failed);
                 }
             }
         } else {

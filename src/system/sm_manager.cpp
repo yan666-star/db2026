@@ -48,6 +48,19 @@ void copy_file_for_checkpoint(const std::string &source,
 
 }
 
+std::unique_lock<std::recursive_mutex> SmManager::acquire_table_write_lock(const std::string& table_name) {
+    std::recursive_mutex *table_latch = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(table_latches_latch_);
+        auto &slot = table_latches_[table_name];
+        if (slot == nullptr) {
+            slot = std::make_unique<std::recursive_mutex>();
+        }
+        table_latch = slot.get();
+    }
+    return std::unique_lock<std::recursive_mutex>(*table_latch);
+}
+
 /**
  * @description: 判断是否为一个文件夹
  * @return {bool} 返回是否为一个文件夹
@@ -546,6 +559,7 @@ void SmManager::show_index(const std::string& tab_name, Context* context) {
 }
 
 void SmManager::rollback(WriteRecord* record, Context* context) {
+    auto table_write_guard = acquire_table_write_lock(record->GetTableName());
     switch (record->GetWriteType()) {
         case WType::INSERT_TUPLE:
             rollback_insert(record->GetTableName(), record->GetRid(), context);
@@ -562,6 +576,7 @@ void SmManager::rollback(WriteRecord* record, Context* context) {
 }
 
 void SmManager::rollback_insert(const std::string& table_name, Rid& rid, Context* context) {
+    auto table_write_guard = acquire_table_write_lock(table_name);
     auto file_handle = fhs_.at(table_name).get();
     std::unique_ptr<RmRecord> inserted_record;
     try {
@@ -587,6 +602,7 @@ void SmManager::rollback_insert(const std::string& table_name, Rid& rid, Context
 }
 
 void SmManager::rollback_delete(const std::string& table_name, Rid& rid, RmRecord& record, Context* context) {
+    auto table_write_guard = acquire_table_write_lock(table_name);
     auto file_handle = fhs_.at(table_name).get();
     file_handle->insert_record(rid, record.data);
 
@@ -605,6 +621,7 @@ void SmManager::rollback_delete(const std::string& table_name, Rid& rid, RmRecor
 }
 
 void SmManager::rollback_update(const std::string& table_name, Rid& rid, RmRecord& record, Context* context) {
+    auto table_write_guard = acquire_table_write_lock(table_name);
     auto file_handle = fhs_.at(table_name).get();
     std::unique_ptr<RmRecord> new_record;
     try {
