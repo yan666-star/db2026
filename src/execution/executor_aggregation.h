@@ -337,10 +337,7 @@ class AggregationExecutor : public AbstractExecutor {
                     AggState empty;
                     auto it = g.agg_states.find(agg_key(item.agg));
                     auto res = agg_result(item.agg, it == g.agg_states.end() ? empty : it->second);
-                    std::memset(dst, 0, cols_[i].len);
-                    std::memcpy(dst, res.second.data(),
-                                std::min(res.second.size(),
-                                         static_cast<size_t>(cols_[i].len)));
+                    std::memcpy(dst, res.second.data(), cols_[i].len);
                 }
             }
             out_.push_back(std::move(row));

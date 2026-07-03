@@ -63,7 +63,7 @@ class RmFileHandle {
     inline static std::atomic<uint64_t> next_mvcc_file_id_{0};
     uint64_t mvcc_file_id_;
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
-    mutable std::mutex insert_latch_;
+    std::mutex insert_latch_;
     std::unordered_map<int, IntEqualityCache> int_equality_caches_;
 
    public:
@@ -112,17 +112,13 @@ class RmFileHandle {
 
     bool record_exists(const Rid &rid) const;
 
-    void upsert_record_for_recovery(const Rid &rid, const char *buf,
-                                    lsn_t page_lsn = INVALID_LSN);
+    void upsert_record_for_recovery(const Rid &rid, const char *buf);
 
-    void delete_record_for_recovery(const Rid &rid,
-                                    lsn_t page_lsn = INVALID_LSN);
+    void delete_record_for_recovery(const Rid &rid);
 
     void rebuild_free_page_list();
 
     void flush_file_header() const;
-
-    lsn_t get_page_lsn(int page_no) const;
 
     RmPageHandle create_new_page_handle();
 

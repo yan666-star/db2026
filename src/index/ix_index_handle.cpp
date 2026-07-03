@@ -250,7 +250,6 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
  */
 bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transaction *transaction)
 {
-    std::scoped_lock<std::mutex> lock(root_latch_);
     if (file_hdr_->root_page_ == INVALID_PAGE_ID) {
         return false;
     }

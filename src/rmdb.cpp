@@ -15,9 +15,10 @@ See the Mulan PSL v2 for more details. */
 #include <signal.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <fstream>
-#include <optional>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -56,7 +57,10 @@ pthread_mutex_t *buffer_mutex;
 pthread_mutex_t *sockfd_mutex;
 
 static constexpr bool kVerboseServerLog = false;
+
 namespace {
+
+std::mutex read_committed_txn_mutex;
 
 std::string trim_copy(const std::string &value) {
     size_t begin = 0;
@@ -104,6 +108,35 @@ bool parse_load_command(const std::string &sql, std::string &file_name,
            !file_name.empty() && !table_name.empty();
 }
 
+bool parse_output_file_command(const std::string &sql, bool &enabled) {
+    std::string text = trim_copy(sql);
+    if (!text.empty() && text.back() == ';') {
+        text.pop_back();
+        text = trim_copy(text);
+    }
+
+    std::istringstream iss(text);
+    std::string set_kw;
+    std::string output_kw;
+    std::string state_kw;
+    std::string extra;
+    if (!(iss >> set_kw >> output_kw >> state_kw) || (iss >> extra)) {
+        return false;
+    }
+    if (!iequals(set_kw, "set") || !iequals(output_kw, "output_file")) {
+        return false;
+    }
+    if (iequals(state_kw, "off")) {
+        enabled = false;
+        return true;
+    }
+    if (iequals(state_kw, "on")) {
+        enabled = true;
+        return true;
+    }
+    return false;
+}
+
 enum class SpecialTxnCommand {
     None,
     Begin,
@@ -131,54 +164,22 @@ SpecialTxnCommand parse_special_txn_command(const std::string &sql) {
 
     first = lower_copy(first);
     second = lower_copy(second);
-    if (first == "begin" &&
-        (second.empty() || second == "transaction" || second == "work")) {
-        return SpecialTxnCommand::Begin;
-    }
     if (first == "start" && second == "transaction") {
         return SpecialTxnCommand::Begin;
     }
-    if (first == "commit" &&
-        (second.empty() || second == "transaction" || second == "work")) {
-        return SpecialTxnCommand::Commit;
+    if (first == "begin" &&
+        (second.empty() || second == "work" || second == "transaction")) {
+        return SpecialTxnCommand::Begin;
     }
-    if (first == "end" && second.empty()) {
+    if (first == "commit" &&
+        (second.empty() || second == "work" || second == "transaction")) {
         return SpecialTxnCommand::Commit;
     }
     if ((first == "rollback" || first == "abort") &&
-        (second.empty() || second == "transaction" || second == "work")) {
+        (second.empty() || second == "work" || second == "transaction")) {
         return SpecialTxnCommand::Rollback;
     }
     return SpecialTxnCommand::None;
-}
-
-std::optional<IsolationLevel> parse_special_isolation_command(
-    const std::string &sql) {
-    std::string text = trim_copy(sql);
-    if (!text.empty() && text.back() == ';') {
-        text.pop_back();
-        text = trim_copy(text);
-    }
-
-    std::istringstream iss(text);
-    std::vector<std::string> words;
-    std::string word;
-    while (iss >> word) {
-        words.push_back(lower_copy(word));
-    }
-
-    if (words.size() == 6 && words[0] == "set" &&
-        words[1] == "transaction" && words[2] == "isolation" &&
-        words[3] == "level" && words[4] == "snapshot" &&
-        words[5] == "isolation") {
-        return IsolationLevel::SNAPSHOT_ISOLATION;
-    }
-    if (words.size() == 5 && words[0] == "set" &&
-        words[1] == "transaction" && words[2] == "isolation" &&
-        words[3] == "level" && words[4] == "serializable") {
-        return IsolationLevel::SERIALIZABLE;
-    }
-    return std::nullopt;
 }
 
 std::vector<std::string> parse_csv_line(const std::string &line) {
@@ -288,13 +289,14 @@ size_t execute_load_command(const std::string &file_name,
     return loaded;
 }
 
-void write_failure_if_enabled() {
+void write_output_if_enabled(const std::string &text) {
     if (!enable_output_file.load()) {
         return;
     }
     std::fstream outfile;
     outfile.open("output.txt", std::ios::out | std::ios::app);
-    outfile << "failure\n";
+    outfile << text;
+    outfile.close();
 }
 
 }  // namespace
@@ -322,32 +324,6 @@ void SetTransaction(txn_id_t *txn_id, Context *context,
     }
 }
 
-bool abort_current_transaction(Context *context, txn_id_t *txn_id,
-                               bool *explicit_txn_failed) {
-    if (context == nullptr || context->txn_ == nullptr) {
-        if (txn_id != nullptr) {
-            *txn_id = INVALID_TXN_ID;
-        }
-        return false;
-    }
-
-    Transaction *txn = context->txn_;
-    bool was_explicit_txn = txn->get_txn_mode();
-    if (txn->get_state() != TransactionState::COMMITTED &&
-        txn->get_state() != TransactionState::ABORTED) {
-        txn_manager->abort(txn, context->log_mgr_);
-    }
-    txn_manager->release_transaction(txn);
-    context->txn_ = nullptr;
-    if (txn_id != nullptr) {
-        *txn_id = INVALID_TXN_ID;
-    }
-    if (explicit_txn_failed != nullptr) {
-        *explicit_txn_failed = was_explicit_txn;
-    }
-    return was_explicit_txn;
-}
-
 void *client_handler(void *sock_fd) {
     int fd = *((int *)sock_fd);
     pthread_mutex_unlock(sockfd_mutex);
@@ -362,8 +338,8 @@ void *client_handler(void *sock_fd) {
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
     IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
-    bool session_isolation_overridden = false;
     bool explicit_txn_failed = false;
+    std::unique_lock<std::mutex> read_committed_txn_guard;
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
     if (kVerboseServerLog) {
@@ -421,133 +397,180 @@ void *client_handler(void *sock_fd) {
             txn_manager.get(), &session_isolation);
         Context *context = context_holder.get();
         bool statement_entered = false;
-        bool special_handled = false;
-
-        auto set_failure_response = [&]() {
-            std::string client_msg = "failure\n";
-            memcpy(data_send, client_msg.c_str(), client_msg.size());
-            data_send[client_msg.size()] = '\0';
-            offset = static_cast<int>(client_msg.size());
-            write_failure_if_enabled();
-        };
-
-        if (!session_isolation_overridden) {
-            session_isolation = IsolationLevel::READ_COMMITTED;
-        }
 
         std::string raw_sql = trim_copy(data_recv);
-        SpecialTxnCommand raw_txn_cmd = parse_special_txn_command(raw_sql);
+        bool output_file_enabled = true;
+        if (parse_output_file_command(raw_sql, output_file_enabled)) {
+            enable_output_file.store(output_file_enabled);
+            bool write_failed = write(fd, data_send, offset + 1) == -1;
+            if (write_failed) {
+                break;
+            }
+            continue;
+        }
+
+        SpecialTxnCommand txn_cmd = parse_special_txn_command(raw_sql);
         if (explicit_txn_failed) {
-            if (raw_txn_cmd == SpecialTxnCommand::Commit ||
-                raw_txn_cmd == SpecialTxnCommand::Rollback) {
+            if (txn_cmd == SpecialTxnCommand::Commit ||
+                txn_cmd == SpecialTxnCommand::Rollback) {
                 explicit_txn_failed = false;
-                special_handled = true;
-            } else if (raw_txn_cmd == SpecialTxnCommand::Begin) {
-                explicit_txn_failed = false;
-            } else {
+                bool write_failed = write(fd, data_send, offset + 1) == -1;
+                if (write_failed) {
+                    break;
+                }
+                continue;
+            }
+            if (txn_cmd != SpecialTxnCommand::Begin) {
                 std::string str = "abort\n";
                 memcpy(data_send, str.c_str(), str.length());
                 data_send[str.length()] = '\0';
                 offset = str.length();
-                if (enable_output_file.load()) {
-                    std::fstream outfile;
-                    outfile.open("output.txt", std::ios::out | std::ios::app);
-                    outfile << str;
-                    outfile.close();
+                write_output_if_enabled(str);
+                bool write_failed = write(fd, data_send, offset + 1) == -1;
+                if (write_failed) {
+                    break;
                 }
-                special_handled = true;
+                continue;
             }
+            explicit_txn_failed = false;
         }
-        try {
-            if (special_handled) {
-                // Drain statements from an explicit transaction already aborted.
-            } else if (iequals(raw_sql, "set output_file off")) {
-                enable_output_file.store(false);
-                special_handled = true;
-            } else if (iequals(raw_sql, "set output_file on")) {
-                enable_output_file.store(true);
-                special_handled = true;
-            } else if (auto isolation =
-                           parse_special_isolation_command(raw_sql)) {
-                session_isolation = *isolation;
-                session_isolation_overridden = true;
-                special_handled = true;
+
+        if (txn_cmd != SpecialTxnCommand::None) {
+            txn_manager->enter_statement(txn_id);
+            statement_entered = true;
+            if (txn_cmd == SpecialTxnCommand::Begin &&
+                session_isolation == IsolationLevel::READ_COMMITTED &&
+                !read_committed_txn_guard.owns_lock()) {
+                read_committed_txn_guard =
+                    std::unique_lock<std::mutex>(read_committed_txn_mutex);
+            }
+            SetTransaction(&txn_id, context, session_isolation);
+            if (txn_cmd == SpecialTxnCommand::Begin) {
+                context->txn_->set_txn_mode(true);
+            } else if (txn_cmd == SpecialTxnCommand::Commit) {
+                context->txn_ = txn_manager->get_transaction(txn_id);
+                context->txn_->set_txn_mode(false);
+                txn_manager->commit(context->txn_, context->log_mgr_);
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+                if (read_committed_txn_guard.owns_lock()) {
+                    read_committed_txn_guard.unlock();
+                }
             } else {
-                SpecialTxnCommand txn_cmd = raw_txn_cmd;
-                if (txn_cmd != SpecialTxnCommand::None) {
-                    txn_manager->enter_statement(txn_id);
-                    statement_entered = true;
-                    SetTransaction(&txn_id, context, session_isolation);
-                    if (txn_cmd == SpecialTxnCommand::Begin) {
-                        context->txn_->set_txn_mode(true);
-                    } else if (txn_cmd == SpecialTxnCommand::Commit) {
-                        context->txn_->set_txn_mode(false);
-                        txn_manager->commit(context->txn_, context->log_mgr_);
-                        txn_manager->release_transaction(context->txn_);
-                        context->txn_ = nullptr;
-                        txn_id = INVALID_TXN_ID;
-                    } else {
-                        context->txn_->set_txn_mode(false);
-                        txn_manager->abort(context->txn_, context->log_mgr_);
-                        txn_manager->release_transaction(context->txn_);
-                        context->txn_ = nullptr;
-                        txn_id = INVALID_TXN_ID;
-                    }
-                    special_handled = true;
-                }
-
-                std::string load_file;
-                std::string load_table;
-                if (!special_handled &&
-                    parse_load_command(raw_sql, load_file, load_table)) {
-                    txn_manager->enter_statement(txn_id);
-                    statement_entered = true;
-                    SetTransaction(&txn_id, context, session_isolation);
-                    execute_load_command(load_file, load_table, context);
-                    if (context->txn_ != nullptr &&
-                        context->txn_->get_txn_mode() == false) {
-                        txn_manager->commit(context->txn_, context->log_mgr_);
-                        txn_manager->release_transaction(context->txn_);
-                        context->txn_ = nullptr;
-                        txn_id = INVALID_TXN_ID;
-                    }
-                    special_handled = true;
+                context->txn_ = txn_manager->get_transaction(txn_id);
+                context->txn_->set_txn_mode(false);
+                txn_manager->abort(context->txn_, context->log_mgr_);
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+                if (read_committed_txn_guard.owns_lock()) {
+                    read_committed_txn_guard.unlock();
                 }
             }
-        } catch (TransactionAbortException &e) {
-            std::string str = "abort\n";
-            memcpy(data_send, str.c_str(), str.length());
-            data_send[str.length()] = '\0';
-            offset = str.length();
-
-            abort_current_transaction(context, &txn_id, &explicit_txn_failed);
-            if (kVerboseServerLog) {
-                std::cout << e.GetInfo() << std::endl;
+            if (statement_entered) {
+                txn_manager->leave_statement();
             }
-            if (enable_output_file.load()) {
-                std::fstream outfile;
-                outfile.open("output.txt", std::ios::out | std::ios::app);
-                outfile << str;
-                outfile.close();
+            bool write_failed = write(fd, data_send, offset + 1) == -1;
+            if (write_failed) {
+                break;
             }
-            special_handled = true;
-        } catch (RMDBError &e) {
-            if (kVerboseServerLog) {
-                std::cerr << e.what() << std::endl;
-            }
-            set_failure_response();
-            abort_current_transaction(context, &txn_id, &explicit_txn_failed);
-            special_handled = true;
-        } catch (const std::exception &e) {
-            if (kVerboseServerLog) {
-                std::cerr << e.what() << std::endl;
-            }
-            set_failure_response();
-            abort_current_transaction(context, &txn_id, &explicit_txn_failed);
-            special_handled = true;
+            continue;
         }
 
-        if (special_handled) {
+        std::string load_file;
+        std::string load_table;
+        if (parse_load_command(raw_sql, load_file, load_table)) {
+            try {
+                txn_manager->enter_statement(txn_id);
+                statement_entered = true;
+                SetTransaction(&txn_id, context, session_isolation);
+                execute_load_command(load_file, load_table, context);
+            } catch (TransactionAbortException &e) {
+                std::string str = "abort\n";
+                memcpy(data_send, str.c_str(), str.length());
+                data_send[str.length()] = '\0';
+                offset = str.length();
+
+                bool was_explicit =
+                    context->txn_ != nullptr && context->txn_->get_txn_mode();
+                txn_manager->abort(context->txn_, log_manager.get());
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+                if (was_explicit) {
+                    explicit_txn_failed = true;
+                }
+                if (read_committed_txn_guard.owns_lock()) {
+                    read_committed_txn_guard.unlock();
+                }
+                if (kVerboseServerLog) {
+                    std::cout << e.GetInfo() << std::endl;
+                }
+
+                write_output_if_enabled(str);
+            } catch (RMDBError &e) {
+                if (kVerboseServerLog) {
+                    std::cerr << e.what() << std::endl;
+                }
+
+                std::string client_msg = "failure";
+                memcpy(data_send, client_msg.c_str(), client_msg.length());
+                data_send[client_msg.length()] = '\n';
+                data_send[client_msg.length() + 1] = '\0';
+                offset = client_msg.length() + 1;
+
+                write_output_if_enabled("failure\n");
+                bool was_explicit =
+                    context->txn_ != nullptr && context->txn_->get_txn_mode();
+                if (context->txn_ != nullptr &&
+                    context->txn_->get_state() != TransactionState::COMMITTED &&
+                    context->txn_->get_state() != TransactionState::ABORTED) {
+                    txn_manager->abort(context->txn_, log_manager.get());
+                    txn_manager->release_transaction(context->txn_);
+                    context->txn_ = nullptr;
+                    txn_id = INVALID_TXN_ID;
+                }
+                if (was_explicit) {
+                    explicit_txn_failed = true;
+                }
+                if (read_committed_txn_guard.owns_lock()) {
+                    read_committed_txn_guard.unlock();
+                }
+            } catch (const std::exception &e) {
+                if (kVerboseServerLog) {
+                    std::cerr << e.what() << std::endl;
+                }
+                const std::string client_msg = "failure\n";
+                memcpy(data_send, client_msg.c_str(), client_msg.size());
+                data_send[client_msg.size()] = '\0';
+                offset = static_cast<int>(client_msg.size());
+                write_output_if_enabled("failure\n");
+                bool was_explicit =
+                    context->txn_ != nullptr && context->txn_->get_txn_mode();
+                if (context->txn_ != nullptr &&
+                    context->txn_->get_state() != TransactionState::COMMITTED &&
+                    context->txn_->get_state() != TransactionState::ABORTED) {
+                    txn_manager->abort(context->txn_, log_manager.get());
+                    txn_manager->release_transaction(context->txn_);
+                    context->txn_ = nullptr;
+                    txn_id = INVALID_TXN_ID;
+                }
+                if (was_explicit) {
+                    explicit_txn_failed = true;
+                }
+                if (read_committed_txn_guard.owns_lock()) {
+                    read_committed_txn_guard.unlock();
+                }
+            }
+
+            if(context->txn_ != nullptr && context->txn_->get_txn_mode() == false)
+            {
+                txn_manager->commit(context->txn_, context->log_mgr_);
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+            }
             if (statement_entered) {
                 txn_manager->leave_statement();
             }
@@ -592,17 +615,23 @@ void *client_handler(void *sock_fd) {
                     offset = str.length();
 
                     // 回滚事务
-                    abort_current_transaction(context, &txn_id, &explicit_txn_failed);
+                    bool was_explicit =
+                        context->txn_ != nullptr && context->txn_->get_txn_mode();
+                    txn_manager->abort(context->txn_, log_manager.get());
+                    txn_manager->release_transaction(context->txn_);
+                    context->txn_ = nullptr;
+                    txn_id = INVALID_TXN_ID;
+                    if (was_explicit) {
+                        explicit_txn_failed = true;
+                    }
+                    if (read_committed_txn_guard.owns_lock()) {
+                        read_committed_txn_guard.unlock();
+                    }
                     if (kVerboseServerLog) {
                         std::cout << e.GetInfo() << std::endl;
                     }
 
-                    if (enable_output_file.load()) {
-                        std::fstream outfile;
-                        outfile.open("output.txt", std::ios::out | std::ios::app);
-                        outfile << str;
-                        outfile.close();
-                    }
+                    write_output_if_enabled(str);
                 } catch (RMDBError &e) {
                     // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
                     if (kVerboseServerLog) {
@@ -616,8 +645,23 @@ void *client_handler(void *sock_fd) {
                     offset = client_msg.length() + 1;
 
                     // 将报错信息写入output.txt
-                    write_failure_if_enabled();
-                    abort_current_transaction(context, &txn_id, &explicit_txn_failed);
+                    write_output_if_enabled("failure\n");
+                    bool was_explicit =
+                        context->txn_ != nullptr && context->txn_->get_txn_mode();
+                    if (context->txn_ != nullptr &&
+                        context->txn_->get_state() != TransactionState::COMMITTED &&
+                        context->txn_->get_state() != TransactionState::ABORTED) {
+                        txn_manager->abort(context->txn_, log_manager.get());
+                        txn_manager->release_transaction(context->txn_);
+                        context->txn_ = nullptr;
+                        txn_id = INVALID_TXN_ID;
+                    }
+                    if (was_explicit) {
+                        explicit_txn_failed = true;
+                    }
+                    if (read_committed_txn_guard.owns_lock()) {
+                        read_committed_txn_guard.unlock();
+                    }
                 } catch (const std::exception &e) {
                     if (kVerboseServerLog) {
                         std::cerr << e.what() << std::endl;
@@ -626,8 +670,23 @@ void *client_handler(void *sock_fd) {
                     memcpy(data_send, client_msg.c_str(), client_msg.size());
                     data_send[client_msg.size()] = '\0';
                     offset = static_cast<int>(client_msg.size());
-                    write_failure_if_enabled();
-                    abort_current_transaction(context, &txn_id, &explicit_txn_failed);
+                    write_output_if_enabled("failure\n");
+                    bool was_explicit =
+                        context->txn_ != nullptr && context->txn_->get_txn_mode();
+                    if (context->txn_ != nullptr &&
+                        context->txn_->get_state() != TransactionState::COMMITTED &&
+                        context->txn_->get_state() != TransactionState::ABORTED) {
+                        txn_manager->abort(context->txn_, log_manager.get());
+                        txn_manager->release_transaction(context->txn_);
+                        context->txn_ = nullptr;
+                        txn_id = INVALID_TXN_ID;
+                    }
+                    if (was_explicit) {
+                        explicit_txn_failed = true;
+                    }
+                    if (read_committed_txn_guard.owns_lock()) {
+                        read_committed_txn_guard.unlock();
+                    }
                 }
             }
         } else {
@@ -637,11 +696,36 @@ void *client_handler(void *sock_fd) {
             data_send[client_msg.length() + 1] = '\0';
             offset = client_msg.length() + 1;
 
-            write_failure_if_enabled();
+            write_output_if_enabled("failure\n");
         }
         if(finish_analyze == false) {
             yy_delete_buffer(buf);
             pthread_mutex_unlock(buffer_mutex);
+        }
+        if (strcmp(data_send, "failure\n") == 0 ||
+            strcmp(data_send, "abort\n") == 0) {
+            bool had_read_committed_txn = read_committed_txn_guard.owns_lock();
+            if (context->txn_ == nullptr && txn_id != INVALID_TXN_ID &&
+                had_read_committed_txn) {
+                context->txn_ = txn_manager->get_transaction(txn_id);
+            }
+
+            bool was_explicit =
+                context->txn_ != nullptr && context->txn_->get_txn_mode();
+            if (context->txn_ != nullptr &&
+                context->txn_->get_state() != TransactionState::COMMITTED &&
+                context->txn_->get_state() != TransactionState::ABORTED) {
+                txn_manager->abort(context->txn_, log_manager.get());
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+            }
+            if (was_explicit || had_read_committed_txn) {
+                explicit_txn_failed = true;
+            }
+            if (had_read_committed_txn) {
+                read_committed_txn_guard.unlock();
+            }
         }
         // future TODO: 格式化 sql_handler.result, 传给客户端
         // send result with fixed format, use protobuf in the future

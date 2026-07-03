@@ -19,7 +19,6 @@ See the Mulan PSL v2 for more details. */
 #include <functional>
 #include <memory>
 #include <shared_mutex>
-#include <utility>
 #include <vector>
 
 #include "transaction.h"
@@ -96,8 +95,6 @@ public:
     bool uses_mvcc(const Transaction *txn) const {
         return txn != nullptr && txn->uses_mvcc();
     }
-    bool has_uncommitted_mvcc_insert(uint64_t file_id, const Rid &rid) const;
-    bool latest_committed_mvcc_deleted(uint64_t file_id, const Rid &rid) const;
 
     std::unique_ptr<RmRecord> get_visible_record(
         Transaction *txn, uint64_t file_id, const Rid &rid,
@@ -128,13 +125,6 @@ public:
     void check_unique_key_conflict(
         Transaction *txn, uint64_t file_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
-
-    std::vector<std::pair<Rid, std::unique_ptr<RmRecord>>>
-    collect_visible_records(
-        Transaction *txn, uint64_t file_id,
-        const std::vector<Condition> &conditions,
-        const std::vector<ColMeta> &columns,
-        const std::vector<Rid> &exclude_rids);
 
     /**
      * @description: 获取事务ID为txn_id的事务对象
@@ -212,7 +202,6 @@ public:
 
 private:
     void finish_transaction(Transaction *txn);
-    void validate_mvcc_commit(Transaction *txn);
     void commit_mvcc(Transaction *txn);
     void abort_mvcc(Transaction *txn);
 
@@ -298,7 +287,6 @@ private:
     std::atomic<timestamp_t> last_commit_ts_{0};    // 最后提交的时间戳,仅用于MVCC
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC
 
-    std::mutex mvcc_commit_latch_;
     mutable std::mutex mvcc_latch_;
     std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
     std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;

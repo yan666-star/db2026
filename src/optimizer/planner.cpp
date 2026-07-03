@@ -234,6 +234,9 @@ std::shared_ptr<Plan> pop_scan(int *scantbl,
 
 std::shared_ptr<Query> Planner::logical_optimization(std::shared_ptr<Query> query, Context *context)
 {
+    
+    //TODO 实现逻辑优化规则
+
     return query;
 }
 

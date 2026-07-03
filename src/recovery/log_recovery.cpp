@@ -16,39 +16,6 @@ See the Mulan PSL v2 for more details. */
 
 #include "errors.h"
 
-namespace {
-
-bool get_action_target(const LogRecord &record, std::string *table_name,
-                       Rid *rid) {
-    switch (record.log_type_) {
-        case LogType::INSERT: {
-            const auto &insert_record =
-                static_cast<const InsertLogRecord &>(record);
-            *table_name = insert_record.table_name_;
-            *rid = insert_record.rid_;
-            return true;
-        }
-        case LogType::DELETE: {
-            const auto &delete_record =
-                static_cast<const DeleteLogRecord &>(record);
-            *table_name = delete_record.table_name_;
-            *rid = delete_record.rid_;
-            return true;
-        }
-        case LogType::UPDATE: {
-            const auto &update_record =
-                static_cast<const UpdateLogRecord &>(record);
-            *table_name = update_record.table_name_;
-            *rid = update_record.rid_;
-            return true;
-        }
-        default:
-            return false;
-    }
-}
-
-}  // namespace
-
 std::unique_ptr<LogRecord> RecoveryManager::read_log_record(
     int64_t offset, int64_t log_end, int64_t *next_offset) const {
     if (offset < 0 || offset + LOG_HEADER_SIZE > log_end) {
@@ -225,20 +192,6 @@ void RecoveryManager::redo() {
             offset = next_offset;
             continue;
         }
-        if (is_action && !indexes_from_checkpoint_) {
-            std::string table_name;
-            Rid rid;
-            if (get_action_target(base, &table_name, &rid) &&
-                sm_manager_->db_.is_table(table_name)) {
-                auto file_handle = sm_manager_->fhs_.at(table_name).get();
-                lsn_t page_lsn = file_handle->get_page_lsn(rid.page_no);
-                if (base.lsn_ > 0 && page_lsn >= base.lsn_) {
-                    touched_tables_.insert(table_name);
-                    offset = next_offset;
-                    continue;
-                }
-            }
-        }
         switch (base.log_type_) {
             case LogType::INSERT:
                 redo_insert(static_cast<const InsertLogRecord &>(base));
@@ -303,41 +256,34 @@ void RecoveryManager::undo() {
 }
 
 void RecoveryManager::redo_insert(const InsertLogRecord &record) {
-    install_record(record.table_name_, record.rid_, record.insert_value_,
-                   nullptr, record.lsn_);
+    install_record(record.table_name_, record.rid_, record.insert_value_);
 }
 
 void RecoveryManager::redo_delete(const DeleteLogRecord &record) {
-    remove_record(record.table_name_, record.rid_, &record.delete_value_,
-                  record.lsn_);
+    remove_record(record.table_name_, record.rid_, &record.delete_value_);
 }
 
 void RecoveryManager::redo_update(const UpdateLogRecord &record) {
     install_record(
-        record.table_name_, record.rid_, record.new_value_, &record.old_value_,
-        record.lsn_);
+        record.table_name_, record.rid_, record.new_value_, &record.old_value_);
 }
 
 void RecoveryManager::undo_insert(const InsertLogRecord &record) {
-    remove_record(record.table_name_, record.rid_, &record.insert_value_,
-                  record.lsn_);
+    remove_record(record.table_name_, record.rid_, &record.insert_value_);
 }
 
 void RecoveryManager::undo_delete(const DeleteLogRecord &record) {
-    install_record(record.table_name_, record.rid_, record.delete_value_,
-                   nullptr, record.lsn_);
+    install_record(record.table_name_, record.rid_, record.delete_value_);
 }
 
 void RecoveryManager::undo_update(const UpdateLogRecord &record) {
     install_record(
-        record.table_name_, record.rid_, record.old_value_, &record.new_value_,
-        record.lsn_);
+        record.table_name_, record.rid_, record.old_value_, &record.new_value_);
 }
 
 void RecoveryManager::install_record(const std::string &table_name, const Rid &rid,
                                      const RmRecord &record,
-                                     const RmRecord *known_old_record,
-                                     lsn_t page_lsn) {
+                                     const RmRecord *known_old_record) {
     if (!sm_manager_->db_.is_table(table_name)) {
         throw InternalError("Recovery log references missing table " + table_name);
     }
@@ -355,7 +301,7 @@ void RecoveryManager::install_record(const std::string &table_name, const Rid &r
             delete_index_entries(table_name, *current, rid);
         }
     }
-    file_handle->upsert_record_for_recovery(rid, record.data, page_lsn);
+    file_handle->upsert_record_for_recovery(rid, record.data);
     if (indexes_from_checkpoint_) {
         insert_index_entries(table_name, record, rid);
     }
@@ -363,8 +309,7 @@ void RecoveryManager::install_record(const std::string &table_name, const Rid &r
 }
 
 void RecoveryManager::remove_record(const std::string &table_name, const Rid &rid,
-                                    const RmRecord *known_record,
-                                    lsn_t page_lsn) {
+                                    const RmRecord *known_record) {
     if (!sm_manager_->db_.is_table(table_name)) {
         throw InternalError("Recovery log references missing table " + table_name);
     }
@@ -377,7 +322,7 @@ void RecoveryManager::remove_record(const std::string &table_name, const Rid &ri
             auto current = file_handle->get_record(rid, nullptr);
             delete_index_entries(table_name, *current, rid);
         }
-        file_handle->delete_record_for_recovery(rid, page_lsn);
+        file_handle->delete_record_for_recovery(rid);
     }
     touched_tables_.insert(table_name);
 }

@@ -17,9 +17,6 @@ See the Mulan PSL v2 for more details. */
 #include "common/context.h"
 #include "transaction/txn_defs.h"
 
-#include <memory>
-#include <mutex>
-#include <unordered_map>
 #include <unordered_set>
 
 class Context;
@@ -41,8 +38,6 @@ class SmManager {
     BufferPoolManager* buffer_pool_manager_;
     RmManager* rm_manager_;
     IxManager* ix_manager_;
-    std::mutex table_latches_latch_;
-    std::unordered_map<std::string, std::unique_ptr<std::recursive_mutex>> table_latches_;
 
    public:
     SmManager(DiskManager* disk_manager, BufferPoolManager* buffer_pool_manager, RmManager* rm_manager,
@@ -61,8 +56,6 @@ class SmManager {
     IxManager* get_ix_manager() { return ix_manager_; }  
 
     bool is_dir(const std::string& db_name);
-
-    std::unique_lock<std::recursive_mutex> acquire_table_write_lock(const std::string& table_name);
 
     void create_db(const std::string& db_name);
 

@@ -13,7 +13,6 @@ See the Mulan PSL v2 for more details. */
 #include <atomic>
 #include <deque>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -111,25 +110,6 @@ class Transaction {
     inline void set_read_ts(timestamp_t read_ts) { read_ts_ = read_ts; }
     inline void set_commit_ts(timestamp_t commit_ts) { commit_ts_ = commit_ts; }
 
-    inline bool has_table_write_lock(const std::string &table_name) const {
-        return table_write_lock_names_.find(table_name) != table_write_lock_names_.end();
-    }
-
-    inline void hold_table_write_lock(
-        const std::string &table_name,
-        std::unique_lock<std::recursive_mutex> table_write_lock) {
-        if (!table_write_lock.owns_lock()) {
-            return;
-        }
-        table_write_lock_names_.insert(table_name);
-        table_write_locks_.push_back(std::move(table_write_lock));
-    }
-
-    inline void clear_table_write_locks() {
-        table_write_locks_.clear();
-        table_write_lock_names_.clear();
-    }
-
     /** 修改现有的撤销日志 */
     inline auto ModifyUndoLog(int log_idx, UndoLog new_log) {
         std::scoped_lock<std::mutex> lck(latch_);
@@ -167,8 +147,6 @@ class Transaction {
     std::shared_ptr<std::unordered_set<LockDataId>> lock_set_;  // 事务申请的所有锁
     std::shared_ptr<std::deque<Page*>> index_latch_page_set_;          // 维护事务执行过程中加锁的索引页面
     std::shared_ptr<std::deque<Page*>> index_deleted_page_set_;    // 维护事务执行过程中删除的索引页面
-    std::vector<std::unique_lock<std::recursive_mutex>> table_write_locks_;
-    std::unordered_set<std::string> table_write_lock_names_;
 
   std::atomic<timestamp_t> read_ts_{0};
   /** 提交时间戳 */

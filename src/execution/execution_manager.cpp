@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <iostream>
 #include <set>
 #include <sstream>
+#include "common/config.h"
 #include "execution_eval.h"
 #include "executor_aggregation.h"
 #include "executor_delete.h"

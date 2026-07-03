@@ -34,19 +34,6 @@ class AbstractExecutor {
     
     //增加一个函数用来获取当前执行器的行数，方便explain analyze显示
     virtual size_t rows() const { return 0; }
-
-    std::unique_lock<std::recursive_mutex> acquire_dml_table_write_lock(
-        SmManager *sm_manager, const std::string &table_name) {
-        auto *txn = context_ == nullptr ? nullptr : context_->txn_;
-        if (txn != nullptr && txn->get_txn_mode() && !txn->uses_mvcc()) {
-            if (!txn->has_table_write_lock(table_name)) {
-                auto table_write_lock = sm_manager->acquire_table_write_lock(table_name);
-                txn->hold_table_write_lock(table_name, std::move(table_write_lock));
-            }
-            return std::unique_lock<std::recursive_mutex>();
-        }
-        return sm_manager->acquire_table_write_lock(table_name);
-    }
     virtual void beginTuple(){};
 
     virtual void nextTuple(){};

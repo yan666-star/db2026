@@ -14,7 +14,6 @@ See the Mulan PSL v2 for more details. */
 #include <limits>
 #include <map>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "execution_eval.h"
@@ -46,23 +45,17 @@ class IndexScanExecutor : public AbstractExecutor {
     std::vector<Rid> batch_rids_;
     size_t batch_index_ = 0;
     std::unordered_map<int, std::vector<Rid>> batch_rids_map_;
-    std::vector<Rid> indexed_rids_;
-    std::vector<std::pair<Rid, std::unique_ptr<RmRecord>>> mvcc_extra_records_;
-    size_t mvcc_extra_index_ = 0;
     ScanPlan *scan_plan_ = nullptr;
     std::vector<char> lookup_key_;
     bool has_lookup_key_ = false;
-    bool track_serializable_reads_ = true;
 
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
                       std::vector<std::string> index_col_names, Context *context,
-                      ScanPlan *scan_plan = nullptr,
-                      bool track_serializable_reads = true) {
+                      ScanPlan *scan_plan = nullptr) {
         sm_manager_ = sm_manager;
         context_ = context;
         scan_plan_ = scan_plan;
-        track_serializable_reads_ = track_serializable_reads;
         tab_name_ = std::move(tab_name);
         tab_ = sm_manager_->db_.get_table(tab_name_);
         conds_ = std::move(conds);
@@ -97,9 +90,6 @@ class IndexScanExecutor : public AbstractExecutor {
         batch_recs_.clear();
         batch_rids_.clear();
         batch_rids_map_.clear();
-        indexed_rids_.clear();
-        mvcc_extra_records_.clear();
-        mvcc_extra_index_ = 0;
         batch_index_ = 0;
         rid_ = {-1, -1};
 
@@ -136,17 +126,8 @@ class IndexScanExecutor : public AbstractExecutor {
             Rid r = scan_->rid();
             if (r.page_no >= 0) {
                 batch_rids_map_[r.page_no].push_back(r);
-                indexed_rids_.push_back(r);
             }
             scan_->next();
-        }
-
-        if (context_->txn_mgr_ != nullptr &&
-            context_->txn_mgr_->uses_mvcc(context_->txn_)) {
-            mvcc_extra_records_ =
-                context_->txn_mgr_->collect_visible_records(
-                    context_->txn_, fh_->GetMvccFileId(), conds_, cols_,
-                    indexed_rids_);
         }
 
         load_next_batch();
@@ -234,31 +215,10 @@ class IndexScanExecutor : public AbstractExecutor {
                     scan_plan_->rows_++;
                 }
                 if (eval_conditions(*tmp_batch_recs[i], conds_, cols_)) {
-                    if (track_serializable_reads_ &&
-                        context_->txn_mgr_ != nullptr) {
-                        context_->txn_mgr_->register_record_read(
-                            context_->txn_, fh_->GetMvccFileId(),
-                            tmp_batch_rids[i]);
-                    }
                     batch_recs_.push_back(std::move(tmp_batch_recs[i]));
                     batch_rids_.push_back(tmp_batch_rids[i]);
                 }
             }
-        }
-
-        while (batch_recs_.empty() &&
-               mvcc_extra_index_ < mvcc_extra_records_.size()) {
-            auto &extra = mvcc_extra_records_[mvcc_extra_index_++];
-            if (scan_plan_ != nullptr) {
-                scan_plan_->rows_++;
-            }
-            if (track_serializable_reads_ &&
-                context_->txn_mgr_ != nullptr) {
-                context_->txn_mgr_->register_record_read(
-                    context_->txn_, fh_->GetMvccFileId(), extra.first);
-            }
-            batch_rids_.push_back(extra.first);
-            batch_recs_.push_back(std::move(extra.second));
         }
 
         if (!batch_recs_.empty()) {

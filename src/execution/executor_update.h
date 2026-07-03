@@ -50,8 +50,6 @@ class UpdateExecutor : public AbstractExecutor {
         }
         done_ = true;
 
-        auto table_write_guard = acquire_dml_table_write_lock(sm_manager_, tab_name_);
-
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
             if (rec == nullptr) {

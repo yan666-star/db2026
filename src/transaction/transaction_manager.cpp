@@ -124,13 +124,6 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         return;
     }
 
-    bool mvcc_txn = txn->uses_mvcc();
-    std::unique_lock<std::mutex> mvcc_commit_lock;
-    if (mvcc_txn) {
-        mvcc_commit_lock = std::unique_lock<std::mutex>(mvcc_commit_latch_);
-        validate_mvcc_commit(txn);
-    }
-
     if (log_manager != nullptr) {
         CommitLogRecord commit_log(txn->get_transaction_id());
         commit_log.prev_lsn_ = txn->get_prev_lsn();
@@ -139,7 +132,7 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         log_manager->flush_log_to_disk();
     }
 
-    if (mvcc_txn) {
+    if (txn->uses_mvcc()) {
         commit_mvcc(txn);
     }
 
@@ -148,7 +141,6 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
     }
     txn->get_lock_set()->clear();
     clear_write_set(txn);
-    txn->clear_table_write_locks();
     txn->set_state(TransactionState::COMMITTED);
     finish_transaction(txn);
 }
@@ -191,7 +183,6 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     if (txn->uses_mvcc()) {
         abort_mvcc(txn);
     }
-    txn->clear_table_write_locks();
     txn->set_state(TransactionState::ABORTED);
     finish_transaction(txn);
 }
@@ -345,45 +336,6 @@ bool TransactionManager::dependency_forms_dangerous_structure(
 bool TransactionManager::mvcc_txn_aborted(txn_id_t txn_id) const {
     auto it = mvcc_txns_.find(txn_id);
     return it != mvcc_txns_.end() && it->second.aborted;
-}
-
-bool TransactionManager::has_uncommitted_mvcc_insert(
-    uint64_t file_id, const Rid &rid) const {
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
-    RecordKey key{file_id, rid};
-    auto history_it = record_versions_.find(key);
-    if (history_it == record_versions_.end()) {
-        return false;
-    }
-    for (const auto &version : history_it->second) {
-        if (version.commit_ts == INVALID_TS &&
-            version.owner != INVALID_TXN_ID &&
-            version.before_deleted) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool TransactionManager::latest_committed_mvcc_deleted(
-    uint64_t file_id, const Rid &rid) const {
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
-    RecordKey key{file_id, rid};
-    auto history_it = record_versions_.find(key);
-    if (history_it == record_versions_.end()) {
-        return false;
-    }
-
-    const MvccVersion *latest = nullptr;
-    for (const auto &version : history_it->second) {
-        if (version.commit_ts == INVALID_TS) {
-            continue;
-        }
-        if (latest == nullptr || version.commit_ts > latest->commit_ts) {
-            latest = &version;
-        }
-    }
-    return latest != nullptr && latest->deleted;
 }
 
 void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
@@ -563,61 +515,6 @@ void TransactionManager::check_unique_key_conflict(
     }
 }
 
-std::vector<std::pair<Rid, std::unique_ptr<RmRecord>>>
-TransactionManager::collect_visible_records(
-    Transaction *txn, uint64_t file_id,
-    const std::vector<Condition> &conditions,
-    const std::vector<ColMeta> &columns,
-    const std::vector<Rid> &exclude_rids) {
-    std::vector<std::pair<Rid, std::unique_ptr<RmRecord>>> result;
-    if (!uses_mvcc(txn)) {
-        return result;
-    }
-
-    std::unordered_set<RecordKey, RecordKeyHash> excluded;
-    excluded.reserve(exclude_rids.size());
-    for (const auto &rid : exclude_rids) {
-        excluded.insert(RecordKey{file_id, rid});
-    }
-
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
-    for (const auto &[key, history] : record_versions_) {
-        if (key.file_id != file_id || excluded.count(key) != 0) {
-            continue;
-        }
-
-        const MvccVersion *visible = nullptr;
-        for (auto it = history.rbegin(); it != history.rend(); ++it) {
-            if (it->owner == txn->get_transaction_id() &&
-                it->commit_ts == INVALID_TS) {
-                visible = &*it;
-                break;
-            }
-        }
-        if (visible == nullptr) {
-            for (const auto &version : history) {
-                if (version.commit_ts != INVALID_TS &&
-                    version.commit_ts <= txn->get_start_ts() &&
-                    (visible == nullptr ||
-                     version.commit_ts > visible->commit_ts)) {
-                    visible = &version;
-                }
-            }
-        }
-        if (visible == nullptr || visible->deleted) {
-            continue;
-        }
-
-        auto record = make_record(visible->data);
-        if (record != nullptr &&
-            (conditions.empty() ||
-             eval_conditions(*record, conditions, columns))) {
-            result.emplace_back(key.rid, std::move(record));
-        }
-    }
-    return result;
-}
-
 void TransactionManager::prepare_write(
     Transaction *txn, uint64_t file_id, const Rid &rid,
     const RmRecord *old_record, const RmRecord *new_record, bool deleted,
@@ -721,118 +618,15 @@ void TransactionManager::prepare_write(
     }
 }
 
-void TransactionManager::validate_mvcc_commit(Transaction *txn) {
-    if (!uses_mvcc(txn)) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
-    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-    if (state_it == mvcc_txns_.end()) {
-        return;
-    }
-    if (state_it->second.aborted) {
-        throw TransactionAbortException(txn->get_transaction_id(),
-                                        AbortReason::WRITE_CONFLICT);
-    }
-
-    for (const auto &key : state_it->second.write_records) {
-        auto history_it = record_versions_.find(key);
-        if (history_it == record_versions_.end()) {
-            state_it->second.aborted = true;
-            throw TransactionAbortException(txn->get_transaction_id(),
-                                            AbortReason::WRITE_CONFLICT);
-        }
-
-        bool found_pending = false;
-        for (const auto &version : history_it->second) {
-            if (version.owner != txn->get_transaction_id() ||
-                version.commit_ts != INVALID_TS) {
-                continue;
-            }
-            found_pending = true;
-            if (!version.table_name.empty()) {
-                if (!sm_manager_->db_.is_table(version.table_name) ||
-                    sm_manager_->fhs_.find(version.table_name) ==
-                        sm_manager_->fhs_.end()) {
-                    state_it->second.aborted = true;
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                }
-                const auto &tab = sm_manager_->db_.get_table(version.table_name);
-                for (const auto &index_meta : tab.indexes) {
-                    auto index_name = sm_manager_->get_ix_manager()->get_index_name(
-                        version.table_name, index_meta.cols);
-                    if (sm_manager_->ihs_.find(index_name) ==
-                        sm_manager_->ihs_.end()) {
-                        state_it->second.aborted = true;
-                        throw TransactionAbortException(
-                            txn->get_transaction_id(),
-                            AbortReason::WRITE_CONFLICT);
-                    }
-                }
-            }
-            break;
-        }
-        if (!found_pending) {
-            state_it->second.aborted = true;
-            throw TransactionAbortException(txn->get_transaction_id(),
-                                            AbortReason::WRITE_CONFLICT);
-        }
-    }
-}
-
 void TransactionManager::commit_mvcc(Transaction *txn) {
     if (!uses_mvcc(txn)) {
         return;
     }
-
-    std::vector<std::string> table_names;
-    {
-        std::lock_guard<std::mutex> lock(mvcc_latch_);
-        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-        if (state_it == mvcc_txns_.end()) {
-            return;
-        }
-        if (state_it->second.aborted) {
-            throw TransactionAbortException(txn->get_transaction_id(),
-                                            AbortReason::WRITE_CONFLICT);
-        }
-        for (const auto &key : state_it->second.write_records) {
-            auto history_it = record_versions_.find(key);
-            if (history_it == record_versions_.end()) {
-                continue;
-            }
-            for (const auto &version : history_it->second) {
-                if (version.owner == txn->get_transaction_id() &&
-                    version.commit_ts == INVALID_TS &&
-                    !version.table_name.empty()) {
-                    table_names.push_back(version.table_name);
-                    break;
-                }
-            }
-        }
-    }
-
-    std::sort(table_names.begin(), table_names.end());
-    table_names.erase(std::unique(table_names.begin(), table_names.end()),
-                      table_names.end());
-    std::vector<std::unique_lock<std::recursive_mutex>> table_write_guards;
-    table_write_guards.reserve(table_names.size());
-    for (const auto &table_name : table_names) {
-        table_write_guards.emplace_back(
-            sm_manager_->acquire_table_write_lock(table_name));
-    }
-
     std::lock_guard<std::mutex> lock(mvcc_latch_);
     timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
     txn->set_commit_ts(commit_ts);
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
     if (state_it != mvcc_txns_.end()) {
-        if (state_it->second.aborted) {
-            throw TransactionAbortException(txn->get_transaction_id(),
-                                            AbortReason::WRITE_CONFLICT);
-        }
         state_it->second.commit_ts = commit_ts;
         for (const auto &key : state_it->second.write_records) {
             auto history_it = record_versions_.find(key);
@@ -871,7 +665,6 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
         }
     }
 }
-
 
 void TransactionManager::remove_dependencies(txn_id_t txn_id) {
     auto state_it = mvcc_txns_.find(txn_id);

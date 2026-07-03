@@ -13,9 +13,6 @@ See the Mulan PSL v2 for more details. */
 void IxScan::next() {
     if (iid_.slot_no < node_size_ - 1) {
         iid_.slot_no++;
-        if (is_end() && tree_lock_.owns_lock()) {
-            tree_lock_.unlock();
-        }
         return;
     }
     if (!is_end() && iid_.page_no != ih_->file_hdr_->last_leaf_) {
@@ -32,9 +29,6 @@ void IxScan::next() {
         delete node;
     } else {
         iid_ = end_;
-    }
-    if (is_end() && tree_lock_.owns_lock()) {
-        tree_lock_.unlock();
     }
 }
 

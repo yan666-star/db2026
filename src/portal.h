@@ -133,7 +133,7 @@ class Portal
                 {
                     std::unique_ptr<AbstractExecutor> scan =
                         convert_plan_executor(
-                            x->subplan_, context, nullptr, true, false, false);
+                            x->subplan_, context, nullptr, true, false);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());
@@ -146,7 +146,7 @@ class Portal
                 {
                     std::unique_ptr<AbstractExecutor> scan =
                         convert_plan_executor(
-                            x->subplan_, context, nullptr, true, false, false);
+                            x->subplan_, context, nullptr, true, false);
                     std::vector<Rid> rids;
                     for (scan->beginTuple(); !scan->is_end(); scan->nextTuple()) {
                         rids.push_back(scan->rid());
@@ -222,14 +222,13 @@ class Portal
                                                         Context *context,
                                                         FilterPlan *filter_plan = nullptr,
                                                         bool enable_equality_cache = false,
-                                                        bool track_serializable_reads = true,
-                                                        bool allow_mvcc_index_scan = true)
+                                                        bool track_serializable_reads = true)
     {
         if(auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)){
             return std::make_unique<ProjectionExecutor>(
                 convert_plan_executor(
                     x->subplan_, context, filter_plan, false,
-                    track_serializable_reads, allow_mvcc_index_scan),
+                    track_serializable_reads),
                 x->sel_cols_,
                 x.get()
             );
@@ -239,7 +238,7 @@ class Portal
             return std::make_unique<FilterExecutor>(
                 convert_plan_executor(
                     x->subplan_, context, nullptr, false,
-                    track_serializable_reads, allow_mvcc_index_scan),
+                    track_serializable_reads),
                 x->conds_,
                 x.get());
         }//FilterPlan 不创建 FilterExecutor。把自己 x.get() 传给下面的 ScanExecutor。这样 ScanExecutor 每通过一条过滤条件，就能执行 filter_plan_->rows_++。
@@ -266,8 +265,7 @@ class Portal
                     x->conds_,
                     x->index_col_names_,
                     context,
-                    x.get(),
-                    track_serializable_reads
+                    x.get()
                 );
             }   //SeqScanExecutor 里面可以做到：scan_plan_->rows_++;filter_plan_->rows_++;
         }
@@ -275,11 +273,11 @@ class Portal
             std::unique_ptr<AbstractExecutor> left =
                 convert_plan_executor(
                     x->left_, context, nullptr, false,
-                    track_serializable_reads, allow_mvcc_index_scan);
+                    track_serializable_reads);
             std::unique_ptr<AbstractExecutor> right =
                 convert_plan_executor(
                     x->right_, context, nullptr, false,
-                    track_serializable_reads, allow_mvcc_index_scan);
+                    track_serializable_reads);
             std::unique_ptr<AbstractExecutor> join = std::make_unique<NestedLoopJoinExecutor>(
                                 std::move(left), 
                                 std::move(right),
@@ -290,7 +288,7 @@ class Portal
             return std::make_unique<SortExecutor>(
                 convert_plan_executor(
                     x->subplan_, context, filter_plan, false,
-                    track_serializable_reads, allow_mvcc_index_scan),
+                    track_serializable_reads),
                 x.get());
         } else if (auto x = std::dynamic_pointer_cast<UnionPlan>(plan)) {
             std::vector<std::unique_ptr<AbstractExecutor>> branch_execs;
@@ -298,14 +296,14 @@ class Portal
             for (auto &branch : x->branches_) {
                 branch_execs.push_back(convert_plan_executor(
                     branch, context, filter_plan, false,
-                    track_serializable_reads, allow_mvcc_index_scan));
+                    track_serializable_reads));
             }
             return std::make_unique<UnionExecutor>(std::move(branch_execs), x.get());
         } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
             return std::make_unique<AggregationExecutor>(
                 convert_plan_executor(
                     x->subplan_, context, filter_plan, false,
-                    track_serializable_reads, allow_mvcc_index_scan),
+                    track_serializable_reads),
                 x.get()
             );
         }
