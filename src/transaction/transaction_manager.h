@@ -97,6 +97,7 @@ public:
         return txn != nullptr && txn->uses_mvcc();
     }
     bool has_uncommitted_mvcc_insert(uint64_t file_id, const Rid &rid) const;
+    bool latest_committed_mvcc_deleted(uint64_t file_id, const Rid &rid) const;
 
     std::unique_ptr<RmRecord> get_visible_record(
         Transaction *txn, uint64_t file_id, const Rid &rid,

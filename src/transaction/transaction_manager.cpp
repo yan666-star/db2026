@@ -365,6 +365,27 @@ bool TransactionManager::has_uncommitted_mvcc_insert(
     return false;
 }
 
+bool TransactionManager::latest_committed_mvcc_deleted(
+    uint64_t file_id, const Rid &rid) const {
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    RecordKey key{file_id, rid};
+    auto history_it = record_versions_.find(key);
+    if (history_it == record_versions_.end()) {
+        return false;
+    }
+
+    const MvccVersion *latest = nullptr;
+    for (const auto &version : history_it->second) {
+        if (version.commit_ts == INVALID_TS) {
+            continue;
+        }
+        if (latest == nullptr || version.commit_ts > latest->commit_ts) {
+            latest = &version;
+        }
+    }
+    return latest != nullptr && latest->deleted;
+}
+
 void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
     auto it = mvcc_txns_.find(txn_id);
     if (it != mvcc_txns_.end()) {
