@@ -49,6 +49,11 @@ class IndexScanExecutor : public AbstractExecutor {
     std::vector<char> lookup_key_;
     bool has_lookup_key_ = false;
 
+    bool uses_mvcc() const {
+        return context_ != nullptr && context_->txn_mgr_ != nullptr &&
+               context_->txn_mgr_->uses_mvcc(context_->txn_);
+    }
+
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
                       std::vector<std::string> index_col_names, Context *context,
@@ -195,13 +200,24 @@ class IndexScanExecutor : public AbstractExecutor {
                 if (rids.empty()) {
                     continue;
                 }
-                auto page_recs = fh_->batch_get_records(page_no, rids, context_);
-                if (page_recs.size() != rids.size()) {
-                    throw InternalError("Batch size mismatch in IndexScanExecutor");
+                if (uses_mvcc()) {
+                    for (const auto &rid : rids) {
+                        auto rec = fh_->get_record(rid, context_);
+                        if (rec == nullptr) {
+                            continue;
+                        }
+                        tmp_batch_recs.push_back(std::move(rec));
+                        tmp_batch_rids.push_back(rid);
+                    }
+                } else {
+                    auto page_recs = fh_->batch_get_records(page_no, rids, context_);
+                    if (page_recs.size() != rids.size()) {
+                        throw InternalError("Batch size mismatch in IndexScanExecutor");
+                    }
+                    tmp_batch_recs.insert(tmp_batch_recs.end(), std::make_move_iterator(page_recs.begin()),
+                                          std::make_move_iterator(page_recs.end()));
+                    tmp_batch_rids.insert(tmp_batch_rids.end(), rids.begin(), rids.end());
                 }
-                tmp_batch_recs.insert(tmp_batch_recs.end(), std::make_move_iterator(page_recs.begin()),
-                                      std::make_move_iterator(page_recs.end()));
-                tmp_batch_rids.insert(tmp_batch_rids.end(), rids.begin(), rids.end());
                 has_found = true;
                 break;
             }
