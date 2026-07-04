@@ -83,6 +83,75 @@ bool iequals(const std::string &lhs, const std::string &rhs) {
     return lower_copy(lhs) == lower_copy(rhs);
 }
 
+enum class TxnBoundary {
+    None,
+    Begin,
+    Commit,
+    Rollback,
+    Abort,
+};
+
+TxnBoundary parse_txn_boundary(const std::string &sql) {
+    std::string text = trim_copy(sql);
+    if (!text.empty() && text.back() == ';') {
+        text.pop_back();
+        text = trim_copy(text);
+    }
+
+    std::istringstream iss(text);
+    std::vector<std::string> words;
+    std::string word;
+    while (iss >> word) {
+        words.push_back(lower_copy(word));
+    }
+    if (words.empty() || words.size() > 2) {
+        return TxnBoundary::None;
+    }
+
+    if (words[0] == "start" && words.size() == 2 &&
+        words[1] == "transaction") {
+        return TxnBoundary::Begin;
+    }
+    if (words[0] == "begin" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Begin;
+    }
+    if (words[0] == "commit" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Commit;
+    }
+    if (words[0] == "rollback" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Rollback;
+    }
+    if (words[0] == "abort" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Abort;
+    }
+    return TxnBoundary::None;
+}
+
+std::string canonical_txn_sql(TxnBoundary boundary,
+                              const std::string &raw_sql) {
+    switch (boundary) {
+        case TxnBoundary::Begin:
+            return "BEGIN;";
+        case TxnBoundary::Commit:
+            return "COMMIT;";
+        case TxnBoundary::Rollback:
+            return "ROLLBACK;";
+        case TxnBoundary::Abort:
+            return "ABORT;";
+        case TxnBoundary::None:
+            return raw_sql;
+    }
+    return raw_sql;
+}
+
 bool parse_output_file_command(const std::string &sql, bool &enabled) {
     std::string text = trim_copy(sql);
     if (!text.empty() && text.back() == ';') {
@@ -414,7 +483,9 @@ void *client_handler(void *sock_fd) {
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
         bool finish_analyze = false;
         pthread_mutex_lock(buffer_mutex);
-        YY_BUFFER_STATE buf = yy_scan_string(data_recv);
+        std::string parser_sql = canonical_txn_sql(
+            parse_txn_boundary(raw_sql), raw_sql);
+        YY_BUFFER_STATE buf = yy_scan_string(parser_sql.c_str());
         if (yyparse() == 0) {
             if (ast::parse_tree != nullptr) {
                 try {
