@@ -638,11 +638,14 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                     version.commit_ts == INVALID_TS) {
                     if (!version.table_name.empty() &&
                         !version.before.empty() && version.deleted) {
+                        auto file_handle =
+                            sm_manager_->fhs_.at(version.table_name).get();
                         RmRecord before(
                             static_cast<int>(version.before.size()),
                             const_cast<char *>(version.before.data()));
                         delete_indexes(sm_manager_, version.table_name,
                                        before, key.rid, txn);
+                        file_handle->delete_record(key.rid, nullptr);
                     } else if (!version.table_name.empty() &&
                                !version.before.empty() &&
                                !version.deleted) {
