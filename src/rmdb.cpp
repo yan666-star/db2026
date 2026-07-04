@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include <atomic>
 #include <cctype>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -59,6 +60,16 @@ static constexpr bool kVerboseServerLog = false;
 
 namespace {
 
+std::mutex read_committed_explicit_txn_mutex;
+
+enum class TxnBoundary {
+    None,
+    Begin,
+    Commit,
+    Rollback,
+    Abort,
+};
+
 std::string trim_copy(const std::string &value) {
     size_t begin = 0;
     while (begin < value.size() &&
@@ -81,6 +92,73 @@ std::string lower_copy(std::string value) {
 
 bool iequals(const std::string &lhs, const std::string &rhs) {
     return lower_copy(lhs) == lower_copy(rhs);
+}
+
+TxnBoundary parse_txn_boundary(const std::string &sql) {
+    std::string text = trim_copy(sql);
+    if (!text.empty() && text.back() == ';') {
+        text.pop_back();
+        text = trim_copy(text);
+    }
+
+    std::istringstream iss(text);
+    std::vector<std::string> words;
+    std::string word;
+    while (iss >> word) {
+        words.push_back(lower_copy(word));
+    }
+    if (words.empty() || words.size() > 2) {
+        return TxnBoundary::None;
+    }
+
+    if (words[0] == "start" && words.size() == 2 &&
+        words[1] == "transaction") {
+        return TxnBoundary::Begin;
+    }
+    if (words[0] == "begin" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Begin;
+    }
+    if (words[0] == "commit" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Commit;
+    }
+    if (words[0] == "rollback" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Rollback;
+    }
+    if (words[0] == "abort" &&
+        (words.size() == 1 || words[1] == "work" ||
+         words[1] == "transaction")) {
+        return TxnBoundary::Abort;
+    }
+    return TxnBoundary::None;
+}
+
+bool is_txn_end(TxnBoundary boundary) {
+    return boundary == TxnBoundary::Commit ||
+           boundary == TxnBoundary::Rollback ||
+           boundary == TxnBoundary::Abort;
+}
+
+std::string canonical_txn_sql(TxnBoundary boundary,
+                              const std::string &raw_sql) {
+    switch (boundary) {
+        case TxnBoundary::Begin:
+            return "BEGIN;";
+        case TxnBoundary::Commit:
+            return "COMMIT;";
+        case TxnBoundary::Rollback:
+            return "ROLLBACK;";
+        case TxnBoundary::Abort:
+            return "ABORT;";
+        case TxnBoundary::None:
+            return raw_sql;
+    }
+    return raw_sql;
 }
 
 bool parse_output_file_command(const std::string &sql, bool &enabled) {
@@ -264,6 +342,8 @@ void *client_handler(void *sock_fd) {
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
     IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
+    bool explicit_txn_failed = false;
+    std::unique_lock<std::mutex> read_committed_txn_guard;
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
     if (kVerboseServerLog) {
@@ -323,6 +403,7 @@ void *client_handler(void *sock_fd) {
         bool statement_entered = false;
 
         std::string raw_sql = trim_copy(data_recv);
+        TxnBoundary txn_boundary = parse_txn_boundary(raw_sql);
         bool output_file_enabled = true;
         if (parse_output_file_command(raw_sql, output_file_enabled)) {
             enable_output_file.store(output_file_enabled);
@@ -331,6 +412,41 @@ void *client_handler(void *sock_fd) {
                 break;
             }
             continue;
+        }
+
+        if (explicit_txn_failed) {
+            if (is_txn_end(txn_boundary)) {
+                if (read_committed_txn_guard.owns_lock()) {
+                    read_committed_txn_guard.unlock();
+                }
+                txn_id = INVALID_TXN_ID;
+                explicit_txn_failed = false;
+                bool write_failed = write(fd, data_send, offset + 1) == -1;
+                if (write_failed) {
+                    break;
+                }
+                continue;
+            }
+            if (txn_boundary != TxnBoundary::Begin) {
+                std::string str = "abort\n";
+                memcpy(data_send, str.c_str(), str.length());
+                data_send[str.length()] = '\0';
+                offset = str.length();
+                write_output_if_enabled(str);
+                bool write_failed = write(fd, data_send, offset + 1) == -1;
+                if (write_failed) {
+                    break;
+                }
+                continue;
+            }
+            explicit_txn_failed = false;
+        }
+
+        if (txn_boundary == TxnBoundary::Begin &&
+            session_isolation == IsolationLevel::READ_COMMITTED &&
+            !read_committed_txn_guard.owns_lock()) {
+            read_committed_txn_guard =
+                std::unique_lock<std::mutex>(read_committed_explicit_txn_mutex);
         }
 
         std::string load_file;
@@ -404,6 +520,12 @@ void *client_handler(void *sock_fd) {
             if (statement_entered) {
                 txn_manager->leave_statement();
             }
+            if ((strcmp(data_send, "failure\n") == 0 ||
+                 strcmp(data_send, "abort\n") == 0) &&
+                read_committed_txn_guard.owns_lock()) {
+                explicit_txn_failed = true;
+                read_committed_txn_guard.unlock();
+            }
             bool write_failed = write(fd, data_send, offset + 1) == -1;
             if (write_failed) {
                 break;
@@ -414,7 +536,8 @@ void *client_handler(void *sock_fd) {
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
         bool finish_analyze = false;
         pthread_mutex_lock(buffer_mutex);
-        YY_BUFFER_STATE buf = yy_scan_string(data_recv);
+        std::string parser_sql = canonical_txn_sql(txn_boundary, raw_sql);
+        YY_BUFFER_STATE buf = yy_scan_string(parser_sql.c_str());
         if (yyparse() == 0) {
             if (ast::parse_tree != nullptr) {
                 try {
@@ -508,6 +631,23 @@ void *client_handler(void *sock_fd) {
             yy_delete_buffer(buf);
             pthread_mutex_unlock(buffer_mutex);
         }
+        if ((strcmp(data_send, "failure\n") == 0 ||
+             strcmp(data_send, "abort\n") == 0) &&
+            read_committed_txn_guard.owns_lock()) {
+            if (context->txn_ == nullptr && txn_id != INVALID_TXN_ID) {
+                context->txn_ = txn_manager->get_transaction(txn_id);
+            }
+            if (context->txn_ != nullptr &&
+                context->txn_->get_state() != TransactionState::COMMITTED &&
+                context->txn_->get_state() != TransactionState::ABORTED) {
+                txn_manager->abort(context->txn_, log_manager.get());
+                txn_manager->release_transaction(context->txn_);
+                context->txn_ = nullptr;
+                txn_id = INVALID_TXN_ID;
+            }
+            explicit_txn_failed = true;
+            read_committed_txn_guard.unlock();
+        }
         // future TODO: 格式化 sql_handler.result, 传给客户端
         // send result with fixed format, use protobuf in the future
         // 如果是单挑语句，需要按照一个完整的事务来执行，所以执行完当前语句后，自动提交事务
@@ -517,6 +657,9 @@ void *client_handler(void *sock_fd) {
             txn_manager->release_transaction(context->txn_);
             context->txn_ = nullptr;
             txn_id = INVALID_TXN_ID;
+        }
+        if (is_txn_end(txn_boundary) && read_committed_txn_guard.owns_lock()) {
+            read_committed_txn_guard.unlock();
         }
         if (statement_entered) {
             txn_manager->leave_statement();
