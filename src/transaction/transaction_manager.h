@@ -100,6 +100,9 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &rid,
         const RmRecord *physical_record);
 
+    std::unique_ptr<RmRecord> get_latest_committed_record(
+        uint64_t file_id, const Rid &rid, const RmRecord *physical_record);
+
     void register_table_read(Transaction *txn, uint64_t file_id,
                              const std::vector<Condition> &conditions,
                              const std::vector<ColMeta> &columns);

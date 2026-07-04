@@ -252,6 +252,33 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
     return make_record(visible->data);
 }
 
+std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
+    uint64_t file_id, const Rid &rid, const RmRecord *physical_record) {
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    RecordKey key{file_id, rid};
+    auto history_it = record_versions_.find(key);
+    if (history_it == record_versions_.end()) {
+        return physical_record == nullptr
+                   ? nullptr
+                   : std::make_unique<RmRecord>(*physical_record);
+    }
+
+    const MvccVersion *latest = nullptr;
+    for (const auto &version : history_it->second) {
+        if (version.commit_ts == INVALID_TS) {
+            continue;
+        }
+        if (latest == nullptr || version.commit_ts > latest->commit_ts) {
+            latest = &version;
+        }
+    }
+
+    if (latest == nullptr || latest->deleted) {
+        return nullptr;
+    }
+    return make_record(latest->data);
+}
+
 bool TransactionManager::predicate_matches(
     const ReadPredicate &predicate, const std::vector<char> &record) const {
     if (record.empty()) {
@@ -638,14 +665,11 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                     version.commit_ts == INVALID_TS) {
                     if (!version.table_name.empty() &&
                         !version.before.empty() && version.deleted) {
-                        auto file_handle =
-                            sm_manager_->fhs_.at(version.table_name).get();
                         RmRecord before(
                             static_cast<int>(version.before.size()),
                             const_cast<char *>(version.before.data()));
                         delete_indexes(sm_manager_, version.table_name,
                                        before, key.rid, txn);
-                        file_handle->delete_record(key.rid, nullptr);
                     } else if (!version.table_name.empty() &&
                                !version.before.empty() &&
                                !version.deleted) {
