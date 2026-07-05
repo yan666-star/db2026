@@ -134,6 +134,13 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
 
     if (txn->uses_mvcc()) {
         commit_mvcc(txn);
+        // Amortized reclamation of obsolete MVCC versions and transaction
+        // bookkeeping. Without this both structures grow without bound under a
+        // sustained workload (e.g. the TPCC performance run) and eventually
+        // exhaust memory, which surfaces as a post-run consistency failure.
+        if ((mvcc_commit_count_.fetch_add(1) & 0xFFu) == 0) {
+            GarbageCollection();
+        }
     }
 
     for (const auto &lock_id : *txn->get_lock_set()) {
@@ -758,6 +765,101 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
     state_it->second.predicates.clear();
     state_it->second.read_records.clear();
     state_it->second.write_records.clear();
+    // Pending versions of this transaction have now been removed and its
+    // dependency edges cleared, so its bookkeeping entry can be reclaimed by GC.
+    state_it->second.cleanup_done = true;
+}
+
+timestamp_t TransactionManager::GetWatermark() {
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    timestamp_t watermark = last_commit_ts_.load();
+    for (const auto &[txn_id, state] : mvcc_txns_) {
+        (void)txn_id;
+        if (state.aborted || state.commit_ts != INVALID_TS) {
+            continue;  // only in-flight transactions hold back the watermark
+        }
+        watermark = std::min(watermark, state.start_ts);
+    }
+    return watermark;
+}
+
+void TransactionManager::GarbageCollection() {
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+
+    // The watermark is the smallest read timestamp of any in-flight MVCC
+    // transaction. Any committed version older than the watermark can never be
+    // observed again, so it is safe to reclaim.
+    timestamp_t watermark = last_commit_ts_.load();
+    for (const auto &[txn_id, state] : mvcc_txns_) {
+        (void)txn_id;
+        if (state.aborted || state.commit_ts != INVALID_TS) {
+            continue;
+        }
+        watermark = std::min(watermark, state.start_ts);
+    }
+
+    // Prune per-record version chains.
+    for (auto it = record_versions_.begin(); it != record_versions_.end();) {
+        auto &history = it->second;
+
+        // Find the newest committed version visible at the watermark. It is the
+        // baseline that the oldest possible reader would observe; anything
+        // strictly older than it is dead.
+        timestamp_t baseline_ts = INVALID_TS;
+        for (const auto &version : history) {
+            if (version.commit_ts != INVALID_TS &&
+                version.commit_ts <= watermark &&
+                (baseline_ts == INVALID_TS || version.commit_ts > baseline_ts)) {
+                baseline_ts = version.commit_ts;
+            }
+        }
+        if (baseline_ts != INVALID_TS) {
+            history.erase(
+                std::remove_if(history.begin(), history.end(),
+                               [&](const MvccVersion &version) {
+                                   return version.commit_ts != INVALID_TS &&
+                                          version.commit_ts < baseline_ts;
+                               }),
+                history.end());
+        }
+
+        // If only a single fully-settled committed version remains, the physical
+        // record (for live rows) already carries the authoritative state, so the
+        // whole chain can be dropped. For a settled delete we additionally
+        // reclaim the leftover physical slot (MVCC delete only unlinks indexes).
+        if (history.size() == 1) {
+            const MvccVersion &only = history.front();
+            if (only.commit_ts != INVALID_TS && only.commit_ts <= watermark) {
+                if (only.deleted && !only.table_name.empty()) {
+                    auto fh_it = sm_manager_->fhs_.find(only.table_name);
+                    if (fh_it != sm_manager_->fhs_.end()) {
+                        RmFileHandle *file_handle = fh_it->second.get();
+                        if (file_handle->record_exists(it->first.rid)) {
+                            file_handle->delete_record(it->first.rid, nullptr);
+                        }
+                    }
+                }
+                it = record_versions_.erase(it);
+                continue;
+            }
+        }
+        ++it;
+    }
+
+    // Prune bookkeeping for transactions that can no longer participate in any
+    // conflict check: committed ones below the watermark, and aborted ones whose
+    // pending versions and dependency edges have already been cleaned up.
+    for (auto it = mvcc_txns_.begin(); it != mvcc_txns_.end();) {
+        const auto &state = it->second;
+        bool committed_settled =
+            state.commit_ts != INVALID_TS && state.commit_ts <= watermark;
+        bool aborted_settled = state.aborted && state.cleanup_done;
+        if (committed_settled || aborted_settled) {
+            it = mvcc_txns_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void TransactionManager::finish_transaction(Transaction *txn) {
