@@ -292,6 +292,13 @@ private:
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC
     std::atomic<uint64_t> mvcc_commit_count_{0};    // 用于按周期触发MVCC垃圾回收
 
+    // Lock ordering: commit_apply_latch_ -> (file insert_latch_ / index latches)
+    // and commit_apply_latch_ -> mvcc_latch_. mvcc_latch_ is a LEAF lock: no
+    // file-handle or index operation may be invoked while holding it, because
+    // inserts acquire the file insert_latch_ first and then mvcc_latch_ (via
+    // prepare_insert); calling back into the file layer under mvcc_latch_
+    // deadlocks (ABBA).
+    std::mutex commit_apply_latch_;
     mutable std::mutex mvcc_latch_;
     std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
     std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;

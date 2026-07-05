@@ -37,10 +37,14 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
             txn_map[txn_id] = txn;
         }
         if (txn->uses_mvcc()) {
+            // Read the snapshot timestamp and register the transaction under
+            // the same latch acquisition: otherwise GC could compute a
+            // watermark that misses this transaction and prune versions its
+            // snapshot still needs.
+            std::lock_guard<std::mutex> lock(mvcc_latch_);
             timestamp_t start_ts = last_commit_ts_.load();
             txn->set_start_ts(start_ts);
             txn->set_read_ts(start_ts);
-            std::lock_guard<std::mutex> lock(mvcc_latch_);
             auto &state = mvcc_txns_[txn_id];
             state.isolation_level = isolation_level;
             state.start_ts = start_ts;
@@ -670,46 +674,64 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     if (!uses_mvcc(txn)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
-    timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
-    txn->set_commit_ts(commit_ts);
-    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-    if (state_it != mvcc_txns_.end()) {
-        state_it->second.commit_ts = commit_ts;
-        for (const auto &key : state_it->second.write_records) {
-            auto history_it = record_versions_.find(key);
-            if (history_it == record_versions_.end()) {
-                continue;
-            }
-            for (auto &version : history_it->second) {
-                if (version.owner == txn->get_transaction_id() &&
-                    version.commit_ts == INVALID_TS) {
-                    if (!version.table_name.empty() &&
-                        !version.before.empty() && version.deleted) {
-                        RmRecord before(
-                            static_cast<int>(version.before.size()),
-                            const_cast<char *>(version.before.data()));
-                        delete_indexes(sm_manager_, version.table_name,
-                                       before, key.rid, txn);
-                    } else if (!version.table_name.empty() &&
-                               !version.before.empty() &&
-                               !version.deleted) {
-                        auto file_handle =
-                            sm_manager_->fhs_.at(version.table_name).get();
-                        RmRecord before(
-                            static_cast<int>(version.before.size()),
-                            const_cast<char *>(version.before.data()));
-                        RmRecord after(
-                            static_cast<int>(version.data.size()),
-                            const_cast<char *>(version.data.data()));
-                        file_handle->update_record(key.rid, after.data,
-                                                   nullptr);
-                        update_indexes(sm_manager_, version.table_name,
-                                       before, after, key.rid, txn);
+
+    struct PhysicalOp {
+        bool is_delete;
+        std::string table_name;
+        Rid rid;
+        std::vector<char> before;
+        std::vector<char> after;
+    };
+    std::vector<PhysicalOp> ops;
+
+    // commit_apply_latch_ serializes commit application so that two commits
+    // touching the same rid land in commit_ts order, while mvcc_latch_ stays a
+    // leaf lock (no file/index calls under it — see lock-ordering note in the
+    // header). Deadlock otherwise: inserts hold the file insert_latch_ and then
+    // take mvcc_latch_ via prepare_insert, while the old code held mvcc_latch_
+    // and took insert_latch_ via update_record.
+    std::lock_guard<std::mutex> apply_lock(commit_apply_latch_);
+    {
+        std::lock_guard<std::mutex> lock(mvcc_latch_);
+        timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
+        txn->set_commit_ts(commit_ts);
+        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+        if (state_it != mvcc_txns_.end()) {
+            state_it->second.commit_ts = commit_ts;
+            for (const auto &key : state_it->second.write_records) {
+                auto history_it = record_versions_.find(key);
+                if (history_it == record_versions_.end()) {
+                    continue;
+                }
+                for (auto &version : history_it->second) {
+                    if (version.owner == txn->get_transaction_id() &&
+                        version.commit_ts == INVALID_TS) {
+                        if (!version.table_name.empty() &&
+                            !version.before.empty()) {
+                            ops.push_back(PhysicalOp{version.deleted,
+                                                     version.table_name,
+                                                     key.rid, version.before,
+                                                     version.data});
+                        }
+                        version.commit_ts = commit_ts;
                     }
-                    version.commit_ts = commit_ts;
                 }
             }
+        }
+    }
+
+    for (auto &op : ops) {
+        RmRecord before(static_cast<int>(op.before.size()),
+                        const_cast<char *>(op.before.data()));
+        if (op.is_delete) {
+            delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
+        } else {
+            auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
+            RmRecord after(static_cast<int>(op.after.size()),
+                           const_cast<char *>(op.after.data()));
+            file_handle->update_record(op.rid, after.data, nullptr);
+            update_indexes(sm_manager_, op.table_name, before, after, op.rid,
+                           txn);
         }
     }
 }
@@ -784,80 +806,132 @@ timestamp_t TransactionManager::GetWatermark() {
 }
 
 void TransactionManager::GarbageCollection() {
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    struct Reclaim {
+        std::string table_name;
+        RecordKey key;
+        timestamp_t commit_ts;
+    };
+    std::vector<Reclaim> reclaims;
 
-    // The watermark is the smallest read timestamp of any in-flight MVCC
-    // transaction. Any committed version older than the watermark can never be
-    // observed again, so it is safe to reclaim.
-    timestamp_t watermark = last_commit_ts_.load();
-    for (const auto &[txn_id, state] : mvcc_txns_) {
-        (void)txn_id;
-        if (state.aborted || state.commit_ts != INVALID_TS) {
-            continue;
-        }
-        watermark = std::min(watermark, state.start_ts);
-    }
+    // Same lock ordering as commit_mvcc: mvcc_latch_ is a leaf lock, so all
+    // physical slot reclamation happens after releasing it, serialized against
+    // concurrent commit application by commit_apply_latch_.
+    std::lock_guard<std::mutex> apply_lock(commit_apply_latch_);
+    {
+        std::lock_guard<std::mutex> lock(mvcc_latch_);
 
-    // Prune per-record version chains.
-    for (auto it = record_versions_.begin(); it != record_versions_.end();) {
-        auto &history = it->second;
-
-        // Find the newest committed version visible at the watermark. It is the
-        // baseline that the oldest possible reader would observe; anything
-        // strictly older than it is dead.
-        timestamp_t baseline_ts = INVALID_TS;
-        for (const auto &version : history) {
-            if (version.commit_ts != INVALID_TS &&
-                version.commit_ts <= watermark &&
-                (baseline_ts == INVALID_TS || version.commit_ts > baseline_ts)) {
-                baseline_ts = version.commit_ts;
-            }
-        }
-        if (baseline_ts != INVALID_TS) {
-            history.erase(
-                std::remove_if(history.begin(), history.end(),
-                               [&](const MvccVersion &version) {
-                                   return version.commit_ts != INVALID_TS &&
-                                          version.commit_ts < baseline_ts;
-                               }),
-                history.end());
-        }
-
-        // If only a single fully-settled committed version remains, the physical
-        // record (for live rows) already carries the authoritative state, so the
-        // whole chain can be dropped. For a settled delete we additionally
-        // reclaim the leftover physical slot (MVCC delete only unlinks indexes).
-        if (history.size() == 1) {
-            const MvccVersion &only = history.front();
-            if (only.commit_ts != INVALID_TS && only.commit_ts <= watermark) {
-                if (only.deleted && !only.table_name.empty()) {
-                    auto fh_it = sm_manager_->fhs_.find(only.table_name);
-                    if (fh_it != sm_manager_->fhs_.end()) {
-                        RmFileHandle *file_handle = fh_it->second.get();
-                        if (file_handle->record_exists(it->first.rid)) {
-                            file_handle->delete_record(it->first.rid, nullptr);
-                        }
-                    }
-                }
-                it = record_versions_.erase(it);
+        // The watermark is the smallest read timestamp of any in-flight MVCC
+        // transaction. Any committed version older than the watermark can never
+        // be observed again, so it is safe to reclaim.
+        timestamp_t watermark = last_commit_ts_.load();
+        for (const auto &[txn_id, state] : mvcc_txns_) {
+            (void)txn_id;
+            if (state.aborted || state.commit_ts != INVALID_TS) {
                 continue;
             }
+            watermark = std::min(watermark, state.start_ts);
         }
-        ++it;
+
+        for (auto it = record_versions_.begin();
+             it != record_versions_.end();) {
+            auto &history = it->second;
+
+            // Find the newest committed version visible at the watermark. It is
+            // the baseline the oldest possible reader would observe; anything
+            // strictly older than it is dead.
+            timestamp_t baseline_ts = INVALID_TS;
+            for (const auto &version : history) {
+                if (version.commit_ts != INVALID_TS &&
+                    version.commit_ts <= watermark &&
+                    (baseline_ts == INVALID_TS ||
+                     version.commit_ts > baseline_ts)) {
+                    baseline_ts = version.commit_ts;
+                }
+            }
+            if (baseline_ts != INVALID_TS) {
+                history.erase(
+                    std::remove_if(history.begin(), history.end(),
+                                   [&](const MvccVersion &version) {
+                                       return version.commit_ts != INVALID_TS &&
+                                              version.commit_ts < baseline_ts;
+                                   }),
+                    history.end());
+            }
+
+            if (history.size() == 1) {
+                MvccVersion &only = history.front();
+                if (only.commit_ts != INVALID_TS &&
+                    only.commit_ts <= watermark) {
+                    if (!only.deleted) {
+                        // The physical record already carries the authoritative
+                        // committed state for a live row, so the chain can go.
+                        it = record_versions_.erase(it);
+                        continue;
+                    }
+                    if (!only.table_name.empty()) {
+                        // Deleted rows keep a tombstone in the chain forever:
+                        // a concurrent reader may have copied the physical
+                        // bytes right before we reclaim the slot, and only the
+                        // tombstone stops that row from resurrecting. The
+                        // physical delete happens outside mvcc_latch_.
+                        reclaims.push_back(
+                            Reclaim{only.table_name, it->first,
+                                    only.commit_ts});
+                    }
+                }
+            }
+            ++it;
+        }
+
+        // Prune bookkeeping for transactions that can no longer participate in
+        // any conflict check: committed ones below the watermark, and aborted
+        // ones whose pending versions and dependency edges are already gone.
+        for (auto it = mvcc_txns_.begin(); it != mvcc_txns_.end();) {
+            const auto &state = it->second;
+            bool committed_settled =
+                state.commit_ts != INVALID_TS && state.commit_ts <= watermark;
+            bool aborted_settled = state.aborted && state.cleanup_done;
+            if (committed_settled || aborted_settled) {
+                it = mvcc_txns_.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
-    // Prune bookkeeping for transactions that can no longer participate in any
-    // conflict check: committed ones below the watermark, and aborted ones whose
-    // pending versions and dependency edges have already been cleaned up.
-    for (auto it = mvcc_txns_.begin(); it != mvcc_txns_.end();) {
-        const auto &state = it->second;
-        bool committed_settled =
-            state.commit_ts != INVALID_TS && state.commit_ts <= watermark;
-        bool aborted_settled = state.aborted && state.cleanup_done;
-        if (committed_settled || aborted_settled) {
-            it = mvcc_txns_.erase(it);
-        } else {
-            ++it;
+    if (reclaims.empty()) {
+        return;
+    }
+
+    for (const auto &reclaim : reclaims) {
+        auto fh_it = sm_manager_->fhs_.find(reclaim.table_name);
+        if (fh_it == sm_manager_->fhs_.end()) {
+            continue;
+        }
+        RmFileHandle *file_handle = fh_it->second.get();
+        if (file_handle->record_exists(reclaim.key.rid)) {
+            file_handle->delete_record(reclaim.key.rid, nullptr);
+        }
+    }
+
+    // Shrink the reclaimed tombstones: keep the (deleted, commit_ts) marker but
+    // drop the payload copies, and clear table_name so the physical delete is
+    // not retried on every GC cycle.
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    for (const auto &reclaim : reclaims) {
+        auto history_it = record_versions_.find(reclaim.key);
+        if (history_it == record_versions_.end()) {
+            continue;
+        }
+        for (auto &version : history_it->second) {
+            if (version.deleted && version.commit_ts == reclaim.commit_ts) {
+                version.table_name.clear();
+                version.table_name.shrink_to_fit();
+                version.before.clear();
+                version.before.shrink_to_fit();
+                version.data.clear();
+                version.data.shrink_to_fit();
+            }
         }
     }
 }
