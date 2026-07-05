@@ -273,7 +273,21 @@ std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
         }
     }
 
-    if (latest == nullptr || latest->deleted) {
+    // A committed delete hides the row regardless of the physical slot state
+    // (MVCC delete removes index entries but may leave the physical record).
+    if (latest != nullptr && latest->deleted) {
+        return nullptr;
+    }
+
+    // The physical record is the authoritative latest-committed state: MVCC
+    // commits and non-MVCC (READ COMMITTED) writes both land there, while the
+    // version history is only updated by MVCC. Returning the version data here
+    // would mask non-MVCC updates and cause lost updates once a row has an MVCC
+    // history entry, so prefer the physical record.
+    if (physical_record != nullptr) {
+        return std::make_unique<RmRecord>(*physical_record);
+    }
+    if (latest == nullptr) {
         return nullptr;
     }
     return make_record(latest->data);
