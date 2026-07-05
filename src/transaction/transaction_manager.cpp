@@ -936,6 +936,59 @@ void TransactionManager::GarbageCollection() {
     }
 }
 
+void TransactionManager::apply_committed_deletes_for_checkpoint() {
+    struct Reclaim {
+        std::string table_name;
+        Rid rid;
+    };
+    std::vector<Reclaim> reclaims;
+
+    std::lock_guard<std::mutex> apply_lock(commit_apply_latch_);
+    {
+        std::lock_guard<std::mutex> lock(mvcc_latch_);
+        for (auto it = record_versions_.begin();
+             it != record_versions_.end();) {
+            const auto &history = it->second;
+            const MvccVersion *latest = nullptr;
+            bool has_pending = false;
+            for (const auto &version : history) {
+                if (version.commit_ts == INVALID_TS) {
+                    has_pending = true;
+                    break;
+                }
+                if (latest == nullptr ||
+                    version.commit_ts > latest->commit_ts) {
+                    latest = &version;
+                }
+            }
+            // begin_static_checkpoint() has quiesced every transaction, so
+            // pending versions should not exist; keep such chains untouched
+            // out of caution.
+            if (has_pending || latest == nullptr || !latest->deleted) {
+                ++it;
+                continue;
+            }
+            if (!latest->table_name.empty()) {
+                reclaims.push_back(Reclaim{latest->table_name, it->first.rid});
+            }
+            // The physical state now becomes authoritative (row absent), so
+            // the tombstone chain is no longer needed by any future snapshot.
+            it = record_versions_.erase(it);
+        }
+    }
+
+    for (const auto &reclaim : reclaims) {
+        auto fh_it = sm_manager_->fhs_.find(reclaim.table_name);
+        if (fh_it == sm_manager_->fhs_.end()) {
+            continue;
+        }
+        RmFileHandle *file_handle = fh_it->second.get();
+        if (file_handle->record_exists(reclaim.rid)) {
+            file_handle->delete_record(reclaim.rid, nullptr);
+        }
+    }
+}
+
 void TransactionManager::finish_transaction(Transaction *txn) {
     {
         std::lock_guard<std::mutex> lock(checkpoint_latch_);

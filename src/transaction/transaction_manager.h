@@ -189,6 +189,15 @@ public:
     /** @brief 垃圾回收。仅在所有事务都未访问时调用。 */
     void GarbageCollection();
 
+    /**
+     * @brief 在静态检查点前物理应用所有已提交的 MVCC 删除。
+     * MVCC 删除在提交时只移除索引项，物理记录留待 GC 回收；若检查点把
+     * 仍含这些记录的页刷盘，恢复从检查点开始重放时删除日志已在检查点之前，
+     * 被删除的行会“复活”。必须在 begin_static_checkpoint() 静默所有事务后、
+     * 刷脏页之前调用。
+     */
+    void apply_committed_deletes_for_checkpoint();
+
     struct PageVersionInfo {
         std::shared_mutex mutex_;
         /** 存储所有槽的先前版本信息。注意：不要使用 `[x]` 来访问它，因为

@@ -117,8 +117,15 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
                 }
 
                 std::vector<txn_id_t> active_txns = txn_mgr_->begin_static_checkpoint();
-                const char *checkpoint_stage = "writing checkpoint log";
+                const char *checkpoint_stage = "applying committed MVCC deletes";
                 try {
+                    // MVCC delete commits only drop index entries; the row's
+                    // physical slot survives until GC. Apply those deletes
+                    // physically now, otherwise the flushed pages resurrect
+                    // deleted rows after a post-checkpoint crash (the delete
+                    // log records lie before the restart offset).
+                    txn_mgr_->apply_committed_deletes_for_checkpoint();
+                    checkpoint_stage = "writing checkpoint log";
                     int64_t checkpoint_offset =
                         context->log_mgr_->write_checkpoint_record(active_txns);
                     checkpoint_stage = "flushing database pages";
