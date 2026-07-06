@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include <atomic>
 #include <cctype>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -58,6 +59,8 @@ pthread_mutex_t *sockfd_mutex;
 static constexpr bool kVerboseServerLog = false;
 
 namespace {
+
+std::mutex read_committed_explicit_txn_mutex;
 
 std::string trim_copy(const std::string &value) {
     size_t begin = 0;
@@ -303,6 +306,14 @@ void write_failure_response(char *data_send, int *offset) {
     write_output_if_enabled("failure\n");
 }
 
+void release_read_committed_explicit_guard(bool &guard_held) {
+    if (!guard_held) {
+        return;
+    }
+    read_committed_explicit_txn_mutex.unlock();
+    guard_held = false;
+}
+
 }  // namespace
 
 static jmp_buf jmpbuf;
@@ -343,6 +354,7 @@ void *client_handler(void *sock_fd) {
     txn_id_t txn_id = INVALID_TXN_ID;
     IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
     bool explicit_txn_failed = false;
+    bool read_committed_explicit_guard_held = false;
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
     if (kVerboseServerLog) {
@@ -445,6 +457,13 @@ void *client_handler(void *sock_fd) {
             }
         }
 
+        if (txn_boundary == TxnBoundary::Begin &&
+            session_isolation == IsolationLevel::READ_COMMITTED &&
+            !read_committed_explicit_guard_held) {
+            read_committed_explicit_txn_mutex.lock();
+            read_committed_explicit_guard_held = true;
+        }
+
         std::string load_file;
         std::string load_table;
         if (parse_load_command(raw_sql, load_file, load_table)) {
@@ -467,6 +486,8 @@ void *client_handler(void *sock_fd) {
                 txn_id = INVALID_TXN_ID;
                 if (was_explicit_txn) {
                     explicit_txn_failed = true;
+                    release_read_committed_explicit_guard(
+                        read_committed_explicit_guard_held);
                 }
                 if (kVerboseServerLog) {
                     std::cout << e.GetInfo() << std::endl;
@@ -494,6 +515,8 @@ void *client_handler(void *sock_fd) {
                     txn_id = INVALID_TXN_ID;
                     if (was_explicit_txn) {
                         explicit_txn_failed = true;
+                        release_read_committed_explicit_guard(
+                            read_committed_explicit_guard_held);
                     }
                 }
             } catch (const std::exception &e) {
@@ -515,6 +538,8 @@ void *client_handler(void *sock_fd) {
                     txn_id = INVALID_TXN_ID;
                     if (was_explicit_txn) {
                         explicit_txn_failed = true;
+                        release_read_committed_explicit_guard(
+                            read_committed_explicit_guard_held);
                     }
                 }
             }
@@ -579,6 +604,8 @@ void *client_handler(void *sock_fd) {
                     txn_id = INVALID_TXN_ID;
                     if (was_explicit_txn) {
                         explicit_txn_failed = true;
+                        release_read_committed_explicit_guard(
+                            read_committed_explicit_guard_held);
                     }
                     if (kVerboseServerLog) {
                         std::cout << e.GetInfo() << std::endl;
@@ -609,6 +636,8 @@ void *client_handler(void *sock_fd) {
                         txn_id = INVALID_TXN_ID;
                         if (was_explicit_txn) {
                             explicit_txn_failed = true;
+                            release_read_committed_explicit_guard(
+                                read_committed_explicit_guard_held);
                         }
                     }
                 } catch (const std::exception &e) {
@@ -630,6 +659,8 @@ void *client_handler(void *sock_fd) {
                         txn_id = INVALID_TXN_ID;
                         if (was_explicit_txn) {
                             explicit_txn_failed = true;
+                            release_read_committed_explicit_guard(
+                                read_committed_explicit_guard_held);
                         }
                     }
                 }
@@ -642,6 +673,10 @@ void *client_handler(void *sock_fd) {
             offset = client_msg.length() + 1;
 
             write_output_if_enabled("failure\n");
+            if (txn_boundary == TxnBoundary::Begin) {
+                release_read_committed_explicit_guard(
+                    read_committed_explicit_guard_held);
+            }
         }
         if(finish_analyze == false) {
             yy_delete_buffer(buf);
@@ -656,6 +691,13 @@ void *client_handler(void *sock_fd) {
             txn_manager->release_transaction(context->txn_);
             context->txn_ = nullptr;
             txn_id = INVALID_TXN_ID;
+        }
+        if ((txn_boundary == TxnBoundary::Commit ||
+             txn_boundary == TxnBoundary::Rollback ||
+             txn_boundary == TxnBoundary::Abort) &&
+            txn_id == INVALID_TXN_ID) {
+            release_read_committed_explicit_guard(
+                read_committed_explicit_guard_held);
         }
         if (statement_entered) {
             txn_manager->leave_statement();
@@ -679,6 +721,7 @@ void *client_handler(void *sock_fd) {
         txn_manager->abort(remaining_txn, log_manager.get());
     }
     txn_manager->release_transaction(remaining_txn);
+    release_read_committed_explicit_guard(read_committed_explicit_guard_held);
     delete[] data_send;
     close(fd);           // close a file descriptor.
     pthread_exit(NULL);  // terminate calling thread!

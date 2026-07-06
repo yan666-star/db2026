@@ -495,6 +495,178 @@ READ COMMITTED lost-update probe passed: 32 committed transact
 
 The prefix indicates the probe reached its pass path, but keep a full final line in later logs for audit quality.
 
+## Latest Official Evidence: Phase 3 Still Fails
+
+After Patch 1 and Patch 2, the local Linux smoke suite passes, but the official performance test still reports the same post-run consistency failure:
+
+```text
+[FAIL] Performance consistency check failed after the transaction run.
+Failure stage: Post-transaction consistency validation.
+Hint: check transaction atomicity, district/order counters, stock updates, and whether aborted transactions leave partial writes.
+```
+
+Interpretation:
+
+- The local smoke now proves two narrow fixes: direct `UpdateExecutor` lost updates and explicit transaction failure-state handling.
+- The official workload still exercises a broader transaction boundary than the smoke.
+- The unchanged official result means the remaining bug is likely not the single-statement update race already fixed. It is more likely a transaction-lifetime isolation/atomicity gap: writes become physically visible before commit, and abort later restores old records without protecting against concurrent committed writes.
+
+## Isolation and Atomicity Boundary Audit
+
+### READ COMMITTED / Non-MVCC Path
+
+Current behavior:
+
+- Default sessions start as `READ_COMMITTED`.
+- `LockManager` is still a no-op.
+- Non-MVCC `UPDATE`, `INSERT`, and `DELETE` write physical table/index state immediately.
+- Abort rolls back the write set by restoring old records or deleting inserted records.
+- Patch 1 serializes the read-modify-write sequence inside one `UpdateExecutor` statement, but releases the guard at statement end.
+
+Anomaly status:
+
+- Dirty read: present. A second transaction can read physical rows inserted or updated by an uncommitted transaction.
+- Lost update: partially fixed. Concurrent single-statement arithmetic updates on the same row are guarded, but a later abort can still overwrite another transaction's committed update.
+- Non-repeatable read: present under `READ_COMMITTED`, which may be acceptable semantically, but dangerous for benchmark transactions that expect stable business state inside one explicit transaction.
+- Phantom read: present under `READ_COMMITTED`, especially because inserts are physical and indexed before commit.
+- Abort overwrite: high risk. Example: T1 updates `stock`, T2 reads/updates/commits the same row, then T1 aborts and restores T1's old copy over T2's committed value.
+
+This abort-overwrite pattern directly matches the official hint because it can corrupt `district.d_next_o_id`, `stock.s_quantity`, and float counters such as `warehouse.w_ytd`, `district.d_ytd`, `customer.c_balance`, and `customer.c_ytd_payment`.
+
+### SNAPSHOT ISOLATION / SERIALIZABLE MVCC Path
+
+Current behavior:
+
+- MVCC transactions are enabled only after `set transaction isolation level snapshot isolation` or `serializable`.
+- MVCC reads use version visibility by transaction start timestamp.
+- MVCC update/delete are deferred until commit.
+- MVCC inserts are still physically inserted immediately and rolled back on abort.
+- `Portal` forces seq scan for MVCC reads, reducing index/visibility disagreement during transaction execution.
+
+Anomaly status:
+
+- Dirty read: mostly prevented for MVCC-visible reads, but MVCC insert physical/index early visibility remains a fragile area for non-MVCC readers.
+- Lost update: guarded by `check_write_conflict()` for MVCC writes.
+- Non-repeatable read: prevented by snapshot visibility.
+- Phantom read: prevented for snapshot reads; serializable adds predicate tracking, but only for MVCC transactions.
+- Crash durability: still risky because COMMIT log is flushed before `commit_mvcc()` applies physical/index changes.
+
+### Float Handling Audit
+
+Float values are stored as 4-byte `float`. Literal integers can be cast to float during analysis. Comparisons read float values and compare via `double`, while arithmetic update reads/writes `float`.
+
+Observed risk:
+
+- Float representation itself is not the primary suspect.
+- Float business counters are affected by the same transaction-lifetime race as integer counters because `UPDATE ... SET float_col = float_col + amount` writes physical state immediately in non-MVCC mode.
+- Official Payment consistency can fail even if integer `district/stock` probes pass, because `w_ytd`, `d_ytd`, `c_balance`, `c_ytd_payment`, and `history` form another atomic chain.
+
+## Next Optimization / Modification Plan
+
+### Plan A: Build a Probe for Abort Overwriting Committed Updates
+
+Create `performance_test/probe_abort_overwrites_committed_update.py`.
+
+Minimal scenario:
+
+1. Create a small table with one indexed row: `id=1, qty=100`.
+2. T1 starts an explicit default `READ_COMMITTED` transaction and updates `qty = qty - 5`.
+3. T2 starts another explicit default `READ_COMMITTED` transaction, updates `qty = qty - 3`, and commits.
+4. T1 aborts or fails after its update.
+5. Expected final value: `97`, because only T2 committed.
+6. High-risk current result: `100` or another wrong value, because T1 rollback restores its old copy over T2.
+
+Add a float variant:
+
+1. Table row: `id=1, ytd=100.0`.
+2. T1 updates `ytd = ytd + 5.0`, then aborts.
+3. T2 updates `ytd = ytd + 3.0`, then commits.
+4. Expected final value: `103.0`.
+
+Diagnostic value:
+
+- If this probe fails, it explains why official consistency remains unchanged despite the local smoke passing.
+- It directly targets the official hint categories: counters, stock updates, and aborted transactions leaving or undoing wrong state.
+
+### Plan B: Patch 3 Candidate - Serialize Default Explicit Write Transactions
+
+Minimal correctness-first repair:
+
+- Add a server-level guard for default `READ_COMMITTED` explicit transactions.
+- Acquire it when a client enters `BEGIN` under `READ_COMMITTED`.
+- Hold it until `COMMIT`, `ROLLBACK`, `ABORT`, connection close, or explicit transaction failure cleanup.
+- Do not take this guard for `SNAPSHOT_ISOLATION` or `SERIALIZABLE`, because those already use MVCC conflict checks and version visibility.
+
+Expected effect:
+
+- Prevent dirty reads among benchmark explicit write transactions.
+- Prevent T1 abort rollback from overwriting T2 committed physical updates because T2 cannot run concurrently with T1.
+- Protect both integer and float update chains.
+- Avoid broad parser/analyze/planner/MVCC/recovery rewrites.
+
+Tradeoff:
+
+- This is conservative and may reduce concurrency for default `READ_COMMITTED` explicit transactions.
+- It is a safer contest-oriented fix than implementing a full row/table lock manager at this stage.
+
+### Patch 3 Implementation: READ COMMITTED Explicit Transaction Guard
+
+Implemented after the official Phase 3 result remained unchanged.
+
+Files changed:
+
+- `src/rmdb.cpp`
+- `performance_test/probe_abort_overwrites_committed_update.py`
+
+Probe behavior:
+
+- Creates `abort_probe(id INT, qty INT, ytd FLOAT)`.
+- T1 starts a default `READ_COMMITTED` explicit transaction and updates `qty = qty - 5`, `ytd = ytd + 5.0`.
+- T2 starts a second default `READ_COMMITTED` explicit transaction and updates `qty = qty - 3`, `ytd = ytd + 3.0`, then commits.
+- T1 rolls back.
+- Expected final values are `qty = 97` and `ytd = 103.0`, because only T2 committed.
+- A result of `qty = 100` or `ytd = 100.0` indicates T1's rollback restored its old copy over T2's committed update.
+
+Guard behavior:
+
+- Add a server-level mutex for default `READ_COMMITTED` explicit transactions.
+- Acquire the mutex before executing `BEGIN` when the current session isolation is `READ_COMMITTED`.
+- Hold the mutex for the transaction lifetime.
+- Release on `COMMIT`, `ROLLBACK`, `ABORT`, explicit transaction failure cleanup, parse failure of `BEGIN`, or connection teardown.
+- Do not acquire this guard for `SNAPSHOT_ISOLATION` or `SERIALIZABLE` sessions.
+
+Expected effect:
+
+- Prevent dirty reads among default explicit transactions.
+- Prevent aborted transactions from overwriting another default explicit transaction's committed physical update.
+- Protect both integer counters and float Payment counters.
+- Keep MVCC paths untouched.
+
+### Plan C: Verification After Patch 3
+
+Run, in order:
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+./build/bin/unit_test
+./build/bin/test_parser
+python3 "$(find . -path '*performance_test/run_performance_smoke.py' -print -quit)" --start-server
+python3 "$(find . -path '*performance_test/probe_read_committed_lost_update.py' -print -quit)" --start-server
+python3 "$(find . -path '*performance_test/probe_abort_overwrites_committed_update.py' -print -quit)" --start-server
+```
+
+Then rerun official Phase 3.
+
+### Plan D: If Official Still Fails
+
+Continue in this order:
+
+1. Add a Payment-focused probe that concurrently updates `warehouse`, `district`, `customer`, and `history`, including aborted payments.
+2. Add a scan-vs-index consistency probe after aborts for `orders`, `new_orders`, and `order_line`.
+3. Investigate MVCC insert early physical/index visibility if official SQL mixes snapshot and read-committed sessions.
+4. Investigate crash durability ordering only if the official Phase 3 includes process kill/restart between transaction run and validation.
+
 ## Repair Route
 
 ## Linux Verification Protocol
