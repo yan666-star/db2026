@@ -4,6 +4,12 @@ build/
 __pycache__/
 *.pyc
 
+# Accidental host/application files
+%SystemDrive%/
+
+# Local test database directories
+BufferPoolManagerTest_db/
+
 # Local RMDB database/test output directories
 testdb/
 *_test_db/

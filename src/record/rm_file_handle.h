@@ -64,6 +64,7 @@ class RmFileHandle {
     uint64_t mvcc_file_id_;
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
     std::mutex insert_latch_;
+    std::mutex logical_update_latch_;
     std::unordered_map<int, IntEqualityCache> int_equality_caches_;
 
    public:
@@ -83,6 +84,9 @@ class RmFileHandle {
     RmFileHdr get_file_hdr() { return file_hdr_; }
     int GetFd() { return fd_; }
     uint64_t GetMvccFileId() const { return mvcc_file_id_; }
+    std::unique_lock<std::mutex> acquire_logical_update_latch() {
+        return std::unique_lock<std::mutex>(logical_update_latch_);
+    }
 
     /* 判断指定位置上是否已经存在一条记录，通过Bitmap来判断 */
     bool is_record(const Rid &rid) const {

@@ -172,6 +172,7 @@ def run_files(args, output_file: Path):
     sql_files = args.sql_files or [SCRIPT_DIR / name for name in DEFAULT_SQL_FILES]
     client = SqlClient(args.host, args.port, args.timeout)
     output_off_size = None
+    failed_explicit_txn = False
 
     try:
         for sql_file in sql_files:
@@ -185,10 +186,20 @@ def run_files(args, output_file: Path):
                     print(response.rstrip())
 
                 lowered = statement.lower()
-                expected_failure = (
-                    lowered.startswith("insert into orders") and
-                    "'2026-07-01 10:00:03'" in lowered
-                )
+                expected_failure = False
+                if lowered.startswith("insert into orders") and "'2026-07-01 10:00:03'" in lowered:
+                    expected_failure = True
+                    failed_explicit_txn = True
+                elif failed_explicit_txn and lowered.startswith("insert into history"):
+                    expected_failure = True
+                elif failed_explicit_txn and lowered.startswith("commit"):
+                    expected_failure = True
+                    failed_explicit_txn = False
+                elif failed_explicit_txn and (
+                    lowered.startswith("rollback") or lowered.startswith("abort")
+                ):
+                    failed_explicit_txn = False
+
                 if "failure" in response.lower() and not expected_failure:
                     raise AssertionError(f"statement failed: {statement}")
 
@@ -224,9 +235,13 @@ def run_files(args, output_file: Path):
                     if "failed-before-conflict" in response:
                         raise AssertionError("failed transaction kept writes before the conflict")
 
-                if lowered.startswith("select h_data") and "2026-07-01 10:00:04" in lowered:
-                    if "failed-after-conflict" in response:
-                        raise AssertionError("failed transaction executed statements after abort")
+                if lowered.startswith("select count(*)") and "2026-07-01 10:00:04" in lowered:
+                    rows = table_rows(response)
+                    actual = int(float(rows[-1][0])) if rows and rows[-1] else -1
+                    if actual != 0:
+                        raise AssertionError(
+                            f"failed transaction executed statements after abort: expected 0 rows, got {actual}"
+                        )
 
                 time.sleep(args.delay)
     finally:

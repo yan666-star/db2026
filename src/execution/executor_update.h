@@ -9,7 +9,10 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <mutex>
+
 #include "execution_defs.h"
+#include "execution_eval.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
@@ -51,10 +54,20 @@ class UpdateExecutor : public AbstractExecutor {
         done_ = true;
 
         for (auto &rid : rids_) {
+            bool mvcc = uses_mvcc();
+            std::unique_lock<std::mutex> update_guard;
+            if (!mvcc) {
+                update_guard = fh_->acquire_logical_update_latch();
+            }
+
             auto rec = fh_->get_record(rid, context_);
             if (rec == nullptr) {
                 continue;
             }
+            if (!mvcc && !conds_.empty() && !eval_conditions(*rec, conds_, tab_.cols)) {
+                continue;
+            }
+
             RmRecord old_rec(*rec);
             auto rec_new = std::make_unique<RmRecord>(*rec);
             for (auto &set_clause : set_clauses_) {
@@ -111,7 +124,6 @@ class UpdateExecutor : public AbstractExecutor {
                 }
             }
 
-            bool mvcc = uses_mvcc();
             if (mvcc) {
                 context_->txn_mgr_->check_write_conflict(
                     context_->txn_, fh_->GetMvccFileId(), rid);

@@ -30,6 +30,6 @@ SELECT h_data
 FROM history
 WHERE h_date = '2026-07-01 10:00:03';
 
-SELECT h_data
+SELECT count(*) AS failed_after_count
 FROM history
 WHERE h_date = '2026-07-01 10:00:04';
