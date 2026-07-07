@@ -1047,10 +1047,11 @@ Post-patch probes to prioritize:
    row through MVCC history.
 3. Scan-vs-index count after committed delete and after aborting a delete.
 
-## 2026-07-07 Follow-up: Isolation Propagation Risk
+## 2026-07-07 Deferred Hypothesis: Isolation Propagation Risk
 
-Official Phase 3 still failed after the MVCC delete physical-state fix, so the
-next first-principles target is isolation mode itself:
+Official Phase 3 still failed after the MVCC delete physical-state fix. One
+possible risk is isolation mode propagation, but do not treat it as proven
+without a local probe or official-driver evidence:
 
 - The benchmark statement says TPC-C correctness is tested on snapshot
   isolation.
@@ -1072,7 +1073,7 @@ Adversarial consequence:
   checker then reports exactly the same generic symptom: partial writes,
   district/order counter mismatch, stock mismatch, or aborted work leaking.
 
-Patch direction:
+Possible patch direction if proven:
 
 - Keep READ COMMITTED as the process default until a SET command is received.
 - When a client sends `SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION` or
@@ -1084,7 +1085,7 @@ Patch direction:
   after the existing `explicit_txn_failed` guard has rejected disallowed
   statements.
 
-New targeted probe:
+Targeted probe if this path becomes relevant:
 
 - `SQL测试/performance_test/probe_snapshot_isolation_propagation.py`
 - It sends SET on one connection, then opens a writer connection that inserts a
@@ -1092,3 +1093,47 @@ New targeted probe:
   connection that counts that row.
 - Expected result: the reader sees count 0. If it sees 1, new connections are
   still READ COMMITTED and can observe uncommitted physical inserts.
+
+## 2026-07-07 Follow-up: READ COMMITTED Must Not See Pending MVCC Inserts
+
+Re-reading the official failure stage matters: the current failure is
+post-transaction table consistency, not the later kill-9 recovery gate. The most
+direct invariant violation is any transaction reading uncommitted rows during
+the pressure run and then committing dependent counter or stock updates.
+
+Concrete code issue:
+
+- MVCC inserts call `prepare_insert()` and write the physical record before
+  COMMIT.
+- `get_latest_committed_record()` is used by non-MVCC/READ COMMITTED reads.
+- Before the fix, if a RID had only a pending insert version and a physical
+  slot, `get_latest_committed_record()` returned the physical row.
+- That violates the function name and READ COMMITTED semantics: a row with no
+  committed version must not be visible merely because its physical slot was
+  prewritten.
+
+Adversarial P3 effect:
+
+- A concurrent transaction can see an uncommitted `orders`, `new_orders`, or
+  `order_line` row.
+- It can then update `district`, `stock`, `customer`, or Delivery state based on
+  data that later aborts.
+- After the pressure window, all individual statements may have returned
+  success/failure, but table-level conservation laws no longer balance.
+
+Patch direction:
+
+- In `TransactionManager::get_latest_committed_record()`, scan the MVCC history
+  for pending insert versions (`before_deleted && !deleted`).
+- If there is no committed version for that RID and a pending insert exists,
+  return `nullptr` even if the physical slot exists.
+- Keep returning the physical row for normal loaded rows, committed inserts, and
+  committed latest state, because those either have no MVCC history or have a
+  committed version.
+
+New targeted probe:
+
+- `SQL测试/performance_test/probe_uncommitted_mvcc_insert_visibility.py`
+- It opens a READ COMMITTED reader first, then opens a snapshot writer that
+  inserts into `new_orders` inside an uncommitted transaction.
+- Expected result: the reader's `COUNT(*)` is 0 until the writer commits.

@@ -275,8 +275,12 @@ std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
     }
 
     const MvccVersion *latest = nullptr;
+    bool has_pending_insert = false;
     for (const auto &version : history_it->second) {
         if (version.commit_ts == INVALID_TS) {
+            if (version.before_deleted && !version.deleted) {
+                has_pending_insert = true;
+            }
             continue;
         }
         if (latest == nullptr || version.commit_ts > latest->commit_ts) {
@@ -287,6 +291,9 @@ std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
     // A committed delete hides the row regardless of the physical slot state
     // (MVCC delete removes index entries but may leave the physical record).
     if (latest != nullptr && latest->deleted) {
+        return nullptr;
+    }
+    if (latest == nullptr && has_pending_insert) {
         return nullptr;
     }
 
