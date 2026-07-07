@@ -725,6 +725,10 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                         const_cast<char *>(op.before.data()));
         if (op.is_delete) {
             delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
+            auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
+            if (file_handle->record_exists(op.rid)) {
+                file_handle->delete_record(op.rid, nullptr);
+            }
         } else {
             auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
             RmRecord after(static_cast<int>(op.after.size()),

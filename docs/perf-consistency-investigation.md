@@ -879,3 +879,170 @@ Does the local performance smoke suite pass on the current commit?
 ```
 
 If yes, run a heavier READ COMMITTED concurrent district/stock update probe. If it fails, fix lost-update protection first. If it passes, inspect official transaction mix and focus on Payment/Delivery/abort/crash recovery paths.
+
+## 2026-07-07 Handoff: Phase 3 Still Fails
+
+Current official status reported by the user:
+
+```text
+Phase 1 functional tests pass.
+Phase 2 load data passes.
+Phase 3 post-transaction consistency validation still fails.
+```
+
+The previous local fixes/probes addressed narrower symptoms, but did not close
+the official Phase 3 failure. Treat all previous fixes as hypotheses, not proof
+that the corresponding subsystem is globally correct.
+
+### First-Principles Model
+
+TPC-C consistency is a set of conservation laws over table state. The database
+must preserve these laws regardless of interleaving:
+
+1. Atomicity: every transaction contributes either its full delta or zero delta.
+2. Isolation: a transaction must not base a committed delta on another
+   transaction's uncommitted or later-aborted delta.
+3. Durability: after a success response, redo must be able to reconstruct the
+   same committed delta after `kill -9`.
+4. Index equivalence: an indexed lookup and a table scan must enumerate the same
+   committed logical rows.
+5. Validation SQL correctness: `GROUP BY`, `MIN/MAX/SUM/COUNT`, and `ORDER BY`
+   must compute the invariant from the same logical snapshot.
+
+For Phase 3, reason in deltas, not in individual SQL statements:
+
+- `NewOrder` delta:
+  - `district.d_next_o_id += 1`
+  - one `orders`
+  - one `new_orders`
+  - `o_ol_cnt` `order_line` rows
+  - per-item stock quantity/count deltas
+- `Payment` delta:
+  - warehouse/district/customer money counters
+  - one `history`
+- `Delivery` delta:
+  - one `new_orders` delete per district with work
+  - matching `orders`, `order_line`, and `customer` updates
+
+If a checker reports mismatch, find which delta was partially applied, applied
+twice, overwritten by abort, or invisible through one access path.
+
+### Adversarial Review Matrix
+
+Severity scale:
+
+- Critical: can directly cause official Phase 3 consistency failure.
+- High: can corrupt data under common benchmark interleavings.
+- Medium: can fail edge probes or lower ranking by causing abort storms.
+- Low: unlikely to explain current failure, but worth documenting.
+
+| Area | Attacker angle | Severity | What can break | Improvement direction |
+| --- | --- | --- | --- | --- |
+| Extreme input | NewOrder invalid item after district/order inserts | Critical | abort leaves `orders/new_orders/order_line` or counter deltas | Build a forced-invalid-item transaction probe with checks before/after every table |
+| Extreme input | Delivery district has no `new_orders` while other districts do | High | transaction updates some districts then fails later | Probe partial Delivery abort and commit chains |
+| Extreme input | Payment by customer last name returns many candidates | High | wrong customer updated, history still inserted | Probe median-customer selection and abort after customer update |
+| Concurrency | Two transactions update same `district` or `stock` row | Critical | lost update or abort overwrite | Keep READ COMMITTED guard/MVCC conflict checks; add heavier concurrent probes |
+| Concurrency | Delivery deletes `new_orders` while NewOrder inserts nearby keys | Critical | gaps or wrong min/max/count relation | Add scan-vs-index and Delivery min-delete probe |
+| Concurrency | Snapshot SET only reaches one connection | Critical | some workers run READ COMMITTED and corrupt counters | Verify server-wide/default isolation behavior with multi-socket probe |
+| Concurrency | Physical `get_record` races with commit-time `update_record` | High | torn old record becomes committed update input | Keep short physical read latch; consider page-level read/write discipline if probe fails |
+| Failure recovery | Commit log durable before MVCC physical apply | Critical for kill-9 stage | committed update missing after restart | Probe kill between commit acknowledgement and restart; consider WAL redo completeness |
+| Failure recovery | Abort log durable after incomplete rollback | Critical | loser txn skipped by recovery while partial rows remain | Audit rollback-before-abort-log ordering and injected failure windows |
+| Failure recovery | Insert log exists before index insert/write set append | High | row/index divergence after crash or abort | Make insert/index/write-set ordering atomic or add compensating cleanup |
+| Malicious misuse | Client continues statements after explicit txn failure | High | post-failure statements become implicit commits | Preserve `explicit_txn_failed` drain behavior; test with exact count queries |
+| Malicious misuse | Multiple `BEGIN`/`COMMIT` spellings and missing semicolons | Medium | transaction guard not released or isolation not applied | Probe `BEGIN WORK`, `START TRANSACTION`, `COMMIT TRANSACTION`, disconnect |
+| Validation SQL | Multi-column group with several aggregates | High | checker reports false mismatch | Add local checker clone using official consistency queries |
+| Index equivalence | Aborted insert leaves index key or committed delete leaves stale key | Critical | index scan count differs from table scan | Add scan-vs-index consistency probe after abort/commit/restart |
+
+### Updated Plan
+
+1. Freeze known-good constraints:
+   - Do not touch `src/rmdb.cpp` socket/fd setup.
+   - Do not rewrite recovery broadly while Phase 1 passes.
+   - Do not add table-name or SQL-text hardcoding.
+   - Keep changes in generic transaction, record, index, or validation logic.
+
+2. Reconstruct current code state:
+   - Confirm whether Patch 1, Patch 2, and Patch 3 are present in code, not only
+     documented.
+   - Confirm any uncommitted local artifacts are unrelated test database files.
+
+3. Build a local clone of the official post-run consistency checker:
+   - Run the documented queries for `district`, `orders`, `new_orders`,
+     `order_line`, and total `orders`.
+   - Add derived assertions:
+     - `d_next_o_id == max(o_id) + 1`
+     - optional `sum(o_ol_cnt) == count(order_line)` for generated workloads.
+       Do not enable it for the bundled miniature CSV baseline: that data has
+       random `orders.o_ol_cnt` values and a fixed 10 `order_line` rows per
+       order, so the relation is false immediately after load.
+     - `new_orders` ranges/counts are internally consistent after Delivery
+       semantics.
+   - This separates "data is wrong" from "checker SQL is wrong".
+   - Current helper script:
+     `SQL测试/performance_test/check_tpcc_consistency.py`.
+     It connects to an already-running server and reports the first failing
+     district/order invariant.
+
+4. Add the next probe before changing core code:
+   - Priority A: Delivery min/delete/update/customer chain, with concurrent
+     NewOrder inserts.
+   - Priority B: Payment money counters plus `history`, including forced abort.
+   - Priority C: snapshot isolation propagation across multiple sockets.
+   - Priority D: scan-vs-index equivalence after aborts and deletes.
+
+5. Fix only the first reproduced failing invariant:
+   - If Delivery creates `new_orders` gaps: inspect DELETE visibility and index
+     maintenance.
+   - If Payment counters mismatch: inspect multi-row update atomicity and abort
+     rollback.
+   - If snapshot propagation fails: fix connection/session isolation handling.
+   - If scan-vs-index diverges: fix generic index maintenance, not table names.
+
+6. Verification order after each patch:
+   - `git diff --check`
+   - build on Linux
+   - parser/unit tests
+   - performance smoke
+   - new targeted probe
+   - official Phase 3
+
+### Immediate Next Implementation Target
+
+The best next target is a local official-checker clone plus a Delivery-focused
+probe. The existing smoke covers compact NewOrder and READ COMMITTED lost update
+patterns; it does not stress Delivery's `MIN(no_o_id)` selection, delete,
+orders/order_line/customer update chain, or the resulting `new_orders`
+range/count invariants. Delivery is the largest uncovered gap that can explain
+why local smoke passes while official Phase 3 still fails.
+
+### Current Finding: MVCC Delete Physical State
+
+Code review found a generic MVCC delete inconsistency in
+`src/transaction/transaction_manager.cpp`:
+
+- `DeleteExecutor` under MVCC calls `prepare_delete()` and writes the delete log,
+  but does not physically remove the tuple immediately.
+- `commit_mvcc()` marked the pending delete committed and removed index entries,
+  but did not delete the physical record slot.
+- Therefore an indexed lookup could stop seeing a committed delete while a table
+  scan or aggregate over physical slots could still count the row until GC.
+
+This directly matches a Phase 3 shape: Delivery deletes rows from `new_orders`,
+then the official post-run checker may aggregate the table before GC has
+reclaimed the stale physical slots. The fix is generic, not TPC-C specific:
+
+- During MVCC commit, for each committed delete, remove index entries using the
+  saved `before` image, then delete the physical record if the slot still exists.
+- Keep the tombstone version in `record_versions_` so older snapshots can still
+  decide visibility from the version chain.
+- GC/checkpoint reclamation already calls `record_exists()` before physical
+  deletion, so the new immediate physical delete is idempotent with later
+  cleanup.
+
+Post-patch probes to prioritize:
+
+1. Delivery-style `DELETE FROM new_orders ...` under snapshot isolation followed
+   immediately by scan-based `COUNT/MIN/MAX`.
+2. Concurrent snapshot reader started before the delete must still see the old
+   row through MVCC history.
+3. Scan-vs-index count after committed delete and after aborting a delete.
