@@ -1137,3 +1137,41 @@ New targeted probe:
 - It opens a READ COMMITTED reader first, then opens a snapshot writer that
   inserts into `new_orders` inside an uncommitted transaction.
 - Expected result: the reader's `COUNT(*)` is 0 until the writer commits.
+
+## 2026-07-07 Follow-up: Optimized Read Paths Must Use MVCC Visibility
+
+A second concrete visibility hole was found after the pending-insert fix:
+
+- `RmFileHandle::get_record()` applies MVCC/latest-committed visibility rules.
+- Plain seq scan and per-RID index scan use `get_record()`.
+- `RmFileHandle::batch_get_records()` copied physical slots directly and only
+  returned physical records.
+- Non-MVCC `IndexScanExecutor` uses `batch_get_records()` for performance.
+- The integer equality-cache path in `SeqScanExecutor` also assumed every cached
+  RID produced a non-null record.
+
+Adversarial P3 effect:
+
+- A snapshot transaction can physically insert an `orders`, `new_orders`, or
+  `order_line` row before commit.
+- The index entry also exists before commit.
+- A concurrent READ COMMITTED index lookup can hit `batch_get_records()` and see
+  the uncommitted physical row, bypassing `get_latest_committed_record()`.
+- That reader may then commit dependent updates to `district`, `stock`,
+  `orders`, `customer`, or Delivery state based on data that later aborts.
+
+Patch direction:
+
+- Make `batch_get_records()` filter every physical record through
+  `get_visible_record()` for MVCC transactions or
+  `get_latest_committed_record()` for non-MVCC transactions.
+- Keep the returned `records` vector and caller-owned `rids` vector aligned by
+  filtering both together.
+- In equality-cache seq scan, skip null records returned by `get_record()`.
+
+Relevant probe:
+
+- `SQL测试/performance_test/probe_uncommitted_mvcc_insert_visibility.py`
+- Its `COUNT(*) FROM new_orders WHERE no_w_id = ... AND no_d_id = ... AND
+  no_o_id = ...` query is expected to choose the `new_orders(no_w_id,no_d_id,
+  no_o_id)` index, so it specifically exercises the optimized index path.
