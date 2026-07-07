@@ -184,36 +184,6 @@ bool parse_output_file_command(const std::string &sql, bool &enabled) {
     return false;
 }
 
-bool parse_transaction_isolation_command(const std::string &sql,
-                                         IsolationLevel &isolation_level) {
-    std::string text = trim_copy(sql);
-    if (!text.empty() && text.back() == ';') {
-        text.pop_back();
-        text = trim_copy(text);
-    }
-
-    std::istringstream iss(text);
-    std::vector<std::string> words;
-    std::string word;
-    while (iss >> word) {
-        words.push_back(lower_copy(word));
-    }
-    if (words.size() == 6 && words[0] == "set" &&
-        words[1] == "transaction" && words[2] == "isolation" &&
-        words[3] == "level" && words[4] == "snapshot" &&
-        words[5] == "isolation") {
-        isolation_level = IsolationLevel::SNAPSHOT_ISOLATION;
-        return true;
-    }
-    if (words.size() == 5 && words[0] == "set" &&
-        words[1] == "transaction" && words[2] == "isolation" &&
-        words[3] == "level" && words[4] == "serializable") {
-        isolation_level = IsolationLevel::SERIALIZABLE;
-        return true;
-    }
-    return false;
-}
-
 bool parse_load_command(const std::string &sql, std::string &file_name,
                         std::string &table_name) {
     std::string text = trim_copy(sql);
@@ -485,17 +455,6 @@ void *client_handler(void *sock_fd) {
                 }
                 continue;
             }
-        }
-
-        IsolationLevel requested_isolation;
-        if (parse_transaction_isolation_command(raw_sql,
-                                                requested_isolation)) {
-            session_isolation = requested_isolation;
-            bool write_failed = write(fd, data_send, offset + 1) == -1;
-            if (write_failed) {
-                break;
-            }
-            continue;
         }
 
         if (txn_boundary == TxnBoundary::Begin &&

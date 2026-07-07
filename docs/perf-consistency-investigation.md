@@ -1104,6 +1104,10 @@ Important correction after local smoke:
   transactions to abort.
 - Current safe behavior: each new connection starts READ COMMITTED; SET changes
   only that connection.
+- Do not hand-parse `SET TRANSACTION ISOLATION ...` in `rmdb.cpp`. The parser
+  already supports the standard semicolon-terminated statement. The only
+  semicolon-less special command required by the performance statement is
+  `set output_file off`.
 
 ## 2026-07-07 Follow-up: READ COMMITTED Must Not See Pending MVCC Inserts
 
