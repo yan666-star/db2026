@@ -31,6 +31,11 @@ int read_int_key(const char *record, int offset) {
  * @return {unique_ptr<RmRecord>} rid对应的记录对象指针
  */
 std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* context) const {
+    std::unique_lock<std::mutex> commit_apply_guard;
+    if (context != nullptr && context->txn_mgr_ != nullptr) {
+        commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
+    }
+
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
     std::unique_ptr<RmRecord> physical_record;
@@ -61,6 +66,11 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
     std::vector<std::unique_ptr<RmRecord>> records;
     if (rids.empty()) {
         return records;
+    }
+
+    std::unique_lock<std::mutex> commit_apply_guard;
+    if (context != nullptr && context->txn_mgr_ != nullptr) {
+        commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
     }
 
     RmPageHandle page_handle = fetch_page_handle(page_no);

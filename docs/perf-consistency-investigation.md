@@ -1094,6 +1094,17 @@ Targeted probe if this path becomes relevant:
 - Expected result: the reader sees count 0. If it sees 1, new connections are
   still READ COMMITTED and can observe uncommitted physical inserts.
 
+Important correction after local smoke:
+
+- Do not keep process-wide SET propagation unless the official driver proves it
+  is required.
+- `run_performance_smoke.py` intentionally has a default READ COMMITTED
+  concurrent NewOrder probe. A process-wide SET from earlier setup changes later
+  probe connections to snapshot isolation and causes expected READ COMMITTED
+  transactions to abort.
+- Current safe behavior: each new connection starts READ COMMITTED; SET changes
+  only that connection.
+
 ## 2026-07-07 Follow-up: READ COMMITTED Must Not See Pending MVCC Inserts
 
 Re-reading the official failure stage matters: the current failure is
@@ -1175,3 +1186,33 @@ Relevant probe:
 - Its `COUNT(*) FROM new_orders WHERE no_w_id = ... AND no_d_id = ... AND
   no_o_id = ...` query is expected to choose the `new_orders(no_w_id,no_d_id,
   no_o_id)` index, so it specifically exercises the optimized index path.
+
+## 2026-07-07 Follow-up: Physical Reads Must Not Interleave With MVCC Commit Apply
+
+Another post-run consistency window remains even after visibility filtering:
+
+- `commit_mvcc()` uses `commit_apply_latch_` to serialize physical application
+  of committed MVCC updates/deletes.
+- Inside that latch it first assigns commit timestamps in `record_versions_`,
+  then applies physical record and index changes.
+- Ordinary readers copied physical bytes without taking `commit_apply_latch_`.
+- A reader could therefore observe an old physical value while the version map
+  already considered a newer value committed.
+
+Adversarial P3 effect:
+
+- Transaction A commits `district.d_next_o_id += 1` or a `stock` decrement.
+- Transaction B reads the same row during the small gap between logical commit
+  timestamp assignment and physical application.
+- B bases its own committed delta on the stale physical value, producing lost
+  counter/stock updates even though both transactions eventually commit.
+
+Patch direction:
+
+- Expose a narrow `TransactionManager::acquire_commit_apply_latch()` helper.
+- `RmFileHandle::get_record()` and `batch_get_records()` take that latch before
+  copying physical bytes when a transaction manager is present.
+- The lock order remains `commit_apply_latch_ -> mvcc_latch_`, matching the
+  existing transaction-manager lock-ordering rule.
+- Reads with no transaction manager, such as recovery/catalog maintenance paths,
+  keep their previous behavior.
