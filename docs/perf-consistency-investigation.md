@@ -1046,3 +1046,49 @@ Post-patch probes to prioritize:
 2. Concurrent snapshot reader started before the delete must still see the old
    row through MVCC history.
 3. Scan-vs-index count after committed delete and after aborting a delete.
+
+## 2026-07-07 Follow-up: Isolation Propagation Risk
+
+Official Phase 3 still failed after the MVCC delete physical-state fix, so the
+next first-principles target is isolation mode itself:
+
+- The benchmark statement says TPC-C correctness is tested on snapshot
+  isolation.
+- `rmdb.cpp` kept `session_isolation` as a per-socket local variable initialized
+  to READ COMMITTED for every new client.
+- `SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION` updated only the current
+  socket through `context->session_isolation_`.
+- If the performance driver sends SET on one control connection and then opens
+  worker connections, those workers silently run READ COMMITTED.
+
+Adversarial consequence:
+
+- MVCC INSERT writes the physical slot before COMMIT, and hides it from MVCC
+  readers using the pending version chain.
+- A READ COMMITTED reader can call `get_latest_committed_record()` and return
+  the physical row even though the corresponding MVCC version is still pending.
+- That can let another transaction see an uncommitted `orders`, `new_orders`, or
+  `order_line` row, base counter updates on it, or trip unique checks. The final
+  checker then reports exactly the same generic symptom: partial writes,
+  district/order counter mismatch, stock mismatch, or aborted work leaking.
+
+Patch direction:
+
+- Keep READ COMMITTED as the process default until a SET command is received.
+- When a client sends `SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION` or
+  `... SERIALIZABLE`, update both the current socket and a process-wide default
+  used by subsequently accepted sockets.
+- Do not change socket/fd handling, recovery, parser grammar, or table-specific
+  behavior.
+- Preserve the explicit-failed-transaction drain behavior: SET is handled only
+  after the existing `explicit_txn_failed` guard has rejected disallowed
+  statements.
+
+New targeted probe:
+
+- `SQL测试/performance_test/probe_snapshot_isolation_propagation.py`
+- It sends SET on one connection, then opens a writer connection that inserts a
+  `new_orders` row inside an uncommitted transaction, and a third reader
+  connection that counts that row.
+- Expected result: the reader sees count 0. If it sees 1, new connections are
+  still READ COMMITTED and can observe uncommitted physical inserts.
