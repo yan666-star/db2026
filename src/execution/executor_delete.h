@@ -9,7 +9,10 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <mutex>
+
 #include "execution_defs.h"
+#include "execution_eval.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
@@ -44,14 +47,23 @@ class DeleteExecutor : public AbstractExecutor {
         done_ = true;
 
         for (auto &rid : rids_) {
+            bool uses_mvcc =
+                context_->txn_mgr_ != nullptr &&
+                context_->txn_mgr_->uses_mvcc(context_->txn_);
+            std::unique_lock<std::mutex> delete_guard;
+            if (!uses_mvcc) {
+                delete_guard = fh_->acquire_logical_update_latch();
+            }
+
             auto rec = fh_->get_record(rid, context_);
             if (rec == nullptr) {
                 continue;
             }
+            if (!uses_mvcc && !conds_.empty() &&
+                !eval_conditions(*rec, conds_, tab_.cols)) {
+                continue;
+            }
             RmRecord old_rec(*rec);
-            bool uses_mvcc =
-                context_->txn_mgr_ != nullptr &&
-                context_->txn_mgr_->uses_mvcc(context_->txn_);
             if (uses_mvcc) {
                 context_->txn_mgr_->prepare_delete(
                     context_->txn_, fh_->GetMvccFileId(), rid, old_rec,

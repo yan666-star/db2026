@@ -9,6 +9,8 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <mutex>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -57,6 +59,10 @@ class InsertExecutor : public AbstractExecutor {
         bool uses_mvcc =
             context_->txn_mgr_ != nullptr &&
             context_->txn_mgr_->uses_mvcc(context_->txn_);
+        std::unique_lock<std::mutex> unique_insert_guard;
+        if (!tab_.indexes.empty()) {
+            unique_insert_guard = fh_->acquire_logical_update_latch();
+        }
 
         if (uses_mvcc && tab_.indexes.empty() && !tab_.cols.empty()) {
             const ColMeta &identity_col = tab_.cols.front();

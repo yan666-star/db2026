@@ -1220,3 +1220,93 @@ Patch direction:
   existing transaction-manager lock-ordering rule.
 - Reads with no transaction manager, such as recovery/catalog maintenance paths,
   keep their previous behavior.
+
+## 2026-07-07 Follow-up: READ COMMITTED DELETE Must Recheck Predicates
+
+`UpdateExecutor` already protects READ COMMITTED writes by taking the table's
+logical update latch and re-reading the RID before applying the update. This
+prevents a stale RID collected by the scan phase from overwriting a row that no
+longer matches the original predicate.
+
+`DeleteExecutor` did not have the same protection:
+
+- The plan first scans matching RIDs.
+- Later, `DeleteExecutor` re-fetches each RID and deletes it.
+- Under READ COMMITTED, another statement could change or delete that RID
+  between scan and delete.
+- Without a predicate recheck, DELETE could remove a row that no longer matches
+  its `WHERE` clause, or race with another delete path.
+
+Patch direction:
+
+- For non-MVCC deletes, take `RmFileHandle::acquire_logical_update_latch()`.
+- Re-read the RID.
+- If the row is gone or no longer satisfies `conds_`, skip it.
+- Keep MVCC delete behavior unchanged because `prepare_delete()` already checks
+  write conflicts through `prepare_write()`.
+
+This is a generic executor correctness fix. It is not tied to any TPC-C table
+name or SQL text, but it protects Delivery-style `new_orders` deletes and any
+other READ COMMITTED delete from stale-scan effects.
+
+## 2026-07-07 Follow-up: Use a Mixed Performance Probe
+
+The old local smoke path mainly exercises `NewOrder`-shaped insert/update
+chains. That is useful, but it is too narrow for the official Phase 3 failure:
+post-run consistency can also be broken by `Payment` and `Delivery`.
+
+Added local probe:
+
+- `SQL测试/performance_test/run_performance_mixed_probe.py`
+
+Coverage:
+
+- `NewOrder`: district counter, order parent row, new-order row, stock quantity,
+  stock ytd/order counter, and order-line children.
+- Intentional abort: partial district/stock/order/order-line changes must be
+  fully rolled back.
+- `Payment`: warehouse ytd, district ytd, customer balance/ytd/payment counter,
+  and history insert.
+- `Delivery`: `new_orders` delete plus `orders`, `order_line`, and customer
+  delivery-counter updates.
+- Optional `--snapshot` mode sends
+  `SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION;` on each connection,
+  matching the performance statement more closely without changing `rmdb.cpp`
+  global connection behavior.
+
+Use this before claiming a Phase 3 fix:
+
+```bash
+python3 ./SQL测试/performance_test/run_performance_mixed_probe.py --start-server --snapshot --allow-snapshot-aborts
+python3 ./SQL测试/performance_test/check_tpcc_consistency.py --host 127.0.0.1 --port 8765
+```
+
+If this probe fails, prefer fixing the generic executor/transaction mechanism
+named by the failure. Do not add TPC-C table-name or SQL-text special cases.
+
+## 2026-07-07 Follow-up: Indexed INSERT Check/Insert Race
+
+First-principles invariant:
+
+- A unique index is part of the table's logical state.
+- The duplicate-key check and the physical/index insertion must be one atomic
+  logical write step.
+- If two transactions both pass the duplicate check before either index entry is
+  visible, the second physical row can be inserted even though the B+ tree later
+  refuses to add the duplicate key.
+
+Risk under the performance workload:
+
+- `orders`, `new_orders`, and `order_line` all have primary-key-like indexes.
+- A partial indexed insert can leave a physical row that scans can see but
+  indexed validation cannot, or vice versa.
+- That kind of table/index divergence matches post-transaction consistency
+  failures better than a pure formatting issue.
+
+Patch direction:
+
+- In `InsertExecutor`, hold the table logical update latch around duplicate
+  checks, physical insertion, write-set registration, and index insertion when
+  the table has indexes.
+- This is a generic uniqueness/atomicity fix. It does not special-case any
+  benchmark table or SQL text.
