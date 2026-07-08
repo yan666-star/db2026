@@ -147,7 +147,8 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         }
     }
 
-    for (const auto &lock_id : *txn->get_lock_set()) {
+    auto lock_set = *txn->get_lock_set();
+    for (const auto &lock_id : lock_set) {
         lock_manager_->unlock(txn, lock_id);
     }
     txn->get_lock_set()->clear();
@@ -187,7 +188,8 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         log_manager->flush_log_to_disk(true);
     }
 
-    for (const auto &lock_id : *txn->get_lock_set()) {
+    auto lock_set = *txn->get_lock_set();
+    for (const auto &lock_id : lock_set) {
         lock_manager_->unlock(txn, lock_id);
     }
     txn->get_lock_set()->clear();
@@ -233,8 +235,15 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
         if (physical_record == nullptr) {
             return nullptr;
         }
+        // Do not fabricate a commit_ts=0 baseline from the current physical page
+        // when it may already reflect commits after this snapshot: GC can prune
+        // the chain while the page holds a newer value.
+        timestamp_t physical_ts = last_commit_ts_.load();
+        if (physical_ts > txn->get_start_ts()) {
+            return nullptr;
+        }
         MvccVersion baseline;
-        baseline.commit_ts = 0;
+        baseline.commit_ts = physical_ts;
         baseline.deleted = false;
         baseline.data = copy_record(physical_record);
         history_it =
@@ -401,6 +410,171 @@ void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
     auto it = mvcc_txns_.find(txn_id);
     if (it != mvcc_txns_.end()) {
         it->second.aborted = true;
+    }
+}
+
+void TransactionManager::check_physical_before(
+    Transaction *txn, const std::string &table_name, const Rid &rid,
+    const RmRecord *before_record) {
+    auto fh_it = sm_manager_->fhs_.find(table_name);
+    if (fh_it == sm_manager_->fhs_.end()) {
+        return;
+    }
+    RmFileHandle *file_handle = fh_it->second.get();
+    bool exists = file_handle->record_exists(rid);
+    if (!exists) {
+        if (before_record != nullptr) {
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
+            throw TransactionAbortException(txn->get_transaction_id(),
+                                            AbortReason::WRITE_CONFLICT);
+        }
+        return;
+    }
+    if (before_record == nullptr) {
+        mark_mvcc_txn_aborted(txn->get_transaction_id());
+        throw TransactionAbortException(txn->get_transaction_id(),
+                                        AbortReason::WRITE_CONFLICT);
+    }
+    std::unique_ptr<RmRecord> physical;
+    try {
+        physical = file_handle->get_record(rid, nullptr);
+    } catch (const RecordNotFoundError &) {
+        mark_mvcc_txn_aborted(txn->get_transaction_id());
+        throw TransactionAbortException(txn->get_transaction_id(),
+                                        AbortReason::WRITE_CONFLICT);
+    }
+    int record_size = file_handle->get_file_hdr().record_size;
+    if (before_record->size != record_size ||
+        memcmp(physical->data, before_record->data, record_size) != 0) {
+        mark_mvcc_txn_aborted(txn->get_transaction_id());
+        throw TransactionAbortException(txn->get_transaction_id(),
+                                        AbortReason::WRITE_CONFLICT);
+    }
+}
+
+TransactionManager::RecordKey TransactionManager::make_record_key(
+    const std::string &table_name, const Rid &rid) const {
+    auto fh_it = sm_manager_->fhs_.find(table_name);
+    if (fh_it == sm_manager_->fhs_.end()) {
+        return RecordKey{0, rid};
+    }
+    return RecordKey{fh_it->second->GetMvccFileId(), rid};
+}
+
+WriteRecord *TransactionManager::first_mutating_write_record(
+    Transaction *txn, const RecordKey &key) const {
+    if (txn == nullptr) {
+        return nullptr;
+    }
+    for (auto *write_record : *txn->get_write_set()) {
+        if (write_record->GetWriteType() != WType::UPDATE_TUPLE &&
+            write_record->GetWriteType() != WType::DELETE_TUPLE) {
+            continue;
+        }
+        if (make_record_key(write_record->GetTableName(),
+                            write_record->GetRid()) == key) {
+            return write_record;
+        }
+    }
+    return nullptr;
+}
+
+bool TransactionManager::write_record_is_insert_only(Transaction *txn,
+                                                     const RecordKey &key) const {
+    if (txn == nullptr) {
+        return false;
+    }
+    bool has_write = false;
+    for (auto *write_record : *txn->get_write_set()) {
+        if (make_record_key(write_record->GetTableName(),
+                            write_record->GetRid()) == key) {
+            has_write = true;
+            if (write_record->GetWriteType() == WType::UPDATE_TUPLE ||
+                write_record->GetWriteType() == WType::DELETE_TUPLE) {
+                return false;
+            }
+        }
+    }
+    return has_write;
+}
+
+bool TransactionManager::has_multiple_mutating_writes(
+    Transaction *txn, const RecordKey &key) const {
+    if (txn == nullptr) {
+        return false;
+    }
+    int mutating = 0;
+    for (auto *write_record : *txn->get_write_set()) {
+        if (write_record->GetWriteType() != WType::UPDATE_TUPLE &&
+            write_record->GetWriteType() != WType::DELETE_TUPLE) {
+            continue;
+        }
+        if (make_record_key(write_record->GetTableName(),
+                            write_record->GetRid()) == key &&
+            ++mutating > 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+TransactionManager::MvccVersion *TransactionManager::find_own_pending_version(
+    std::vector<MvccVersion> &history, txn_id_t txn_id) const {
+    for (auto &version : history) {
+        if (version.owner == txn_id && version.commit_ts == INVALID_TS) {
+            return &version;
+        }
+    }
+    return nullptr;
+}
+
+void TransactionManager::validate_pending_physical_before(Transaction *txn) {
+    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+    if (state_it == mvcc_txns_.end()) {
+        return;
+    }
+
+    for (const auto &key : state_it->second.write_records) {
+        if (write_record_is_insert_only(txn, key)) {
+            continue;
+        }
+
+        WriteRecord *mutating = first_mutating_write_record(txn, key);
+        if (has_multiple_mutating_writes(txn, key)) {
+            if (mutating == nullptr) {
+                mark_mvcc_txn_aborted(txn->get_transaction_id());
+                throw TransactionAbortException(txn->get_transaction_id(),
+                                                AbortReason::WRITE_CONFLICT);
+            }
+            check_physical_before(txn, mutating->GetTableName(), key.rid,
+                                  &mutating->GetRecord());
+            continue;
+        }
+
+        auto history_it = record_versions_.find(key);
+        MvccVersion *own_pending = nullptr;
+        if (history_it != record_versions_.end()) {
+            own_pending = find_own_pending_version(history_it->second,
+                                                   txn->get_transaction_id());
+        }
+        if (own_pending != nullptr && !own_pending->before.empty() &&
+            !own_pending->table_name.empty()) {
+            RmRecord before(static_cast<int>(own_pending->before.size()),
+                            const_cast<char *>(own_pending->before.data()));
+            check_physical_before(txn, own_pending->table_name, key.rid,
+                                  &before);
+            continue;
+        }
+
+        if (mutating != nullptr) {
+            check_physical_before(txn, mutating->GetTableName(), key.rid,
+                                  &mutating->GetRecord());
+            continue;
+        }
+
+        mark_mvcc_txn_aborted(txn->get_transaction_id());
+        throw TransactionAbortException(txn->get_transaction_id(),
+                                        AbortReason::WRITE_CONFLICT);
     }
 }
 
@@ -616,6 +790,11 @@ void TransactionManager::prepare_write(
             txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
     }
 
+    if (own_pending == nullptr && old_record != nullptr &&
+        !table_name.empty()) {
+        check_physical_before(txn, table_name, rid, old_record);
+    }
+
     if (own_pending == nullptr) {
         MvccVersion pending;
         pending.owner = txn->get_transaction_id();
@@ -677,6 +856,63 @@ void TransactionManager::prepare_write(
     }
 }
 
+void TransactionManager::check_commit_conflict_under_latch(Transaction *txn) {
+    if (!uses_mvcc(txn)) {
+        return;
+    }
+
+    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+    if (state_it == mvcc_txns_.end()) {
+        return;
+    }
+
+    for (const auto &key : state_it->second.write_records) {
+        auto history_it = record_versions_.find(key);
+        if (history_it == record_versions_.end()) {
+            if (write_record_is_insert_only(txn, key)) {
+                continue;
+            }
+            WriteRecord *mutating = first_mutating_write_record(txn, key);
+            if (mutating != nullptr) {
+                check_physical_before(txn, mutating->GetTableName(), key.rid,
+                                      &mutating->GetRecord());
+            } else {
+                mark_mvcc_txn_aborted(txn->get_transaction_id());
+                throw TransactionAbortException(txn->get_transaction_id(),
+                                                AbortReason::WRITE_CONFLICT);
+            }
+            continue;
+        }
+        for (const auto &version : history_it->second) {
+            if (version.commit_ts == INVALID_TS) {
+                if (version.owner != txn->get_transaction_id() &&
+                    !mvcc_txn_aborted(version.owner)) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(),
+                        AbortReason::WRITE_CONFLICT);
+                }
+            } else if (version.commit_ts > txn->get_start_ts() &&
+                       version.owner != txn->get_transaction_id()) {
+                mark_mvcc_txn_aborted(txn->get_transaction_id());
+                throw TransactionAbortException(
+                    txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+            }
+        }
+    }
+
+    validate_pending_physical_before(txn);
+}
+
+void TransactionManager::check_commit_conflict(Transaction *txn) {
+    if (!uses_mvcc(txn)) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    check_commit_conflict_under_latch(txn);
+}
+
 void TransactionManager::commit_mvcc(Transaction *txn) {
     if (!uses_mvcc(txn)) {
         return;
@@ -700,6 +936,7 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     std::lock_guard<std::mutex> apply_lock(commit_apply_latch_);
     {
         std::lock_guard<std::mutex> lock(mvcc_latch_);
+        check_commit_conflict_under_latch(txn);
         timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
         txn->set_commit_ts(commit_ts);
         auto state_it = mvcc_txns_.find(txn->get_transaction_id());
@@ -707,22 +944,60 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
             state_it->second.commit_ts = commit_ts;
             for (const auto &key : state_it->second.write_records) {
                 auto history_it = record_versions_.find(key);
-                if (history_it == record_versions_.end()) {
+                MvccVersion *own_pending = nullptr;
+                if (history_it != record_versions_.end()) {
+                    own_pending = find_own_pending_version(
+                        history_it->second, txn->get_transaction_id());
+                }
+                if (own_pending == nullptr) {
+                    if (write_record_is_insert_only(txn, key)) {
+                        continue;
+                    }
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                }
+
+                if (write_record_is_insert_only(txn, key)) {
+                    own_pending->commit_ts = commit_ts;
                     continue;
                 }
-                for (auto &version : history_it->second) {
-                    if (version.owner == txn->get_transaction_id() &&
-                        version.commit_ts == INVALID_TS) {
-                        if (!version.table_name.empty() &&
-                            !version.before.empty()) {
-                            ops.push_back(PhysicalOp{version.deleted,
-                                                     version.table_name,
-                                                     key.rid, version.before,
-                                                     version.data});
-                        }
-                        version.commit_ts = commit_ts;
+
+                std::vector<char> before = own_pending->before;
+                if (has_multiple_mutating_writes(txn, key)) {
+                    WriteRecord *mutating =
+                        first_mutating_write_record(txn, key);
+                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                        before = copy_record(&mutating->GetRecord());
+                    }
+                } else if (before.empty()) {
+                    WriteRecord *mutating =
+                        first_mutating_write_record(txn, key);
+                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                        before = copy_record(&mutating->GetRecord());
                     }
                 }
+                std::string table_name = own_pending->table_name;
+                if (table_name.empty()) {
+                    WriteRecord *mutating =
+                        first_mutating_write_record(txn, key);
+                    if (mutating != nullptr) {
+                        table_name = mutating->GetTableName();
+                    }
+                }
+                if (before.empty() || table_name.empty()) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                }
+                if (!own_pending->deleted && own_pending->data.empty()) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                }
+                ops.push_back(PhysicalOp{own_pending->deleted, table_name,
+                                         key.rid, before, own_pending->data});
+                own_pending->commit_ts = commit_ts;
             }
         }
     }
@@ -730,6 +1005,7 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     for (auto &op : ops) {
         RmRecord before(static_cast<int>(op.before.size()),
                         const_cast<char *>(op.before.data()));
+        check_physical_before(txn, op.table_name, op.rid, &before);
         if (op.is_delete) {
             delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
             auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
@@ -777,6 +1053,7 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
     if (state_it == mvcc_txns_.end()) {
         return;
     }
+    timestamp_t partial_commit_ts = txn->get_commit_ts();
     for (const auto &key : state_it->second.write_records) {
         auto history_it = record_versions_.find(key);
         if (history_it == record_versions_.end()) {
@@ -786,7 +1063,9 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
         history.erase(
             std::remove_if(history.begin(), history.end(), [&](const MvccVersion &version) {
                 return version.owner == txn->get_transaction_id() &&
-                       version.commit_ts == INVALID_TS;
+                       (version.commit_ts == INVALID_TS ||
+                        (partial_commit_ts != INVALID_TS &&
+                         version.commit_ts == partial_commit_ts));
             }),
             history.end());
         if (history.empty()) {
@@ -874,9 +1153,11 @@ void TransactionManager::GarbageCollection() {
                 if (only.commit_ts != INVALID_TS &&
                     only.commit_ts <= watermark) {
                     if (!only.deleted) {
-                        // The physical record already carries the authoritative
-                        // committed state for a live row, so the chain can go.
-                        it = record_versions_.erase(it);
+                        // Keep the newest committed version so snapshot readers
+                        // and deferred MVCC writers can still resolve visibility
+                        // after physical apply; erasing the chain causes silent
+                        // UPDATE skips once last_commit_ts advances.
+                        ++it;
                         continue;
                     }
                     if (!only.table_name.empty()) {

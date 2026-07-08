@@ -276,12 +276,19 @@ def select_scalar_int(client: SqlClient, statement: str):
     return int(values[0])
 
 
-def execute_explicit_txn(statements, host, port, timeout):
+def execute_explicit_txn(statements, host, port, timeout, isolation_prefix=None):
     client = SqlClient(host, port, timeout)
     responses = []
     failed = False
     try:
+        if isolation_prefix:
+            response = client.execute(isolation_prefix)
+            responses.append((isolation_prefix, response))
+            if response_failed(response):
+                failed = True
         for statement in statements:
+            if failed:
+                break
             response = client.execute(statement)
             responses.append((statement, response))
             if response_failed(response):
@@ -295,6 +302,9 @@ def execute_explicit_txn(statements, host, port, timeout):
     finally:
         client.close()
     return not failed, responses
+
+
+SI_PREFIX = "set transaction isolation level snapshot isolation;"
 
 
 def new_order_statements(order_id, district_id, quantities):
@@ -313,6 +323,19 @@ def new_order_statements(order_id, district_id, quantities):
         ])
     statements.append("COMMIT;")
     return statements
+
+
+def illegal_item_rollback_statements(order_id, district_id, item_id):
+    """New-Order that rolls back after an invalid item lookup under SI."""
+    return [
+        "BEGIN;",
+        f"SELECT d_next_o_id FROM district WHERE d_w_id = 1 AND d_id = {district_id};",
+        f"UPDATE district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = 1 AND d_id = {district_id};",
+        f"INSERT INTO orders VALUES ({order_id}, {district_id}, 1, 2, '2026-07-02 12:00:00', 0, 1, 1);",
+        f"INSERT INTO new_orders VALUES ({order_id}, {district_id}, 1);",
+        f"SELECT i_id FROM item WHERE i_id = {item_id};",
+        "ROLLBACK;",
+    ]
 
 
 def failure_probe_statements(order_id, district_id, stage):
@@ -390,6 +413,7 @@ def run_concurrent_consistency_probe(args):
                 args.host,
                 args.port,
                 args.timeout,
+                SI_PREFIX,
             ): w
             for w in workloads
         }
@@ -401,13 +425,34 @@ def run_concurrent_consistency_probe(args):
             else:
                 aborted.append((workload, responses))
 
+    # SI write conflicts are expected under concurrent district updates; retry sequentially.
+    next_order_id = 2301
+    retry_attempts = 0
+    max_retries = len(workloads) * 10
+    while aborted and retry_attempts < max_retries:
+        workload, _responses = aborted.pop(0)
+        retry = {**workload, "order_id": next_order_id}
+        next_order_id += 1
+        retry_attempts += 1
+        ok, responses = execute_explicit_txn(
+            new_order_statements(retry["order_id"], retry["district_id"], retry["quantities"]),
+            args.host,
+            args.port,
+            args.timeout,
+            SI_PREFIX,
+        )
+        if ok:
+            committed.append(retry)
+        else:
+            aborted.append((retry, responses))
+
     if aborted:
         rendered = []
         for workload, responses in aborted:
             rendered.append(f"workload={workload}")
             rendered.extend(f"  {sql} => {resp!r}" for sql, resp in responses)
         raise AssertionError(
-            "default READ_COMMITTED new-order probe aborted unexpectedly\n" +
+            "snapshot-isolation new-order probe could not commit after retries\n" +
             "\n".join(rendered)
         )
 
@@ -493,6 +538,72 @@ def run_concurrent_consistency_probe(args):
     print(f"concurrent consistency probe passed ({len(committed)} committed, {len(aborted)} aborted)")
 
 
+def run_illegal_item_rollback_probe(args):
+    if args.skip_concurrent_probe:
+        return
+
+    verifier = SqlClient(args.host, args.port, args.timeout)
+    verifier.connect()
+    try:
+        district_id = 1
+        order_id = 4101
+        invalid_item_id = 99999
+        initial_next = select_scalar_int(
+            verifier,
+            f"SELECT d_next_o_id FROM district WHERE d_w_id = 1 AND d_id = {district_id};",
+        )
+    finally:
+        verifier.close()
+
+    ok, responses = execute_explicit_txn(
+        illegal_item_rollback_statements(order_id, district_id, invalid_item_id),
+        args.host,
+        args.port,
+        args.timeout,
+        SI_PREFIX,
+    )
+    rollback_seen = any(
+        stmt.strip().upper().startswith("ROLLBACK") for stmt, _resp in responses
+    )
+    if not rollback_seen:
+        rendered = "\n".join(f"{sql} => {resp!r}" for sql, resp in responses)
+        raise AssertionError(
+            "illegal-item new-order probe did not reach ROLLBACK\n" + rendered
+        )
+
+    verifier = SqlClient(args.host, args.port, args.timeout)
+    verifier.connect()
+    try:
+        actual_next = select_scalar_int(
+            verifier,
+            f"SELECT d_next_o_id FROM district WHERE d_w_id = 1 AND d_id = {district_id};",
+        )
+        if actual_next != initial_next:
+            raise AssertionError(
+                f"illegal-item rollback changed district counter: "
+                f"expected {initial_next}, got {actual_next}"
+            )
+
+        orders_count = select_scalar_int(
+            verifier, f"SELECT count(*) FROM orders WHERE o_id = {order_id};"
+        )
+        new_orders_count = select_scalar_int(
+            verifier, f"SELECT count(*) FROM new_orders WHERE no_o_id = {order_id};"
+        )
+        line_count = select_scalar_int(
+            verifier, f"SELECT count(*) FROM order_line WHERE ol_o_id = {order_id};"
+        )
+        if orders_count != 0 or new_orders_count != 0 or line_count != 0:
+            raise AssertionError(
+                f"illegal-item rollback left orphan rows for order {order_id}: "
+                f"orders={orders_count} new_orders={new_orders_count} order_line={line_count}"
+            )
+    finally:
+        verifier.close()
+
+    print("illegal-item rollback probe passed")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run a local smoke suite for the performance-test statement."
@@ -529,6 +640,7 @@ def main():
         output_file = db_dir / "output.txt"
         run_files(args, output_file)
         run_concurrent_consistency_probe(args)
+        run_illegal_item_rollback_probe(args)
         print("performance smoke suite passed")
         return 0
     finally:

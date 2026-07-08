@@ -54,6 +54,30 @@ class IndexScanExecutor : public AbstractExecutor {
                context_->txn_mgr_->uses_mvcc(context_->txn_);
     }
 
+    bool lock_reads_for_explicit_txn() const {
+        return context_ != nullptr && context_->txn_ != nullptr &&
+               context_->lock_mgr_ != nullptr &&
+               context_->txn_mgr_ != nullptr &&
+               !context_->txn_mgr_->uses_mvcc(context_->txn_) &&
+               context_->txn_->get_txn_mode();
+    }
+
+    void lock_records_for_read(const std::vector<Rid> &rids) {
+        if (!lock_reads_for_explicit_txn()) {
+            return;
+        }
+        context_->lock_mgr_->lock_IX_on_table(context_->txn_, fh_->GetFd());
+        std::vector<Rid> ordered = rids;
+        std::sort(ordered.begin(), ordered.end(), [](const Rid &lhs, const Rid &rhs) {
+            return lhs.page_no == rhs.page_no ? lhs.slot_no < rhs.slot_no
+                                             : lhs.page_no < rhs.page_no;
+        });
+        for (const auto &rid : ordered) {
+            context_->lock_mgr_->lock_exclusive_on_record(
+                context_->txn_, rid, fh_->GetFd());
+        }
+    }
+
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
                       std::vector<std::string> index_col_names, Context *context,
@@ -210,6 +234,7 @@ class IndexScanExecutor : public AbstractExecutor {
                         tmp_batch_rids.push_back(rid);
                     }
                 } else {
+                    lock_records_for_read(rids);
                     auto page_recs = fh_->batch_get_records(page_no, rids, context_);
                     if (page_recs.size() != rids.size()) {
                         throw InternalError("Batch size mismatch in IndexScanExecutor");

@@ -219,6 +219,8 @@ public:
 
 private:
     void finish_transaction(Transaction *txn);
+    void check_commit_conflict(Transaction *txn);
+    void check_commit_conflict_under_latch(Transaction *txn);
     void commit_mvcc(Transaction *txn);
     void abort_mvcc(Transaction *txn);
 
@@ -286,6 +288,18 @@ private:
                               const MvccTxnState &right) const;
     bool mvcc_txn_aborted(txn_id_t txn_id) const;
     void mark_mvcc_txn_aborted(txn_id_t txn_id);
+    void check_physical_before(Transaction *txn, const std::string &table_name,
+                               const Rid &rid, const RmRecord *before_record);
+    void validate_pending_physical_before(Transaction *txn);
+    RecordKey make_record_key(const std::string &table_name, const Rid &rid) const;
+    WriteRecord *first_mutating_write_record(Transaction *txn,
+                                             const RecordKey &key) const;
+    bool write_record_is_insert_only(Transaction *txn,
+                                     const RecordKey &key) const;
+    bool has_multiple_mutating_writes(Transaction *txn,
+                                      const RecordKey &key) const;
+    MvccVersion *find_own_pending_version(std::vector<MvccVersion> &history,
+                                          txn_id_t txn_id) const;
     void remove_dependencies(txn_id_t txn_id);
 
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL

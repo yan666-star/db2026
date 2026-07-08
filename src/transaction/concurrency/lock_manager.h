@@ -10,8 +10,10 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
-#include <mutex>
 #include <condition_variable>
+#include <list>
+#include <mutex>
+#include <unordered_map>
 #include "transaction/transaction.h"
 
 static const std::string GroupLockModeStr[10] = {"NON_LOCK", "IS", "IX", "S", "X", "SIX"};
@@ -62,6 +64,12 @@ public:
     bool unlock(Transaction* txn, LockDataId lock_data_id);
 
 private:
+    bool lock(Transaction *txn, const LockDataId &lock_data_id, LockMode lock_mode);
+    bool compatible(const LockRequestQueue &request_queue, txn_id_t txn_id,
+                    LockMode lock_mode) const;
+    bool is_stronger_or_equal(LockMode held, LockMode requested) const;
+    void recompute_group_lock_mode(LockRequestQueue &request_queue);
+
     std::mutex latch_;      // 用于锁表的并发
     std::unordered_map<LockDataId, LockRequestQueue> lock_table_;   // 全局锁表
 };

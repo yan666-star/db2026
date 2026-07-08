@@ -43,9 +43,27 @@ class SeqScanExecutor : public AbstractExecutor {
 
     SmManager *sm_manager_;
 
+    bool lock_reads_for_explicit_txn() const {
+        return context_ != nullptr && context_->txn_ != nullptr &&
+               context_->lock_mgr_ != nullptr &&
+               context_->txn_mgr_ != nullptr &&
+               !context_->txn_mgr_->uses_mvcc(context_->txn_) &&
+               context_->txn_->get_txn_mode();
+    }
+
+    void lock_record_for_read(const Rid &rid) {
+        if (!lock_reads_for_explicit_txn()) {
+            return;
+        }
+        context_->lock_mgr_->lock_IX_on_table(context_->txn_, fh_->GetFd());
+        context_->lock_mgr_->lock_exclusive_on_record(
+            context_->txn_, rid, fh_->GetFd());
+    }
+
     bool fetch_cached_current() {
         while (equality_pos_ < equality_rids_.size()) {
             rid_ = equality_rids_[equality_pos_];
+            lock_record_for_read(rid_);
             auto rec = fh_->get_record(rid_, context_);
             if (rec == nullptr) {
                 equality_pos_++;
@@ -72,6 +90,7 @@ class SeqScanExecutor : public AbstractExecutor {
     bool fetch_current() {
     while (!scan_->is_end()) {
         rid_ = scan_->rid();
+        lock_record_for_read(rid_);
         auto rec = fh_->get_record(rid_, context_);
         if (rec == nullptr) {
             scan_->next();

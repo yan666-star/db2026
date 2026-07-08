@@ -10,7 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 #include <mutex>
-
+#include <algorithm>
 #include "execution_defs.h"
 #include "execution_eval.h"
 #include "execution_manager.h"
@@ -34,6 +34,26 @@ class UpdateExecutor : public AbstractExecutor {
                context_->txn_mgr_->uses_mvcc(context_->txn_);
     }
 
+    bool should_lock_non_mvcc() const {
+        return context_ != nullptr && context_->txn_ != nullptr &&
+               context_->lock_mgr_ != nullptr && context_->txn_mgr_ != nullptr &&
+               !context_->txn_mgr_->uses_mvcc(context_->txn_);
+    }
+
+    void lock_write_records() {
+        if (!should_lock_non_mvcc()) {
+            return;
+        }
+        context_->lock_mgr_->lock_IX_on_table(context_->txn_, fh_->GetFd());
+        std::sort(rids_.begin(), rids_.end(), [](const Rid &lhs, const Rid &rhs) {
+            return lhs.page_no == rhs.page_no ? lhs.slot_no < rhs.slot_no
+                                             : lhs.page_no < rhs.page_no;
+        });
+        for (const auto &rid : rids_) {
+            context_->lock_mgr_->lock_exclusive_on_record(context_->txn_, rid, fh_->GetFd());
+        }
+    }
+
    public:
     UpdateExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<SetClause> set_clauses,
                    std::vector<Condition> conds, std::vector<Rid> rids, Context *context) {
@@ -52,6 +72,7 @@ class UpdateExecutor : public AbstractExecutor {
             return nullptr;
         }
         done_ = true;
+        lock_write_records();
 
         for (auto &rid : rids_) {
             bool mvcc = uses_mvcc();

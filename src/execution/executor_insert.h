@@ -10,7 +10,6 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 #include <mutex>
-
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -62,6 +61,12 @@ class InsertExecutor : public AbstractExecutor {
         std::unique_lock<std::mutex> unique_insert_guard;
         if (!tab_.indexes.empty()) {
             unique_insert_guard = fh_->acquire_logical_update_latch();
+        }
+
+        static std::mutex non_mvcc_insert_mutex;
+        std::unique_lock<std::mutex> non_mvcc_insert_guard;
+        if (!uses_mvcc) {
+            non_mvcc_insert_guard = std::unique_lock<std::mutex>(non_mvcc_insert_mutex);
         }
 
         if (uses_mvcc && tab_.indexes.empty() && !tab_.cols.empty()) {
