@@ -6,7 +6,8 @@ __pycache__/
 
 # Accidental host/application files
 %SystemDrive%/
-
+SQL测试/
+FlameGraph/
 # Local test database directories
 BufferPoolManagerTest_db/
 

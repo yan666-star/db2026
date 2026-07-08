@@ -329,5 +329,7 @@ private:
     std::mutex commit_apply_latch_;
     mutable std::mutex mvcc_latch_;
     std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
+    std::unordered_map<uint64_t, std::unordered_set<RecordKey, RecordKeyHash>>
+        mvcc_unique_conflict_keys_by_file_;
     std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;
 };

@@ -711,10 +711,20 @@ void TransactionManager::check_unique_key_conflict(
     };
 
     std::lock_guard<std::mutex> lock(mvcc_latch_);
-    for (const auto &[key, history] : record_versions_) {
-        if (key.file_id != file_id || key.rid == target_rid) {
+    auto candidate_it = mvcc_unique_conflict_keys_by_file_.find(file_id);
+    if (candidate_it == mvcc_unique_conflict_keys_by_file_.end()) {
+        return;
+    }
+
+    for (const auto &key : candidate_it->second) {
+        if (key.rid == target_rid) {
             continue;
         }
+        auto history_it = record_versions_.find(key);
+        if (history_it == record_versions_.end()) {
+            continue;
+        }
+        const auto &history = history_it->second;
 
         const MvccVersion *latest_committed = nullptr;
         for (const auto &version : history) {
@@ -819,6 +829,7 @@ void TransactionManager::prepare_write(
     if (state_it != mvcc_txns_.end()) {
         state_it->second.write_records.insert(key);
     }
+    mvcc_unique_conflict_keys_by_file_[file_id].insert(key);
 
     if (txn->get_isolation_level() == IsolationLevel::SERIALIZABLE) {
         for (auto &[reader_id, reader] : mvcc_txns_) {
@@ -1091,7 +1102,25 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
             }),
             history.end());
         if (history.empty()) {
+            auto candidate_it =
+                mvcc_unique_conflict_keys_by_file_.find(key.file_id);
+            if (candidate_it != mvcc_unique_conflict_keys_by_file_.end()) {
+                candidate_it->second.erase(key);
+                if (candidate_it->second.empty()) {
+                    mvcc_unique_conflict_keys_by_file_.erase(candidate_it);
+                }
+            }
             record_versions_.erase(history_it);
+        } else if (history.size() == 1 && history.front().commit_ts == 0 &&
+                   !history.front().deleted) {
+            auto candidate_it =
+                mvcc_unique_conflict_keys_by_file_.find(key.file_id);
+            if (candidate_it != mvcc_unique_conflict_keys_by_file_.end()) {
+                candidate_it->second.erase(key);
+                if (candidate_it->second.empty()) {
+                    mvcc_unique_conflict_keys_by_file_.erase(candidate_it);
+                }
+            }
         }
     }
     remove_dependencies(txn->get_transaction_id());
@@ -1175,6 +1204,17 @@ void TransactionManager::GarbageCollection() {
                 if (only.commit_ts != INVALID_TS &&
                     only.commit_ts <= watermark) {
                     if (!only.deleted) {
+                        auto candidate_it =
+                            mvcc_unique_conflict_keys_by_file_.find(
+                                it->first.file_id);
+                        if (candidate_it !=
+                            mvcc_unique_conflict_keys_by_file_.end()) {
+                            candidate_it->second.erase(it->first);
+                            if (candidate_it->second.empty()) {
+                                mvcc_unique_conflict_keys_by_file_.erase(
+                                    candidate_it);
+                            }
+                        }
                         // Keep the newest committed version so snapshot readers
                         // and deferred MVCC writers can still resolve visibility
                         // after physical apply; erasing the chain causes silent
@@ -1287,6 +1327,14 @@ void TransactionManager::apply_committed_deletes_for_checkpoint() {
             }
             // The physical state now becomes authoritative (row absent), so
             // the tombstone chain is no longer needed by any future snapshot.
+            auto candidate_it =
+                mvcc_unique_conflict_keys_by_file_.find(it->first.file_id);
+            if (candidate_it != mvcc_unique_conflict_keys_by_file_.end()) {
+                candidate_it->second.erase(it->first);
+                if (candidate_it->second.empty()) {
+                    mvcc_unique_conflict_keys_by_file_.erase(candidate_it);
+                }
+            }
             it = record_versions_.erase(it);
         }
     }
