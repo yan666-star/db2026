@@ -167,8 +167,22 @@ class UpdateExecutor : public AbstractExecutor {
             for (auto &index : tab_.indexes) {
                 max_key_len = std::max(max_key_len, index.col_tot_len);
             }
-            char *key = max_key_len > 0 ? new char[max_key_len] : nullptr;
+            char *old_key = max_key_len > 0 ? new char[max_key_len] : nullptr;
+            char *new_key = max_key_len > 0 ? new char[max_key_len] : nullptr;
             for (auto &index : tab_.indexes) {
+                int offset = 0;
+                for (int i = 0; i < index.col_num; ++i) {
+                    memcpy(old_key + offset,
+                           rec->data + index.cols[i].offset,
+                           index.cols[i].len);
+                    memcpy(new_key + offset,
+                           rec_new->data + index.cols[i].offset,
+                           index.cols[i].len);
+                    offset += index.cols[i].len;
+                }
+                if (memcmp(old_key, new_key, index.col_tot_len) == 0) {
+                    continue;
+                }
                 if (mvcc) {
                     context_->txn_mgr_->check_unique_key_conflict(
                         context_->txn_, fh_->GetMvccFileId(), rid,
@@ -176,13 +190,8 @@ class UpdateExecutor : public AbstractExecutor {
                 }
                 auto ih =
                     sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-                int offset = 0;
-                for (int i = 0; i < index.col_num; ++i) {
-                    memcpy(key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
-                    offset += index.cols[i].len;
-                }
                 std::vector<Rid> dup;
-                if (ih->get_value(key, &dup, context_->txn_) &&
+                if (ih->get_value(new_key, &dup, context_->txn_) &&
                     !(dup.size() == 1 && dup[0] == rid)) {
                     if (mvcc) {
                         for (const auto &dup_rid : dup) {
@@ -192,7 +201,8 @@ class UpdateExecutor : public AbstractExecutor {
                             }
                         }
                     }
-                    delete[] key;
+                    delete[] old_key;
+                    delete[] new_key;
                     throw RMDBError("failure");
                 }
             }
@@ -222,23 +232,23 @@ class UpdateExecutor : public AbstractExecutor {
                         sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                     int offset = 0;
                     for (int i = 0; i < index.col_num; ++i) {
-                        memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                        memcpy(old_key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                        memcpy(new_key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
                         offset += index.cols[i].len;
+                    }
+                    if (memcmp(old_key, new_key, index.col_tot_len) == 0) {
+                        continue;
                     }
                     std::vector<Rid> old_rids;
-                    if (ih->get_value(key, &old_rids, context_->txn_) && !old_rids.empty() &&
+                    if (ih->get_value(old_key, &old_rids, context_->txn_) && !old_rids.empty() &&
                         old_rids[0] == rid) {
-                        ih->delete_entry(key, context_->txn_);
+                        ih->delete_entry(old_key, context_->txn_);
                     }
-                    offset = 0;
-                    for (int i = 0; i < index.col_num; ++i) {
-                        memcpy(key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
-                        offset += index.cols[i].len;
-                    }
-                    ih->insert_entry(key, rid, context_->txn_);
+                    ih->insert_entry(new_key, rid, context_->txn_);
                 }
             }
-            delete[] key;
+            delete[] old_key;
+            delete[] new_key;
         }
         return nullptr;
     }

@@ -393,6 +393,8 @@ record_versions_ unordered_map lookup
 - `check_unique_key_conflict()` 每次检查唯一键时，会扫描整个 `record_versions_`。
 - `get_visible_record()` 会给读取过的 load 初始行补 baseline 版本。
 - 结果是读得越多，`record_versions_` 越大，而唯一键检查会被无冲突可能的 baseline 行拖慢。
+- `InsertExecutor` 在 B+Tree 唯一性检查之后，还会在 MVCC 下全表扫描可见记录做重复 key 检查。
+- `UpdateExecutor` 即使只更新非索引列，也会对所有索引做唯一键检查；TPC-C 中大量更新都是非主键字段更新。
 
 新逻辑：
 
@@ -402,17 +404,22 @@ record_versions_ unordered_map lookup
 - abort 后如果版本链退回单个 `ts=0` baseline，则从候选集合移除。
 - GC 发现单个稳定已提交非删除版本时，也从候选集合移除。
 - checkpoint 清理 tombstone 时同步清理候选集合。
+- `InsertExecutor` 用 B+Tree 检查已落索引的重复 key，用 MVCC 候选集合检查尚未落到索引或快照不可见的写入，不再全表扫。
+- `UpdateExecutor` 先比较 old/new index key；只有索引 key 真的变化时，才做唯一键检查和索引维护。更新非主键字段时跳过这部分成本。
 
 这个优化不改变 SI 语义：
 
 - 仍然检查其他事务未提交的同 key 写入。
 - 仍然检查当前事务快照之后提交的同 key 版本。
 - 仍然保留 baseline 行的可见性。
+- 已提交且索引正常维护的重复 key 仍由 B+Tree 检查发现。
+- 非索引列更新不改变唯一性约束，跳过索引检查不会改变结果。
 - 不写死 TPC-C 表名、字段名或 SQL 文本。
 
 预期收益：
 
 - 减少 NewOrder 中 `orders/new_orders/order_line` 插入和更新索引时的 MVCC 扫描成本。
+- 减少 Payment/NewOrder/Delivery 对 `warehouse/district/stock/customer/orders/order_line` 非主键字段更新时的无效唯一键检查。
 - 减少大量只读或普通读取造成的版本表膨胀对唯一键检查的影响。
 - 缩短事务执行时间，降低事务之间重叠窗口，对高 abort-rate 场景有间接帮助。
 

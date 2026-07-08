@@ -107,29 +107,9 @@ class InsertExecutor : public AbstractExecutor {
                 throw RMDBError("failure");
             }
             if (uses_mvcc) {
-                for (const auto &rid : fh_->all_record_slots()) {
-                    auto existing = fh_->get_record(rid, context_);
-                    if (existing == nullptr) {
-                        continue;
-                    }
-                    offset = 0;
-                    bool same_key = true;
-                    for (int j = 0; j < index.col_num; ++j) {
-                        if (memcmp(key + offset,
-                                   existing->data + index.cols[j].offset,
-                                   index.cols[j].len) != 0) {
-                            same_key = false;
-                            break;
-                        }
-                        offset += index.cols[j].len;
-                    }
-                    if (same_key) {
-                        context_->txn_mgr_->check_write_conflict(
-                            context_->txn_, fh_->GetMvccFileId(), rid);
-                        delete[] key;
-                        throw RMDBError("failure");
-                    }
-                }
+                context_->txn_mgr_->check_unique_key_conflict(
+                    context_->txn_, fh_->GetMvccFileId(), Rid{-1, -1}, rec,
+                    index.cols);
             }
             delete[] key;
         }
