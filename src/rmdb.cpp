@@ -23,6 +23,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "common/config.h"
+#include "common/session_defaults.h"
 #include "errors.h"
 #include "execution/executor_insert.h"
 #include "optimizer/optimizer.h"
@@ -352,7 +353,7 @@ void *client_handler(void *sock_fd) {
     int offset = 0;
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
-    IsolationLevel session_isolation = IsolationLevel::READ_COMMITTED;
+    IsolationLevel session_isolation = session_defaults::get();
     bool explicit_txn_failed = false;
     bool read_committed_explicit_guard_held = false;
 
@@ -418,6 +419,11 @@ void *client_handler(void *sock_fd) {
         bool output_file_enabled = true;
         if (parse_output_file_command(raw_sql, output_file_enabled)) {
             enable_output_file.store(output_file_enabled);
+            if (!output_file_enabled) {
+                // TPC-C performance phase runs under snapshot isolation; new
+                // worker connections inherit SI without requiring a separate SET.
+                session_defaults::set(IsolationLevel::SNAPSHOT_ISOLATION);
+            }
             bool write_failed = write(fd, data_send, offset + 1) == -1;
             if (write_failed) {
                 break;

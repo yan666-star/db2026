@@ -128,23 +128,24 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         return;
     }
 
+    if (txn->uses_mvcc()) {
+        try {
+            commit_mvcc(txn);
+        } catch (const TransactionAbortException &) {
+            abort(txn, log_manager);
+            throw;
+        }
+        if ((mvcc_commit_count_.fetch_add(1) & 0xFFu) == 0) {
+            GarbageCollection();
+        }
+    }
+
     if (log_manager != nullptr) {
         CommitLogRecord commit_log(txn->get_transaction_id());
         commit_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&commit_log);
         txn->set_prev_lsn(lsn);
         log_manager->flush_log_to_disk();
-    }
-
-    if (txn->uses_mvcc()) {
-        commit_mvcc(txn);
-        // Amortized reclamation of obsolete MVCC versions and transaction
-        // bookkeeping. Without this both structures grow without bound under a
-        // sustained workload (e.g. the TPCC performance run) and eventually
-        // exhaust memory, which surfaces as a post-run consistency failure.
-        if ((mvcc_commit_count_.fetch_add(1) & 0xFFu) == 0) {
-            GarbageCollection();
-        }
     }
 
     auto lock_set = *txn->get_lock_set();
@@ -235,15 +236,12 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
         if (physical_record == nullptr) {
             return nullptr;
         }
-        // Do not fabricate a commit_ts=0 baseline from the current physical page
-        // when it may already reflect commits after this snapshot: GC can prune
-        // the chain while the page holds a newer value.
-        timestamp_t physical_ts = last_commit_ts_.load();
-        if (physical_ts > txn->get_start_ts()) {
-            return nullptr;
-        }
+        // Loaded / never-versioned rows have no chain yet. Treat the physical
+        // image as committed at ts=0; do not use last_commit_ts_ here because
+        // unrelated commits after this snapshot would hide unchanged rows and
+        // break UPDATE scans (empty RID lists -> partial NewOrder commits).
         MvccVersion baseline;
-        baseline.commit_ts = physical_ts;
+        baseline.commit_ts = 0;
         baseline.deleted = false;
         baseline.data = copy_record(physical_record);
         history_it =
@@ -1002,23 +1000,47 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
         }
     }
 
-    for (auto &op : ops) {
+    for (size_t op_index = 0; op_index < ops.size(); ++op_index) {
+        auto &op = ops[op_index];
         RmRecord before(static_cast<int>(op.before.size()),
                         const_cast<char *>(op.before.data()));
-        check_physical_before(txn, op.table_name, op.rid, &before);
-        if (op.is_delete) {
-            delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
-            auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
-            if (file_handle->record_exists(op.rid)) {
-                file_handle->delete_record(op.rid, nullptr);
+        try {
+            check_physical_before(txn, op.table_name, op.rid, &before);
+            if (op.is_delete) {
+                delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
+                auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
+                if (file_handle->record_exists(op.rid)) {
+                    file_handle->delete_record(op.rid, nullptr);
+                }
+            } else {
+                auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
+                RmRecord after(static_cast<int>(op.after.size()),
+                               const_cast<char *>(op.after.data()));
+                file_handle->update_record(op.rid, after.data, nullptr);
+                update_indexes(sm_manager_, op.table_name, before, after, op.rid,
+                               txn);
             }
-        } else {
-            auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
-            RmRecord after(static_cast<int>(op.after.size()),
-                           const_cast<char *>(op.after.data()));
-            file_handle->update_record(op.rid, after.data, nullptr);
-            update_indexes(sm_manager_, op.table_name, before, after, op.rid,
-                           txn);
+        } catch (const TransactionAbortException &) {
+            Context rollback_context(lock_manager_, nullptr, txn);
+            for (size_t rollback_index = op_index; rollback_index > 0;
+                 --rollback_index) {
+                const auto &applied = ops[rollback_index - 1];
+                RmRecord applied_before(
+                    static_cast<int>(applied.before.size()),
+                    const_cast<char *>(applied.before.data()));
+                Rid applied_rid = applied.rid;
+                if (applied.is_delete) {
+                    sm_manager_->rollback_delete(applied.table_name,
+                                                 applied_rid, applied_before,
+                                                 &rollback_context);
+                } else {
+                    sm_manager_->rollback_update(applied.table_name,
+                                                 applied_rid, applied_before,
+                                                 &rollback_context);
+                }
+            }
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
+            throw;
         }
     }
 }

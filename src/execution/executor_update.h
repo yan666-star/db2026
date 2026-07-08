@@ -74,6 +74,14 @@ class UpdateExecutor : public AbstractExecutor {
         done_ = true;
         lock_write_records();
 
+        if (uses_mvcc()) {
+            if (rids_.empty()) {
+                throw TransactionAbortException(
+                    context_->txn_->get_transaction_id(),
+                    AbortReason::WRITE_CONFLICT);
+            }
+        }
+
         for (auto &rid : rids_) {
             bool mvcc = uses_mvcc();
             std::unique_lock<std::mutex> update_guard;
@@ -83,6 +91,11 @@ class UpdateExecutor : public AbstractExecutor {
 
             auto rec = fh_->get_record(rid, context_);
             if (rec == nullptr) {
+                if (mvcc) {
+                    throw TransactionAbortException(
+                        context_->txn_->get_transaction_id(),
+                        AbortReason::WRITE_CONFLICT);
+                }
                 continue;
             }
             if (!mvcc && !conds_.empty() && !eval_conditions(*rec, conds_, tab_.cols)) {
