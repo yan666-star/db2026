@@ -423,6 +423,78 @@ record_versions_ unordered_map lookup
 - 减少大量只读或普通读取造成的版本表膨胀对唯一键检查的影响。
 - 缩短事务执行时间，降低事务之间重叠窗口，对高 abort-rate 场景有间接帮助。
 
+### 本轮优化：abort 诊断与纯 MVCC abort 跳过全库 flush
+
+当前官方指标仍显示 abort-rate 较高，且 tpc-x 远低于优秀队伍。继续优化前，必须先区分两类问题：
+
+- abort 从哪里来：pending writer、快照后提交、唯一键冲突，还是 commit 阶段物理一致性失败。
+- abort 本身有多贵：是否大量失败事务都触发 `flush_for_checkpoint()` 和强制日志刷盘。
+
+新增环境变量诊断开关：
+
+```bash
+RMDB_PERF_DIAG=1 ./build/bin/rmdb <db_name> > server.log 2>&1
+```
+
+默认每 1000 次 abort 会在 stderr 输出一行 `RMDB_PERF_DIAG` 汇总，进程正常退出时也会再输出一次。可以用 `RMDB_PERF_DIAG_INTERVAL=200` 调整周期。字段包含：
+
+- `abort_total` / `abort_mvcc`
+- `abort_physical_rollback`
+- `abort_entered_mvcc_commit`
+- `write_conflict_pending`
+- `write_conflict_committed_after_start`
+- `prepare_conflict_pending`
+- `prepare_conflict_committed_after_start`
+- `unique_conflict_pending`
+- `unique_conflict_committed_after_start`
+- `commit_conflict_pending`
+- `commit_conflict_committed_after_start`
+- `pending_waits`
+- `pending_wait_resolved`
+- `pending_wait_timeout`
+- `abort_checkpoint_flush`
+- `abort_checkpoint_flush_skipped`
+- `abort_checkpoint_flush_us`
+- `abort_log_force_flush_us`
+
+该诊断默认关闭，不改变官方运行路径。
+
+同时调整 `TransactionManager::abort()`：
+
+- 非 MVCC abort 保持原逻辑。
+- MVCC abort 如果回滚过物理插入，仍执行 `flush_for_checkpoint()`，保证第十题和性能题 crash recovery 的安全边界。
+- MVCC 事务如果已经进入 `commit_mvcc()` 并分配了 `commit_ts`，即使后续失败，也保持 `flush_for_checkpoint()`；这是为了覆盖“提交阶段已应用部分物理更新、随后内部回滚”的保守恢复边界。
+- MVCC abort 如果只撤销内存中的 MVCC pending update/delete，没有发生物理 rollback，则跳过 `flush_for_checkpoint()`。
+- abort log 仍然写入并强制刷盘，暂不改变 WAL 可恢复性语义。
+
+这一步不放松 SI 冲突规则，不修改 `latest_commit > start_ts` 判断，也不改变 NewOrder/Payment/Delivery 的事务语义。目标是降低高 abort-rate 下的失败事务成本，并通过诊断数据决定下一步是否需要处理 pending writer 等待或继续压缩 MVCC 热路径。
+
+### 本轮优化：pending writer 短等待
+
+诊断显示 abort 的主要来源不是唯一键冲突，也不是 commit 阶段冲突，而是 `write_conflict_pending`：事务看到其他事务正在写同一条记录后立即 abort。该行为会在 TPC-C 热点行上放大失败风暴，尤其是 `district`、`stock`、`warehouse`、`customer` 等高频更新链路。
+
+当前调整：
+
+- `check_write_conflict()` 遇到其他事务 pending version 时，不再立刻 abort。
+- `prepare_write()` 遇到其他事务 pending version 时，也先短等待。
+- 等待期间释放 `mvcc_latch_`，被唤醒后重新扫描版本链，不复用等待前的指针。
+- 如果对方 abort 或提交，当前事务继续按 SI 规则重新判断。
+- 如果等待超时，才维持原行为并 abort。
+- 默认等待预算为 2000 微秒，可通过 `RMDB_PENDING_WAIT_US=5000` 调整。
+
+这个优化不改变 SI 的提交后冲突规则：
+
+- 对方最终 commit 后，如果 `latest_commit > start_ts`，当前事务仍然 abort。
+- 对方最终 abort 后，当前事务可以继续，避免无意义失败。
+- `check_commit_conflict_under_latch()` 暂不做等待，避免在 commit apply 路径上引入复杂阻塞。
+
+新的诊断字段用于判断收益：
+
+- `pending_waits`：遇到 pending writer 并进入等待的次数。
+- `pending_wait_resolved`：等待期间对方结束的次数。
+- `pending_wait_timeout`：等待超时后仍按冲突 abort 的次数。
+- `write_conflict_pending` / `prepare_conflict_pending`：现在更接近“等待失败后的 pending abort 数”。
+
 ### 后续继续优化方向
 
 1. 继续观察官方 abort 分布

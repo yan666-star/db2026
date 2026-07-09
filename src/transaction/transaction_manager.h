@@ -297,9 +297,11 @@ private:
     bool write_record_is_insert_only(Transaction *txn,
                                      const RecordKey &key) const;
     bool has_multiple_mutating_writes(Transaction *txn,
-                                      const RecordKey &key) const;
+                                       const RecordKey &key) const;
     MvccVersion *find_own_pending_version(std::vector<MvccVersion> &history,
-                                          txn_id_t txn_id) const;
+                                           txn_id_t txn_id) const;
+    bool wait_for_pending_writer(Transaction *txn, txn_id_t writer,
+                                 std::unique_lock<std::mutex> &lock);
     void remove_dependencies(txn_id_t txn_id);
 
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL
@@ -328,6 +330,7 @@ private:
     // deadlocks (ABBA).
     std::mutex commit_apply_latch_;
     mutable std::mutex mvcc_latch_;
+    std::condition_variable mvcc_cv_;
     std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
     std::unordered_map<uint64_t, std::unordered_set<RecordKey, RecordKeyHash>>
         mvcc_unique_conflict_keys_by_file_;

@@ -1,0 +1,31 @@
+rmdb pid: 24049
+pid file: /mnt/hgfs/DMS-DESIGN/db2026/build/perf_flamegraph_server.pid
+aligned with performance-test entrance requirements:
+  setup: create tables -> load -> primary indexes -> set output_file off
+  isolation: worker connections run after output_file off, inheriting SI
+  timing: 1 round(s), 10s warmup + 60s measure
+  mix: NewOrder 45%, Payment 43%, OrderStatus/Delivery/StockLevel 4% each
+profile grace: 10.0s. Attach perf to pid from /mnt/hgfs/DMS-DESIGN/db2026/build/perf_flamegraph_server.pid now.
+=== Round 1/1: warmup ===
+round 1 warmup: 7165 txns in 10.0s
+  delivery_abort: 23
+  delivery_commit: 281
+  new_order_abort: 3159
+  new_order_commit: 26
+  order_status_commit: 252
+  payment_abort: 2993
+  payment_commit: 155
+  stock_level_commit: 276
+=== Round 1/1: measure ===
+round 1 measure: 42295 txns in 60.0s
+  delivery_abort: 72
+  delivery_commit: 1635
+  new_order_abort: 18840
+  new_order_commit: 167
+  order_status_commit: 1712
+  payment_abort: 17208
+  payment_commit: 909
+  stock_level_commit: 1752
+round 1 local tpmC-like: 166.89
+local tpmC-like values: 166.89
+local median tpmC-like: 166.89

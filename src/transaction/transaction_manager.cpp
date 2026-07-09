@@ -11,13 +11,164 @@ See the Mulan PSL v2 for more details. */
 #include "transaction_manager.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <mutex>
 #include "common/context.h"
 #include "execution/execution_eval.h"
 #include "record/rm_file_handle.h"
 #include "system/sm_manager.h"
 
 std::unordered_map<txn_id_t, Transaction *> TransactionManager::txn_map = {};
+
+namespace {
+
+struct PerfDiagStats {
+    std::atomic<uint64_t> abort_total{0};
+    std::atomic<uint64_t> abort_mvcc{0};
+    std::atomic<uint64_t> abort_physical_rollback{0};
+    std::atomic<uint64_t> abort_entered_mvcc_commit{0};
+    std::atomic<uint64_t> abort_checkpoint_flush{0};
+    std::atomic<uint64_t> abort_checkpoint_flush_skipped{0};
+    std::atomic<uint64_t> abort_log_force_flush{0};
+    std::atomic<uint64_t> write_conflict_pending{0};
+    std::atomic<uint64_t> write_conflict_committed_after_start{0};
+    std::atomic<uint64_t> unique_conflict_pending{0};
+    std::atomic<uint64_t> unique_conflict_committed_after_start{0};
+    std::atomic<uint64_t> prepare_conflict_pending{0};
+    std::atomic<uint64_t> prepare_conflict_committed_after_start{0};
+    std::atomic<uint64_t> commit_conflict_pending{0};
+    std::atomic<uint64_t> commit_conflict_committed_after_start{0};
+    std::atomic<uint64_t> pending_waits{0};
+    std::atomic<uint64_t> pending_wait_resolved{0};
+    std::atomic<uint64_t> pending_wait_timeout{0};
+    std::atomic<uint64_t> abort_checkpoint_flush_us{0};
+    std::atomic<uint64_t> abort_log_force_flush_us{0};
+};
+
+PerfDiagStats &perf_diag_stats() {
+    static PerfDiagStats stats;
+    return stats;
+}
+
+bool perf_diag_enabled() {
+    static bool enabled = [] {
+        const char *value = std::getenv("RMDB_PERF_DIAG");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
+void print_perf_diag() {
+    if (!perf_diag_enabled()) {
+        return;
+    }
+    static std::mutex print_latch;
+    std::lock_guard<std::mutex> print_guard(print_latch);
+    auto &s = perf_diag_stats();
+    std::cerr << "RMDB_PERF_DIAG "
+              << "abort_total=" << s.abort_total.load()
+              << " abort_mvcc=" << s.abort_mvcc.load()
+              << " abort_physical_rollback=" << s.abort_physical_rollback.load()
+              << " abort_entered_mvcc_commit="
+              << s.abort_entered_mvcc_commit.load()
+              << " abort_checkpoint_flush=" << s.abort_checkpoint_flush.load()
+              << " abort_checkpoint_flush_skipped="
+              << s.abort_checkpoint_flush_skipped.load()
+              << " abort_log_force_flush=" << s.abort_log_force_flush.load()
+              << " write_conflict_pending="
+              << s.write_conflict_pending.load()
+              << " write_conflict_committed_after_start="
+              << s.write_conflict_committed_after_start.load()
+              << " unique_conflict_pending="
+              << s.unique_conflict_pending.load()
+              << " unique_conflict_committed_after_start="
+              << s.unique_conflict_committed_after_start.load()
+              << " prepare_conflict_pending="
+              << s.prepare_conflict_pending.load()
+              << " prepare_conflict_committed_after_start="
+              << s.prepare_conflict_committed_after_start.load()
+              << " commit_conflict_pending="
+              << s.commit_conflict_pending.load()
+              << " commit_conflict_committed_after_start="
+              << s.commit_conflict_committed_after_start.load()
+              << " pending_waits=" << s.pending_waits.load()
+              << " pending_wait_resolved="
+              << s.pending_wait_resolved.load()
+              << " pending_wait_timeout="
+              << s.pending_wait_timeout.load()
+              << " abort_checkpoint_flush_us="
+              << s.abort_checkpoint_flush_us.load()
+              << " abort_log_force_flush_us="
+              << s.abort_log_force_flush_us.load()
+              << std::endl;
+}
+
+void ensure_perf_diag_registered() {
+    static bool registered = [] {
+        if (perf_diag_enabled()) {
+            std::atexit(print_perf_diag);
+        }
+        return true;
+    }();
+    (void)registered;
+}
+
+void add_perf_diag_us(std::atomic<uint64_t> &counter,
+                      std::chrono::steady_clock::time_point start) {
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+    counter.fetch_add(static_cast<uint64_t>(elapsed),
+                      std::memory_order_relaxed);
+}
+
+uint64_t perf_diag_interval() {
+    static uint64_t interval = [] {
+        const char *value = std::getenv("RMDB_PERF_DIAG_INTERVAL");
+        if (value == nullptr || value[0] == '\0') {
+            return uint64_t{1000};
+        }
+        char *end = nullptr;
+        unsigned long long parsed = std::strtoull(value, &end, 10);
+        if (end == value || parsed == 0) {
+            return uint64_t{1000};
+        }
+        return static_cast<uint64_t>(parsed);
+    }();
+    return interval;
+}
+
+void maybe_print_perf_diag(uint64_t abort_count) {
+    if (!perf_diag_enabled()) {
+        return;
+    }
+    uint64_t interval = perf_diag_interval();
+    if (interval != 0 && abort_count % interval == 0) {
+        print_perf_diag();
+    }
+}
+
+std::chrono::microseconds pending_writer_wait_budget() {
+    static auto budget = [] {
+        const char *value = std::getenv("RMDB_PENDING_WAIT_US");
+        if (value == nullptr || value[0] == '\0') {
+            return std::chrono::microseconds(2000);
+        }
+        char *end = nullptr;
+        unsigned long long parsed = std::strtoull(value, &end, 10);
+        if (end == value) {
+            return std::chrono::microseconds(2000);
+        }
+        return std::chrono::microseconds(parsed);
+    }();
+    return budget;
+}
+
+}  // namespace
 
 static void clear_write_set(Transaction *txn) {
     auto write_set = txn->get_write_set();
@@ -164,29 +315,72 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         return;
     }
 
+    ensure_perf_diag_registered();
+    if (perf_diag_enabled()) {
+        auto &stats = perf_diag_stats();
+        uint64_t abort_count =
+            stats.abort_total.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (txn->uses_mvcc()) {
+            stats.abort_mvcc.fetch_add(1, std::memory_order_relaxed);
+        }
+        maybe_print_perf_diag(abort_count);
+    }
+
     Context context(lock_manager_, log_manager, txn);
     auto write_set = txn->get_write_set();
+    bool did_physical_rollback = false;
+    bool entered_mvcc_commit =
+        txn->uses_mvcc() && txn->get_commit_ts() != INVALID_TS;
+    if (perf_diag_enabled() && entered_mvcc_commit) {
+        perf_diag_stats().abort_entered_mvcc_commit.fetch_add(
+            1, std::memory_order_relaxed);
+    }
     while (!write_set->empty()) {
         WriteRecord *write_record = write_set->back();
         if (!txn->uses_mvcc() ||
             (write_record->GetWriteType() != WType::UPDATE_TUPLE &&
              write_record->GetWriteType() != WType::DELETE_TUPLE)) {
             sm_manager_->rollback(write_record, &context);
+            did_physical_rollback = true;
         }
         write_set->pop_back();
         delete write_record;
     }
 
     if (log_manager != nullptr) {
-        // Rollback operations are not represented by compensation log
-        // records in this framework. Make the restored table/index state
-        // durable before the ABORT record says recovery may skip this txn.
-        sm_manager_->flush_for_checkpoint();
+        if (!txn->uses_mvcc() || did_physical_rollback ||
+            entered_mvcc_commit) {
+            // Rollback operations are not represented by compensation log
+            // records in this framework. Make the restored table/index state
+            // durable before the ABORT record says recovery may skip this txn.
+            if (perf_diag_enabled()) {
+                perf_diag_stats().abort_physical_rollback.fetch_add(
+                    did_physical_rollback ? 1 : 0, std::memory_order_relaxed);
+                perf_diag_stats().abort_checkpoint_flush.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            auto flush_start = std::chrono::steady_clock::now();
+            sm_manager_->flush_for_checkpoint();
+            if (perf_diag_enabled()) {
+                add_perf_diag_us(perf_diag_stats().abort_checkpoint_flush_us,
+                                 flush_start);
+            }
+        } else if (perf_diag_enabled()) {
+            perf_diag_stats().abort_checkpoint_flush_skipped.fetch_add(
+                1, std::memory_order_relaxed);
+        }
         AbortLogRecord abort_log(txn->get_transaction_id());
         abort_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&abort_log);
         txn->set_prev_lsn(lsn);
+        auto log_flush_start = std::chrono::steady_clock::now();
         log_manager->flush_log_to_disk(true);
+        if (perf_diag_enabled()) {
+            perf_diag_stats().abort_log_force_flush.fetch_add(
+                1, std::memory_order_relaxed);
+            add_perf_diag_us(perf_diag_stats().abort_log_force_flush_us,
+                             log_flush_start);
+        }
     }
 
     auto lock_set = *txn->get_lock_set();
@@ -409,6 +603,36 @@ void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
     if (it != mvcc_txns_.end()) {
         it->second.aborted = true;
     }
+    mvcc_cv_.notify_all();
+}
+
+bool TransactionManager::wait_for_pending_writer(
+    Transaction *txn, txn_id_t writer, std::unique_lock<std::mutex> &lock) {
+    if (txn == nullptr || writer == txn->get_transaction_id()) {
+        return true;
+    }
+    auto budget = pending_writer_wait_budget();
+    if (budget.count() <= 0) {
+        return false;
+    }
+    if (perf_diag_enabled()) {
+        perf_diag_stats().pending_waits.fetch_add(1, std::memory_order_relaxed);
+    }
+    bool resolved = mvcc_cv_.wait_for(lock, budget, [&] {
+        auto writer_it = mvcc_txns_.find(writer);
+        return writer_it == mvcc_txns_.end() || writer_it->second.aborted ||
+               writer_it->second.commit_ts != INVALID_TS;
+    });
+    if (perf_diag_enabled()) {
+        if (resolved) {
+            perf_diag_stats().pending_wait_resolved.fetch_add(
+                1, std::memory_order_relaxed);
+        } else {
+            perf_diag_stats().pending_wait_timeout.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+    }
+    return resolved;
 }
 
 void TransactionManager::check_physical_before(
@@ -661,32 +885,53 @@ void TransactionManager::check_write_conflict(
         return;
     }
 
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    std::unique_lock<std::mutex> lock(mvcc_latch_);
     RecordKey key{file_id, rid};
-    auto history_it = record_versions_.find(key);
-    if (history_it == record_versions_.end()) {
-        return;
-    }
-
-    timestamp_t latest_commit = 0;
-    for (const auto &version : history_it->second) {
-        if (version.commit_ts == INVALID_TS) {
-            if (version.owner != txn->get_transaction_id()) {
-                if (mvcc_txn_aborted(version.owner)) {
-                    continue;
-                }
-                mark_mvcc_txn_aborted(txn->get_transaction_id());
-                throw TransactionAbortException(
-                    txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-            }
-        } else {
-            latest_commit = std::max(latest_commit, version.commit_ts);
+    while (true) {
+        auto history_it = record_versions_.find(key);
+        if (history_it == record_versions_.end()) {
+            return;
         }
-    }
-    if (latest_commit > txn->get_start_ts()) {
-        mark_mvcc_txn_aborted(txn->get_transaction_id());
-        throw TransactionAbortException(
-            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+
+        timestamp_t latest_commit = 0;
+        txn_id_t pending_owner = INVALID_TXN_ID;
+        for (const auto &version : history_it->second) {
+            if (version.commit_ts == INVALID_TS) {
+                if (version.owner != txn->get_transaction_id()) {
+                    if (mvcc_txn_aborted(version.owner)) {
+                        continue;
+                    }
+                    pending_owner = version.owner;
+                    break;
+                }
+            } else {
+                latest_commit = std::max(latest_commit, version.commit_ts);
+            }
+        }
+
+        if (pending_owner != INVALID_TXN_ID) {
+            if (wait_for_pending_writer(txn, pending_owner, lock)) {
+                continue;
+            }
+            if (perf_diag_enabled()) {
+                perf_diag_stats().write_conflict_pending.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
+            throw TransactionAbortException(
+                txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+        }
+
+        if (latest_commit > txn->get_start_ts()) {
+            if (perf_diag_enabled()) {
+                perf_diag_stats().write_conflict_committed_after_start.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
+            throw TransactionAbortException(
+                txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+        }
+        return;
     }
 }
 
@@ -732,6 +977,10 @@ void TransactionManager::check_unique_key_conflict(
                 if (version.owner != txn->get_transaction_id() &&
                     !mvcc_txn_aborted(version.owner) &&
                     !version.deleted && same_key(version.data)) {
+                    if (perf_diag_enabled()) {
+                        perf_diag_stats().unique_conflict_pending.fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
                     mark_mvcc_txn_aborted(txn->get_transaction_id());
                     throw TransactionAbortException(
                         txn->get_transaction_id(),
@@ -749,6 +998,11 @@ void TransactionManager::check_unique_key_conflict(
             latest_committed->commit_ts > txn->get_start_ts() &&
             !latest_committed->deleted &&
             same_key(latest_committed->data)) {
+            if (perf_diag_enabled()) {
+                perf_diag_stats()
+                    .unique_conflict_committed_after_start.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
             mark_mvcc_txn_aborted(txn->get_transaction_id());
             throw TransactionAbortException(
                 txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
@@ -764,40 +1018,65 @@ void TransactionManager::prepare_write(
         return;
     }
 
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    std::unique_lock<std::mutex> lock(mvcc_latch_);
     RecordKey key{file_id, rid};
-    auto &history = record_versions_[key];
-    if (history.empty() && old_record != nullptr) {
-        MvccVersion baseline;
-        baseline.commit_ts = 0;
-        baseline.deleted = false;
-        baseline.data = copy_record(old_record);
-        history.push_back(std::move(baseline));
-    }
 
     MvccVersion *own_pending = nullptr;
-    timestamp_t latest_commit = 0;
-    for (auto &version : history) {
-        if (version.commit_ts == INVALID_TS) {
-            if (version.owner != txn->get_transaction_id()) {
-                if (mvcc_txn_aborted(version.owner)) {
-                    continue;
-                }
-                mark_mvcc_txn_aborted(txn->get_transaction_id());
-                throw TransactionAbortException(
-                    txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-            }
-            own_pending = &version;
-        } else {
-            latest_commit = std::max(latest_commit, version.commit_ts);
+    while (true) {
+        auto &history = record_versions_[key];
+        if (history.empty() && old_record != nullptr) {
+            MvccVersion baseline;
+            baseline.commit_ts = 0;
+            baseline.deleted = false;
+            baseline.data = copy_record(old_record);
+            history.push_back(std::move(baseline));
         }
-    }
-    if (own_pending == nullptr && latest_commit > txn->get_start_ts()) {
-        mark_mvcc_txn_aborted(txn->get_transaction_id());
-        throw TransactionAbortException(
-            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+
+        own_pending = nullptr;
+        timestamp_t latest_commit = 0;
+        txn_id_t pending_owner = INVALID_TXN_ID;
+        for (auto &version : history) {
+            if (version.commit_ts == INVALID_TS) {
+                if (version.owner != txn->get_transaction_id()) {
+                    if (mvcc_txn_aborted(version.owner)) {
+                        continue;
+                    }
+                    pending_owner = version.owner;
+                    break;
+                }
+                own_pending = &version;
+            } else {
+                latest_commit = std::max(latest_commit, version.commit_ts);
+            }
+        }
+
+        if (pending_owner != INVALID_TXN_ID) {
+            if (wait_for_pending_writer(txn, pending_owner, lock)) {
+                continue;
+            }
+            if (perf_diag_enabled()) {
+                perf_diag_stats().prepare_conflict_pending.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
+            throw TransactionAbortException(
+                txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+        }
+
+        if (own_pending == nullptr && latest_commit > txn->get_start_ts()) {
+            if (perf_diag_enabled()) {
+                perf_diag_stats()
+                    .prepare_conflict_committed_after_start.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
+            throw TransactionAbortException(
+                txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+        }
+        break;
     }
 
+    auto &history = record_versions_[key];
     if (own_pending == nullptr && old_record != nullptr &&
         !table_name.empty()) {
         check_physical_before(txn, table_name, rid, old_record);
@@ -896,6 +1175,10 @@ void TransactionManager::check_commit_conflict_under_latch(Transaction *txn) {
             if (version.commit_ts == INVALID_TS) {
                 if (version.owner != txn->get_transaction_id() &&
                     !mvcc_txn_aborted(version.owner)) {
+                    if (perf_diag_enabled()) {
+                        perf_diag_stats().commit_conflict_pending.fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
                     mark_mvcc_txn_aborted(txn->get_transaction_id());
                     throw TransactionAbortException(
                         txn->get_transaction_id(),
@@ -903,6 +1186,11 @@ void TransactionManager::check_commit_conflict_under_latch(Transaction *txn) {
                 }
             } else if (version.commit_ts > txn->get_start_ts() &&
                        version.owner != txn->get_transaction_id()) {
+                if (perf_diag_enabled()) {
+                    perf_diag_stats()
+                        .commit_conflict_committed_after_start.fetch_add(
+                            1, std::memory_order_relaxed);
+                }
                 mark_mvcc_txn_aborted(txn->get_transaction_id());
                 throw TransactionAbortException(
                     txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
@@ -1010,6 +1298,7 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
             }
         }
     }
+    mvcc_cv_.notify_all();
 
     for (size_t op_index = 0; op_index < ops.size(); ++op_index) {
         auto &op = ops[op_index];
@@ -1131,6 +1420,7 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
     // Pending versions of this transaction have now been removed and its
     // dependency edges cleared, so its bookkeeping entry can be reclaimed by GC.
     state_it->second.cleanup_done = true;
+    mvcc_cv_.notify_all();
 }
 
 timestamp_t TransactionManager::GetWatermark() {
