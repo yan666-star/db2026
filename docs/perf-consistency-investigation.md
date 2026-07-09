@@ -198,7 +198,7 @@ set output_file off
 
    - 该命令没有分号。
    - 关闭 `output.txt` 写入是性能优化要求。
-   - 当前实现还利用这个时机让后续新 worker 连接默认进入 `SNAPSHOT_ISOLATION`，符合性能题“基于快照隔离”的要求。
+   - 该命令不应改变后续新 worker 连接的事务隔离级别；隔离级别应由显式配置决定。
 
 5. 预热和正式压测
    - 先预热 30 秒。
@@ -301,14 +301,15 @@ StockLevel 偏聚合和范围查询。
 
 ## 性能正确性的关键实现点
 
-### 1. 性能 worker 必须使用 SI
+### 1. 性能 worker 的隔离级别不能低于 READ COMMITTED
 
 当前做法：
 
 - 普通连接默认仍是 `READ_COMMITTED`。
-- 收到 `set output_file off` 后，后续新连接默认 `SNAPSHOT_ISOLATION`。
+- `set output_file off` 只关闭 `output.txt` 写入，不再改变默认隔离级别。
+- 如需运行 SI 或 SERIALIZABLE，应通过显式隔离级别配置进入对应路径。
 
-这样既不破坏前十题中默认 RC 的行为，也满足性能题的 SI 要求。
+这样避免输出开关产生 SQL 语义副作用，同时保留按不同隔离级别评估吞吐的空间。
 
 ### 2. 初始 load 数据按 `ts=0` 可见
 
@@ -567,3 +568,207 @@ transaction types, or SQL text from the benchmark workload.
   supported way to switch sessions to SI.
 - The change preserves SQL semantics while reducing avoidable write-conflict
   aborts in workloads that did not request SI.
+
+## 2026-07-09 update: throughput-oriented concurrency pass
+
+### Investigation summary
+
+The latest high abort-rate result still points to two separate problems:
+
+- Too many transactions are forced into conflicting or serialized paths before
+  the real write set is known.
+- Several executor paths spend too much time inside scans or global locks,
+  which widens the overlap window between hot transactions and makes aborts
+  more likely.
+
+The changes below are general executor/transaction/index-path changes. They do
+not match benchmark table names, column names, transaction names, or SQL text.
+
+### Code changes
+
+1. Removed the global READ COMMITTED explicit-transaction gate in `src/rmdb.cpp`.
+
+   The previous code acquired one process-wide mutex at `BEGIN` for every
+   explicit READ COMMITTED transaction and released it only at commit/abort.
+   That made all explicit RC transactions run serially, even when they touched
+   different tables, pages, warehouses, or rows.
+
+   The lock manager and record update executors still protect real writes with
+   table/record locks. Removing the global gate restores row/table-level
+   concurrency and reduces end-to-end transaction time.
+
+2. Stopped taking exclusive record locks in scan executors.
+
+   `SeqScanExecutor` and `IndexScanExecutor` previously took X locks while
+   reading candidate records in explicit non-MVCC transactions. That converts
+   read/filter work into write-like contention and can block or abort unrelated
+   transactions before a row is actually updated.
+
+   Update/delete executors still lock matched RIDs before modifying them and
+   re-check their conditions. Plain reads no longer expand the write conflict
+   surface.
+
+3. Re-enabled index scans under MVCC while preserving serializable read
+   tracking.
+
+   `Portal::convert_plan_executor()` previously forced every MVCC scan plan
+   into `SeqScanExecutor`, even when the optimizer selected `IndexScanExecutor`.
+   Under a TPC-C-shaped workload, point/range reads on indexed keys then became
+   full table/slot scans, increasing CPU cost and conflict windows.
+
+   MVCC index scans are now allowed. `IndexScanExecutor` registers the table
+   predicate and each returned RID with `TransactionManager` when serializable
+   tracking is enabled, matching the safety intent of the seq-scan path.
+
+4. Avoided duplicate predicate evaluation for scan filters.
+
+   The executor comment in `portal.h` said that a `FilterPlan` directly above a
+   `ScanPlan` should pass itself into the scan executor instead of creating a
+   separate `FilterExecutor`. The actual code still wrapped the scan in
+   `FilterExecutor`, so single-table predicates could be evaluated once inside
+   the scan and again in the filter.
+
+   The code now only elides `FilterExecutor` when the child is a `ScanPlan`.
+   Filters above joins, projections, derived tables, or other non-scan nodes
+   still use `FilterExecutor`.
+
+5. Removed a process-wide non-MVCC insert mutex in `InsertExecutor`.
+
+   The old static mutex serialized all ordinary inserts across all tables. This
+   is broader than necessary. Record files already serialize page/slot allocation
+   with per-file `insert_latch_`; indexed tables also hold the file's
+   `logical_update_latch_` across unique-key checking, record insertion, and
+   index insertion.
+
+   Removing the global mutex lets independent table inserts proceed in
+   parallel while keeping per-table correctness guards.
+
+### Correctness notes
+
+- No SQL semantics were changed.
+- Explicit SI remains available and keeps MVCC conflict checks.
+- READ COMMITTED writes still go through the lock manager in update/delete
+  paths and table-local insert/index latches in insert paths.
+- Serializable/MVCC read tracking is preserved for both seq scans and index
+  scans.
+- The changes are generic concurrency and executor-path fixes, not
+  benchmark-specific matching.
+
+### Expected effect
+
+- Lower abort rate caused by artificially long transaction overlap windows.
+- Higher NewOrder throughput because indexed lookups under MVCC no longer
+  degenerate into full scans.
+- Higher insert throughput because inserts to independent tables no longer
+  share one global mutex.
+- Lower CPU per statement because scan predicates are not evaluated twice in
+  the common Filter-over-Scan shape.
+
+### Remaining high-risk bottlenecks not changed in this pass
+
+- `TransactionManager::abort()` still has expensive WAL/checkpoint-related
+  paths. Optimizing this further needs recovery-focused tests because crash
+  correctness is part of the official score gate.
+- `LogManager` still lacks true group commit/asynchronous flush. This is a
+  likely throughput ceiling but should be changed only with recovery tests.
+- `IxIndexHandle` still uses a coarse `root_latch_` for search bounds and
+  updates. Improving B+Tree latch coupling would be valuable but is a larger
+  concurrency change.
+
+## 2026-07-09 update: align with latest performance-test clarification
+
+### Clarified requirements
+
+The latest clarification says the performance test uses 16 concurrent client
+threads to run TPC-C transactions. The 30-second warmup and 360-second
+measurement windows are unchanged; the final tpmC is still the median NewOrder
+commit throughput across the three measured rounds.
+
+Before ranking, the system must pass correctness gates:
+
+- Functional tests.
+- Loaded data must match expected output.
+- Post-run TPC-C table consistency must hold.
+- After simulated `kill -9` and restart, committed transaction effects must be
+  recovered correctly.
+
+The functional phase at the start of the performance test does not focus on the
+old T9 implementation detail, but the final system still has to satisfy the
+database correctness checks. In practice this means ACID, durable committed
+transactions, no dirty reads, and concurrent writes to the same row controlled
+by the configured isolation level. The clarification also says isolation is not
+strictly fixed to one mode; using an isolation level at least as strong as
+READ COMMITTED is acceptable if the implementation remains correct.
+
+`Aggregate Test 2` includes string `MIN` and `MAX`, so any aggregation or index
+MIN/MAX optimization must preserve the same string ordering and fixed-length
+string trimming semantics as the normal executor path.
+
+### Superseded note
+
+Earlier notes in this document said performance workers "must use SI" and that
+`set output_file off` could switch later sessions to `SNAPSHOT_ISOLATION`.
+That should be treated as superseded.
+
+The safer rule is:
+
+- `set output_file off` only disables `output.txt` writes.
+- Transaction isolation must be selected by explicit isolation configuration,
+  not by the output switch.
+- Different isolation levels may be tested for throughput, but correctness
+  must be at least READ COMMITTED: no dirty read, durable commit, and correct
+  write conflict control.
+
+### Code adjustment after the clarification
+
+The previous throughput pass removed scan-stage X locks completely. That
+reduced contention but was too loose for the clarified "no dirty read" bar on
+the non-MVCC READ COMMITTED path, because physical updates are applied before
+transaction end and a plain reader could observe an uncommitted value.
+
+The scan path now uses short-lived shared record locks for non-MVCC reads:
+
+- `SeqScanExecutor` takes an IS table lock plus an S record lock before reading
+  a candidate record, copies the record, then releases the S record lock
+  immediately.
+- `IndexScanExecutor` does the same for each RID in a page batch: acquire S
+  locks in RID order, batch-read the page, then release the S locks.
+- Update/delete still acquire X locks on matched RIDs and re-check predicates
+  before modifying rows.
+
+This keeps the improvement over the old implementation, where scans took X
+locks and held them to transaction end, while restoring READ COMMITTED
+visibility.
+
+`AggregationExecutor` was also aligned with the clarified Aggregate Test 2
+requirement: string `MIN/MAX` now compares strings after trimming `\0` and
+trailing spaces, matching the normal string comparison path instead of comparing
+raw fixed-length bytes.
+
+### Safe ideas borrowed from the 2025 high-throughput review
+
+These ideas are generic and compatible with the 2026 correctness gates:
+
+- Keep using the optimizer to shrink access ranges: continuous-prefix composite
+  index selection, index lower/upper bound construction, and residual predicate
+  filtering after fetching records.
+- Keep RID-to-page grouping and batch record fetches. The important invariant is
+  that RID and record vectors stay aligned, especially when MVCC visibility or
+  deletes remove records.
+- Improve SeqScan batching in the same style as IndexScan batching, but only if
+  visibility and RID alignment remain explicit.
+- Optimize string `MIN/MAX` only when it uses the same string comparison rules
+  as `execution_eval.h`; otherwise keep the normal aggregation executor path.
+- Use `set output_file off` only as an output I/O reduction.
+
+### Ideas not safe to copy blindly
+
+- Do not bind the output-file switch to isolation-level changes.
+- Do not add TPC-C table, column, transaction, or SQL-text special cases.
+- Do not skip WAL, abort rollback, unique-key checks, MVCC visibility, or lock
+  checks for throughput.
+- Do not enable `fast_count`, page-header counts, or index `MIN/MAX` unless
+  snapshot visibility, deletes, and string ordering are proven equivalent to
+  the normal path.
+- Do not generalize offline `load(context=nullptr)` shortcuts to concurrent
+  DML.

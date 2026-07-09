@@ -48,43 +48,65 @@ class IndexScanExecutor : public AbstractExecutor {
     ScanPlan *scan_plan_ = nullptr;
     std::vector<char> lookup_key_;
     bool has_lookup_key_ = false;
+    bool track_serializable_reads_ = true;
 
     bool uses_mvcc() const {
         return context_ != nullptr && context_->txn_mgr_ != nullptr &&
                context_->txn_mgr_->uses_mvcc(context_->txn_);
     }
 
-    bool lock_reads_for_explicit_txn() const {
+    bool lock_reads_for_committed_visibility() const {
         return context_ != nullptr && context_->txn_ != nullptr &&
                context_->lock_mgr_ != nullptr &&
                context_->txn_mgr_ != nullptr &&
-               !context_->txn_mgr_->uses_mvcc(context_->txn_) &&
-               context_->txn_->get_txn_mode();
+               !context_->txn_mgr_->uses_mvcc(context_->txn_);
     }
 
-    void lock_records_for_read(const std::vector<Rid> &rids) {
-        if (!lock_reads_for_explicit_txn()) {
-            return;
+    std::vector<Rid> lock_records_for_committed_read(
+        const std::vector<Rid> &rids) {
+        std::vector<Rid> locked;
+        if (!lock_reads_for_committed_visibility()) {
+            return locked;
         }
-        context_->lock_mgr_->lock_IX_on_table(context_->txn_, fh_->GetFd());
-        std::vector<Rid> ordered = rids;
-        std::sort(ordered.begin(), ordered.end(), [](const Rid &lhs, const Rid &rhs) {
+        context_->lock_mgr_->lock_IS_on_table(context_->txn_, fh_->GetFd());
+        locked = rids;
+        std::sort(locked.begin(), locked.end(), [](const Rid &lhs, const Rid &rhs) {
             return lhs.page_no == rhs.page_no ? lhs.slot_no < rhs.slot_no
                                              : lhs.page_no < rhs.page_no;
         });
-        for (const auto &rid : ordered) {
-            context_->lock_mgr_->lock_exclusive_on_record(
-                context_->txn_, rid, fh_->GetFd());
+        try {
+            for (const auto &rid : locked) {
+                context_->lock_mgr_->lock_shared_on_record(
+                    context_->txn_, rid, fh_->GetFd());
+            }
+        } catch (...) {
+            unlock_committed_read_records(locked);
+            throw;
+        }
+        return locked;
+    }
+
+    void unlock_committed_read_records(const std::vector<Rid> &locked) {
+        if (locked.empty() || context_ == nullptr ||
+            context_->txn_ == nullptr || context_->lock_mgr_ == nullptr) {
+            return;
+        }
+        for (const auto &rid : locked) {
+            context_->lock_mgr_->unlock(
+                context_->txn_,
+                LockDataId(fh_->GetFd(), rid, LockDataType::RECORD));
         }
     }
 
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
                       std::vector<std::string> index_col_names, Context *context,
-                      ScanPlan *scan_plan = nullptr) {
+                      ScanPlan *scan_plan = nullptr,
+                      bool track_serializable_reads = true) {
         sm_manager_ = sm_manager;
         context_ = context;
         scan_plan_ = scan_plan;
+        track_serializable_reads_ = track_serializable_reads;
         tab_name_ = std::move(tab_name);
         tab_ = sm_manager_->db_.get_table(tab_name_);
         conds_ = std::move(conds);
@@ -109,6 +131,10 @@ class IndexScanExecutor : public AbstractExecutor {
                     col2conds_[cond.lhs_col.col_name].push_back(cond);
                 }
             }
+        }
+        if (track_serializable_reads_ && context_->txn_mgr_ != nullptr) {
+            context_->txn_mgr_->register_table_read(
+                context_->txn_, fh_->GetMvccFileId(), conds_, cols_);
         }
     }
 
@@ -234,8 +260,16 @@ class IndexScanExecutor : public AbstractExecutor {
                         tmp_batch_rids.push_back(rid);
                     }
                 } else {
-                    lock_records_for_read(rids);
-                    auto page_recs = fh_->batch_get_records(page_no, rids, context_);
+                    std::vector<Rid> locked =
+                        lock_records_for_committed_read(rids);
+                    std::vector<std::unique_ptr<RmRecord>> page_recs;
+                    try {
+                        page_recs = fh_->batch_get_records(page_no, rids, context_);
+                    } catch (...) {
+                        unlock_committed_read_records(locked);
+                        throw;
+                    }
+                    unlock_committed_read_records(locked);
                     if (page_recs.size() != rids.size()) {
                         throw InternalError("Batch size mismatch in IndexScanExecutor");
                     }
@@ -256,6 +290,12 @@ class IndexScanExecutor : public AbstractExecutor {
                     scan_plan_->rows_++;
                 }
                 if (eval_conditions(*tmp_batch_recs[i], conds_, cols_)) {
+                    if (track_serializable_reads_ &&
+                        context_->txn_mgr_ != nullptr) {
+                        context_->txn_mgr_->register_record_read(
+                            context_->txn_, fh_->GetMvccFileId(),
+                            tmp_batch_rids[i]);
+                    }
                     batch_recs_.push_back(std::move(tmp_batch_recs[i]));
                     batch_rids_.push_back(tmp_batch_rids[i]);
                 }

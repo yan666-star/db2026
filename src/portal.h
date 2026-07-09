@@ -235,6 +235,11 @@ class Portal
         }
         //此时天剑filter在project和scan之间，所以如果当前节点是filter，就继续往它的子节点找，直到找到scan节点
         else if(auto x = std::dynamic_pointer_cast<FilterPlan>(plan)) {
+            if (std::dynamic_pointer_cast<ScanPlan>(x->subplan_) != nullptr) {
+                return convert_plan_executor(
+                    x->subplan_, context, x.get(), false,
+                    track_serializable_reads);
+            }
             return std::make_unique<FilterExecutor>(
                 convert_plan_executor(
                     x->subplan_, context, nullptr, false,
@@ -243,10 +248,7 @@ class Portal
                 x.get());
         }//FilterPlan 不创建 FilterExecutor。把自己 x.get() 传给下面的 ScanExecutor。这样 ScanExecutor 每通过一条过滤条件，就能执行 filter_plan_->rows_++。
         else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
-            bool force_seq_scan =
-                context->txn_mgr_ != nullptr &&
-                context->txn_mgr_->uses_mvcc(context->txn_);
-            if(x->tag == T_SeqScan || force_seq_scan) {
+            if(x->tag == T_SeqScan) {
                 return std::make_unique<SeqScanExecutor>(
                     sm_manager_,
                     x->tab_name_,
@@ -265,7 +267,8 @@ class Portal
                     x->conds_,
                     x->index_col_names_,
                     context,
-                    x.get()
+                    x.get(),
+                    track_serializable_reads
                 );
             }   //SeqScanExecutor 里面可以做到：scan_plan_->rows_++;filter_plan_->rows_++;
         }

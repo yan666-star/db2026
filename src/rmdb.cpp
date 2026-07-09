@@ -61,8 +61,6 @@ static constexpr bool kVerboseServerLog = false;
 
 namespace {
 
-std::mutex read_committed_explicit_txn_mutex;
-
 std::string trim_copy(const std::string &value) {
     size_t begin = 0;
     while (begin < value.size() &&
@@ -308,10 +306,6 @@ void write_failure_response(char *data_send, int *offset) {
 }
 
 void release_read_committed_explicit_guard(bool &guard_held) {
-    if (!guard_held) {
-        return;
-    }
-    read_committed_explicit_txn_mutex.unlock();
     guard_held = false;
 }
 
@@ -456,13 +450,6 @@ void *client_handler(void *sock_fd) {
                 }
                 continue;
             }
-        }
-
-        if (txn_boundary == TxnBoundary::Begin &&
-            session_isolation == IsolationLevel::READ_COMMITTED &&
-            !read_committed_explicit_guard_held) {
-            read_committed_explicit_txn_mutex.lock();
-            read_committed_explicit_guard_held = true;
         }
 
         std::string load_file;

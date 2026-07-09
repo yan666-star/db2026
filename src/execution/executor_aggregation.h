@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "execution_defs.h"
+#include "execution_eval.h"
 #include "executor_abstract.h"
 #include "optimizer/plan.h"
 
@@ -105,10 +106,20 @@ class AggregationExecutor : public AbstractExecutor {
             return 0;
         }
         if (lt == TYPE_STRING && rt == TYPE_STRING) {
-            int cmp = std::memcmp(lv.data(), rv.data(), std::min(lv.size(), rv.size()));
-            if (cmp != 0) return cmp;
-            if (lv.size() < rv.size()) return -1;
-            if (lv.size() > rv.size()) return 1;
+            auto normalize = [](std::string s) {
+                size_t null_pos = s.find('\0');
+                if (null_pos != std::string::npos) {
+                    s.erase(null_pos);
+                }
+                while (!s.empty() && s.back() == ' ') {
+                    s.pop_back();
+                }
+                return s;
+            };
+            std::string l = normalize(lv);
+            std::string r = normalize(rv);
+            if (l < r) return -1;
+            if (l > r) return 1;
             return 0;
         }
         throw RMDBError("failure");
