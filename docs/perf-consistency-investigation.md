@@ -508,3 +508,62 @@ RMDB_PERF_DIAG=1 ./build/bin/rmdb <db_name> > server.log 2>&1
 3. 保持火焰图环境干净
    - 使用 Linux 原生 ext4 路径，不要在 `/mnt/hgfs` 共享目录采正式火焰图。
    - 使用 `RelWithDebInfo -fno-omit-frame-pointer`，避免 `[unknown]` 占比过高。
+
+## 2026-07-09 update: decouple output_file from default isolation
+
+### Background
+
+The performance workload disables result-file output before starting worker
+connections:
+
+```sql
+set output_file off
+```
+
+Before this update, handling that command also changed the global default
+isolation level for later sessions to `SNAPSHOT_ISOLATION`.
+
+That made worker connections inherit SI even when the client did not
+explicitly request it. Under the TPC-C-shaped workload, hot updates on rows
+such as district, warehouse, stock, and customer then produced many MVCC
+write-conflict aborts. The system spent substantial time doing work that later
+aborted instead of queueing conflicting writers and committing them.
+
+### Code change
+
+Modified `src/rmdb.cpp` in `client_handler`.
+
+The `set output_file on/off` command now only updates `enable_output_file`.
+It no longer changes `session_defaults`.
+
+Removed logic:
+
+```cpp
+if (!output_file_enabled) {
+    session_defaults::set(IsolationLevel::SNAPSHOT_ISOLATION);
+}
+```
+
+### Expected effect
+
+New worker connections keep the normal default isolation level unless the
+client explicitly sends:
+
+```sql
+SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION;
+```
+
+For the performance workload, this lets hot writes use the existing
+READ COMMITTED locking path and wait for conflicting writers, instead of
+blindly aborting under inherited SI.
+
+This is a general semantic fix. It does not match table names, column names,
+transaction types, or SQL text from the benchmark workload.
+
+### Correctness notes
+
+- `set output_file off` should not change transaction isolation semantics.
+- Explicit `SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION` remains the
+  supported way to switch sessions to SI.
+- The change preserves SQL semantics while reducing avoidable write-conflict
+  aborts in workloads that did not request SI.
