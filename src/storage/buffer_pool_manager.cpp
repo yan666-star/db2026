@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 
 #include <cstring>
 
+#include "common/perf_counters.h"
 #include "recovery/log_manager.h"
 
 void BufferPoolManager::flush_wal_before_page_write() {
@@ -69,14 +70,51 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
  * @param {PageId} page_id 需要获取的页的PageId
  */
 Page* BufferPoolManager::fetch_page(PageId page_id) {
-    std::scoped_lock lock{latch_};
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::shared_counters().buffer_fetches.fetch_add(
+            1, std::memory_order_relaxed);
+    }
 
-    auto it = page_table_.find(page_id);
-    if (it != page_table_.end()) {
-        frame_id_t frame_id = it->second;
+    {
+        auto table_lock = rmdb_perf::lock_buffer_shared(latch_);
+        auto it = page_table_.find(page_id);
+        if (it != page_table_.end()) {
+            if (rmdb_perf::enabled()) {
+                rmdb_perf::shared_counters().buffer_hits.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            frame_id_t frame_id = it->second;
+            auto frame_lock =
+                rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
+            Page *page = &pages_[frame_id];
+            bool was_unpinned = page->pin_count_ == 0;
+            page->pin_count_++;
+            if (was_unpinned) {
+                replacer_->pin(frame_id);
+            }
+            return page;
+        }
+    }
+
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::shared_counters().buffer_misses.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+
+    // Misses are rare under the performance workload. Serialize mapping and
+    // victim changes, then recheck in case another thread loaded the page.
+    auto table_lock = rmdb_perf::lock_buffer_exclusive(latch_);
+    auto existing = page_table_.find(page_id);
+    if (existing != page_table_.end()) {
+        frame_id_t frame_id = existing->second;
+        auto frame_lock =
+            rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
         Page *page = &pages_[frame_id];
+        bool was_unpinned = page->pin_count_ == 0;
         page->pin_count_++;
-        replacer_->pin(frame_id);
+        if (was_unpinned) {
+            replacer_->pin(frame_id);
+        }
         return page;
     }
 
@@ -85,9 +123,12 @@ Page* BufferPoolManager::fetch_page(PageId page_id) {
         return nullptr;
     }
 
+    auto frame_lock =
+        rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
     Page *page = &pages_[frame_id];
     update_page(page, page_id, frame_id);
-    disk_manager_->read_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
+    disk_manager_->read_page(page_id.fd, page_id.page_no, page->get_data(),
+                             PAGE_SIZE);
     page->pin_count_ = 1;
     replacer_->pin(frame_id);
     return page;
@@ -100,7 +141,7 @@ Page* BufferPoolManager::fetch_page(PageId page_id) {
  * @param {bool} is_dirty 若目标page应该被标记为dirty则为true，否则为false
  */
 bool BufferPoolManager::unpin_page(PageId page_id, bool is_dirty) {
-    std::scoped_lock lock{latch_};
+    auto table_lock = rmdb_perf::lock_buffer_shared(latch_);
 
     auto it = page_table_.find(page_id);
     if (it == page_table_.end()) {
@@ -108,6 +149,8 @@ bool BufferPoolManager::unpin_page(PageId page_id, bool is_dirty) {
     }
 
     frame_id_t frame_id = it->second;
+    auto frame_lock =
+        rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
     Page *page = &pages_[frame_id];
     if (page->pin_count_ <= 0) {
         return false;
@@ -129,14 +172,17 @@ bool BufferPoolManager::unpin_page(PageId page_id, bool is_dirty) {
  * @param {PageId} page_id 目标页的page_id，不能为INVALID_PAGE_ID
  */
 bool BufferPoolManager::flush_page(PageId page_id) {
-    std::scoped_lock lock{latch_};
+    auto table_lock = rmdb_perf::lock_buffer_shared(latch_);
 
     auto it = page_table_.find(page_id);
     if (it == page_table_.end()) {
         return false;
     }
 
-    Page *page = &pages_[it->second];
+    frame_id_t frame_id = it->second;
+    auto frame_lock =
+        rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
+    Page *page = &pages_[frame_id];
     if (page->is_dirty_) {
         flush_wal_before_page_write();
     }
@@ -151,7 +197,7 @@ bool BufferPoolManager::flush_page(PageId page_id) {
  * @param {PageId*} page_id 当成功创建一个新的page时存储其page_id
  */
 Page* BufferPoolManager::new_page(PageId* page_id) {
-    std::scoped_lock lock{latch_};
+    auto table_lock = rmdb_perf::lock_buffer_exclusive(latch_);
 
     frame_id_t frame_id = INVALID_FRAME_ID;
     if (!find_victim_page(&frame_id)) {
@@ -162,6 +208,8 @@ Page* BufferPoolManager::new_page(PageId* page_id) {
     new_page_id.page_no = disk_manager_->allocate_page(new_page_id.fd);
 
     Page *page = &pages_[frame_id];
+    auto frame_lock =
+        rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
     update_page(page, new_page_id, frame_id);
     page->pin_count_ = 1;
     replacer_->pin(frame_id);
@@ -175,7 +223,7 @@ Page* BufferPoolManager::new_page(PageId* page_id) {
  * @param {PageId} page_id 目标页
  */
 bool BufferPoolManager::delete_page(PageId page_id) {
-    std::scoped_lock lock{latch_};
+    auto table_lock = rmdb_perf::lock_buffer_exclusive(latch_);
 
     auto it = page_table_.find(page_id);
     if (it == page_table_.end()) {
@@ -183,6 +231,8 @@ bool BufferPoolManager::delete_page(PageId page_id) {
     }
 
     frame_id_t frame_id = it->second;
+    auto frame_lock =
+        rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
     Page *page = &pages_[frame_id];
     if (page->pin_count_ > 0) {
         return false;
@@ -208,9 +258,11 @@ bool BufferPoolManager::delete_page(PageId page_id) {
  * @param {int} fd 文件句柄
  */
 void BufferPoolManager::flush_all_pages(int fd) {
-    std::scoped_lock lock{latch_};
+    auto table_lock = rmdb_perf::lock_buffer_exclusive(latch_);
     bool has_dirty_page = false;
     for (const auto &entry : page_table_) {
+        auto frame_lock =
+            rmdb_perf::lock_buffer_frame(frame_latches_[entry.second]);
         if (entry.first.fd == fd && pages_[entry.second].is_dirty_) {
             has_dirty_page = true;
             break;
@@ -221,6 +273,8 @@ void BufferPoolManager::flush_all_pages(int fd) {
     }
     for (auto &entry : page_table_) {
         if (entry.first.fd == fd) {
+            auto frame_lock =
+                rmdb_perf::lock_buffer_frame(frame_latches_[entry.second]);
             Page *page = &pages_[entry.second];
             if (page->is_dirty_) {
                 disk_manager_->write_page(
@@ -233,9 +287,11 @@ void BufferPoolManager::flush_all_pages(int fd) {
 }
 
 void BufferPoolManager::flush_all_pages() {
-    std::scoped_lock lock{latch_};
+    auto table_lock = rmdb_perf::lock_buffer_exclusive(latch_);
     bool has_dirty_page = false;
     for (const auto &entry : page_table_) {
+        auto frame_lock =
+            rmdb_perf::lock_buffer_frame(frame_latches_[entry.second]);
         if (pages_[entry.second].is_dirty_) {
             has_dirty_page = true;
             break;
@@ -245,6 +301,8 @@ void BufferPoolManager::flush_all_pages() {
         flush_wal_before_page_write();
     }
     for (auto &entry : page_table_) {
+        auto frame_lock =
+            rmdb_perf::lock_buffer_frame(frame_latches_[entry.second]);
         Page *page = &pages_[entry.second];
         if (page->is_dirty_) {
             disk_manager_->write_page(
@@ -256,7 +314,7 @@ void BufferPoolManager::flush_all_pages() {
 }
 
 void BufferPoolManager::discard_all_pages(int fd) {
-    std::scoped_lock lock{latch_};
+    auto table_lock = rmdb_perf::lock_buffer_exclusive(latch_);
     for (auto it = page_table_.begin(); it != page_table_.end();) {
         if (it->first.fd != fd) {
             ++it;
@@ -264,6 +322,8 @@ void BufferPoolManager::discard_all_pages(int fd) {
         }
 
         frame_id_t frame_id = it->second;
+        auto frame_lock =
+            rmdb_perf::lock_buffer_frame(frame_latches_[frame_id]);
         Page *page = &pages_[frame_id];
         if (page->pin_count_ != 0) {
             throw InternalError("Cannot close a file with pinned buffer pages");

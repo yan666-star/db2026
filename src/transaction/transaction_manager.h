@@ -130,9 +130,7 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
 
-    std::unique_lock<std::mutex> acquire_commit_apply_latch() {
-        return std::unique_lock<std::mutex>(commit_apply_latch_);
-    }
+    std::unique_lock<std::mutex> acquire_commit_apply_latch();
 
     /**
      * @description: 获取事务ID为txn_id的事务对象

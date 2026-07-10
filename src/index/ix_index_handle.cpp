@@ -250,21 +250,34 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
  */
 bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transaction *transaction)
 {
+    (void)transaction;
     std::shared_lock<std::shared_mutex> lock(root_latch_);
     if (file_hdr_->root_page_ == INVALID_PAGE_ID) {
         return false;
     }
-    auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::FIND, transaction);
-    if (leaf_node == nullptr) {
-        return false;
+
+    // Point lookups are on the hottest index path.  Walk it with a stack
+    // handle so every level does not allocate and destroy an IxNodeHandle.
+    // The shared root latch keeps the tree shape stable for the whole walk;
+    // page pin/unpin ordering is unchanged from find_leaf_page().
+    page_id_t page_no = file_hdr_->root_page_;
+    while (true) {
+        Page *page = buffer_pool_manager_->fetch_page(PageId{fd_, page_no});
+        IxNodeHandle node(file_hdr_, page);
+        if (node.is_leaf_page()) {
+            Rid *rid = nullptr;
+            bool found = node.leaf_lookup(key, &rid);
+            if (found) {
+                result->push_back(*rid);
+            }
+            buffer_pool_manager_->unpin_page(node.get_page_id(), false);
+            return found;
+        }
+
+        page_id_t child_page_no = node.internal_lookup(key);
+        buffer_pool_manager_->unpin_page(node.get_page_id(), false);
+        page_no = child_page_no;
     }
-    Rid *rid = nullptr;
-    bool is_success = leaf_node->leaf_lookup(key, &rid);
-    if (is_success)
-        result->push_back(*rid);
-    buffer_pool_manager_->unpin_page(leaf_node->get_page_id(), false);
-    delete leaf_node;
-    return is_success;
 }
 
 /**

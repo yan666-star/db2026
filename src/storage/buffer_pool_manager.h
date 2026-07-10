@@ -14,6 +14,9 @@ See the Mulan PSL v2 for more details. */
 
 #include <cassert>
 #include <list>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -34,7 +37,8 @@ class BufferPoolManager {
     DiskManager *disk_manager_;
     LogManager *log_manager_ = nullptr;
     Replacer *replacer_;    // buffer_pool的置换策略，当前赛题中为LRU置换策略
-    std::mutex latch_;      // 用于共享数据结构的并发控制
+    std::shared_mutex latch_;  // protects page_table_, free_list_ and frame mapping
+    std::unique_ptr<std::mutex[]> frame_latches_;  // protects per-frame state
 
    public:
     BufferPoolManager(size_t pool_size, DiskManager *disk_manager)
@@ -42,6 +46,7 @@ class BufferPoolManager {
         page_table_.reserve(pool_size_);
         // 为buffer pool分配一块连续的内存空间
         pages_ = new Page[pool_size_];
+        frame_latches_ = std::make_unique<std::mutex[]>(pool_size_);
         // 可以被Replacer改变
         if (REPLACER_TYPE.compare("LRU"))
             replacer_ = new LRUReplacer(pool_size_);

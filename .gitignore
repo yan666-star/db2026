@@ -6,15 +6,8 @@ __pycache__/
 
 # Accidental host/application files
 %SystemDrive%/
-SQL测试/
-!SQL测试/
-SQL测试/*
-!SQL测试/performance_test/
-SQL测试/performance_test/*
-!SQL测试/performance_test/run_official_like_benchmark.py
-!SQL测试/performance_test/run_generic_acid_suite.py
-!SQL测试/performance_test/run_local_evaluation.sh
 FlameGraph/
+docx_*/
 # Local test database directories
 BufferPoolManagerTest_db/
 

@@ -1,0 +1,153 @@
+# SOURCE: C:\Users\26040\xwechat_files\wxid_xfsb5z6kjirv21_bc2c\msg\file\2026-07\设计与实现文档.docx
+
+## MAIN BODY
+P1 [Normal] 设计与实现文档
+P2 [Normal] TODOlist:
+P3 [Normal] MVCC实现思路
+P4 [Normal] 恢复实现思路
+P5 [Normal] Smeijoin
+P6 [Normal] 下推
+P7 [Normal] bitmap优化
+P8 [Normal] fastcount优化
+P9 [Normal] fastmin优化
+P10 [Normal] 并发优化MV2PL
+P11 [Normal] 太想ai了，删去效果，只保留实现思路
+P12 [Normal] 并发的瓶颈原因分析
+P13 [Normal] 缓存优化策略的画图
+P14 [Normal] PPT制作
+P16 [1] 设计实现思路
+P18 [2] 内存管理
+P20 [2] 查询执行
+P23 [2] 聚合函数与分组统计
+P25 [2] 事务控制语句
+P26 [Normal] BEGIN：创建 Transaction，设置 txn_mode_ = true，加入 txn_map
+P27 [Normal] COMMIT：
+P28 [Normal] 刷写日志（保证持久性）
+P29 [Normal] 解锁并释放资源（锁表中释放该事务加的锁）
+P30 [Normal] 从 txn_map 移除
+P31 [Normal] ABORT：
+P32 [Normal] 根据 write_set_ 回滚已修改数据（UNDO）
+P33 [Normal] 解锁并释放资源
+P34 [Normal] 从 txn_map 移除
+P35 [2] MVCC
+P37 [2] 基于静态检查点的故障恢复
+P39 [1] 实现重点
+P41 [1] 优化性能方法
+P43 [2] 并发优化01: MVCC -> MV2PL
+P44 [Normal] 尽管MVCC通过版本快照控制实现了读操作的并发性，但在同一日志上的写操作却无法并发执行，这就迫使第二个事务进行回滚，从而导致较高的回滚率。为了解决这一问题，我们在MVCC的基础上对其进行了升级，提出了MV2PL
+P45 [Normal] 多版本管理：系统为每个数据项维护多个版本，每次写操作都会创建一个新的数据版本，而不会覆盖原有数据。这样，读操作可以读取到稳定的快照版本，避免了读写冲突。
+P46 [Normal] 两阶段锁协议：MV2PL通过两阶段锁定协议来管理事务的并发性。事务首先获取所需的锁，并在执行过程中保持锁定状态，直到事务完成并释放锁。锁的获取和释放分别遵循“增长阶段”和“收缩阶段”原则，以确保操作的顺序性和一致性。
+P47 [Normal] 回滚机制：当发生写冲突（即两个事务试图在同一数据项上进行写操作）时，当前的实现采用以下策略：
+P48 [Normal] 新事务回滚：如果一个新事务试图修改一个数据项，而该数据项已经被一个较早的事务修改并未提交，则为了防止死锁，新事务会选择回滚。这样避免了事务间的循环等待，并保证了系统的可操作性。
+P49 [Normal] 老事务等待：如果一个较老的事务试图修改一个数据项，而该数据项已经被一个新事务修改，则该老事务会进入等待状态，直到新事务提交或回滚。这种设计减少了过多的回滚操作，从而提高了系统的并发性和效率。
+P51 [2] 缓存优化专题
+P53 [Normal] LRU：本地串行执行两个订单流程事务的时间（从建表->建索引->load数据->订单事务流）
+P55 [Normal] 执行20个事务耗时：2.06min
+P56 [Normal] LRU - FindVictimPage 时间占比：1.7%
+P57 [Normal] - Vitim 时间占比：0.7%
+P58 [Normal] - Pin 时间占比：0.1%
+P59 [Normal] - Unpin 时间占比：1.1%
+P61 [Normal] HashLRU
+P63 [Normal] 执行20个事务耗时：1.30min
+P64 [Normal] HashLRU - FindVictimPage 时间占比：0.1%
+P65 [Normal] - Victim 时间占比：0.0%
+P66 [Normal] -  Pin 时间占比：0.0%
+P67 [Normal] - Unpin 时间占比：0.5%
+P69 [Normal] ARC + HashLRC
+P71 [Normal] 执行20个事务耗时：1.58min
+P72 [Normal] ARC+HashLRU - FindVictimPage 时间占比：0.2%
+P73 [Normal] - Victim 时间占比：0.1%
+P74 [Normal] -  Pin 时间占比：0.2%
+P75 [Normal] - Unpin 时间占比：0.9%
+P77 [3] 缓存优化01: LUR -> LRU-K
+
+### TABLE 1
+R1:  | 
+P78 [Normal] 在执行Select相关语句的时候，我们发现缓存管理器的时间开销很大，于是我们决定优化。
+
+### TABLE 2
+R1: 对比维度 | LRU（Least Recently Used） | LRU-K（Least Recently K Times Used）
+R2: 核心思想 | 淘汰最近最久未访问的页面（只看最近一次访问时间） | 淘汰第 K 近一次访问时间最早的页面（考虑最近 K 次访问时间）
+R3: 优点 | 实现简单，O(1) 插入和删除 | 有效过滤一次性访问（One-time Access），识别“真正热点”
+R4: 适用场景 | 热点稳定、访问模式较均匀 | 存在大量一次性访问、顺序扫描或热点切换明显的负载
+P79 [Normal] 访问记录
+P80 [Normal] 每个页面维护一个最多 K 个时间戳的队列（按访问时间递增）。
+P81 [Normal] 每次 unpin 表示一次访问，逻辑时钟自增并记录到该页面的时间戳队列中。
+P82 [Normal] 集合划分
+P83 [Normal] History 区：访问次数 < K 的页面，按最近一次访问时间排序（普通 LRU 逻辑）。
+P84 [Normal] Candidates 区：访问次数 ≥ K 的页面，按“第 K 近”访问时间排序（LRU-K 核心）。
+P85 [Normal] 淘汰策略
+P86 [Normal] victim() 时优先从 Candidates 区 中选择 第 K 近访问时间最早的页面淘汰。
+P87 [Normal] 若 Candidates 区为空，则从 History 区 按普通 LRU 淘汰。
+P90 [2] 读写优化01: load_table
+
+### TABLE 3
+R1: 我们实现了基于批量插入的load_table功能。每次获取表中的一个有空位的内存页时，直接批量获取该页上面所有空闲位置，实现一次性批量插入。对于每一个空页，最多只需要获取一次，大大减少了获取页的开销。
+P92 [Normal] 在海量数据装载过程中，逐条插入会频繁触发“找空位→写入→解锁”的流程，形成明显瓶颈。我们采用 批量插入策略：
+P93 [Normal] 一次性发现空位：扫描页时直接获取所有空槽位置，避免逐条查找。
+P94 [Normal] 集中写入：固定（pin）页的整个生命周期内完成多条插入，彻底消除反复 pin/unpin 开销。
+P95 [Normal] 吞吐量大幅提升：装载阶段趋近于顺序 I/O，充分利用缓存和内存带宽。 → 特别适用于 建表初始数据加载 或 大批量导入场景。
+P97 [2] 读写优化02: Index - join
+P98 [Normal] 在基础的NestedLoopJoin 执行过程中，数据库需要对外表的每一行记录在内表中逐一扫描，从而带来较高的 I/O 开销和 CPU 开销。我们在实现中引入了 索引连接（Index-Join） 优化策略：
+P99 [Normal] 外表驱动：首先扫描外表记录，获取连接键值；
+P100 [Normal] 索引查找：利用内表上已经建立的索引，快速定位到匹配的记录位置，而无需进行全表扫描；
+P101 [Normal] 逐条匹配：对外表的每条记录都能通过索引高效地找到内表的候选集合，大幅降低连接操作的复杂度；
+P102 [Normal] 减少无效访问：避免了在内表中大量不必要的顺序扫描，仅在索引路径下访问需要的候选记录；
+P103 [Normal] 性能提升：在连接条件匹配性较强、外表行数适中时，该策略能显著减少 I/O 和 CPU 开销，实现近似于索引查找的性能提升。
+P104 [Normal] 整体上，Index-Join 的优化使得连接操作更加接近 “点查找” 的效率，特别适合 内表建立了索引、连接条件选择性较好 的场景。
+P106 [2] 读写优化03: bitmap优化
+P107 [Normal] 在传统bitmap实现中，查找第一个符合条件的bit位通常需要逐位遍历，效率较低。我们提出一种基于字符比较的优化策略：将bitmap按8位一组（1字节）进行组织，通过检测字节值是否全0（查找1时检测0xFF）来快速定位目标区间。
+P108 [Normal] 字节级粗筛：通过整字节比较快速定位第一个非零字节（查找1时即首个0xFF字节）
+P109 [Normal] 位级精查：在目标字节内部进行逐位检测
+P111 [2] 读写优化04: batch_rm_scan & batch_ix_scan
+P112 [Normal] 常规扫描器逐次解析页头位图（bitmap）寻找下一个有效槽位，可能导致对同一页的页头频繁解码。我们改进为 位图批量解析：
+P113 [Normal] 整页解析：一次性提取当前页头 bitmap 中的全部有效 Rid。
+P114 [Normal] 单次访问：每个页头在一次扫描中仅解码一次，避免了多次重复解析。
+P115 [Normal] 更少的锁与 I/O：减少了对缓冲页的重复固定，降低锁竞争。 → 优化点在于 扫描器内部机制，相比于 Seq Scan / Index Scan 的页级优化，这是更贴近存储结构的改进。
+P117 [2] 读写优化05: batch_seq_scan
+P118 [Normal] 顺序扫描中，传统的逐条记录返回模式存在大量函数调用和上下文切换。我们实现 页级批处理：
+P119 [Normal] 整页搬运：一次读出页内所有可见记录并缓存，避免行级迭代。
+P120 [Normal] CPU 缓存友好：利用物理连续性提升 cache 命中率和磁盘顺序读效率。
+P121 [Normal] 算子解耦更轻量：算子之间交互由“逐行”变为“整页”，显著减少接口调用。 → 特别适合 分析型查询 和 大表全表扫描，能显著提高吞吐率。
+P123 [2] 读写优化06: batch_index_scan
+P124 [Normal] 索引扫描的开销主要来自“索引项分散 → 页随机访问”。我们采用 索引批量预取 + 页聚合 技术：
+P125 [Normal] 预取索引范围：初始化阶段一次性取出所有目标索引项并排序。
+P126 [Normal] 聚合访问：将同一页上的多个索引请求合并为一次访问，避免页反复 pin/unpin。
+P127 [Normal] I/O 局部性提升：批量访问遵循索引顺序，使 I/O 更接近顺序访问。 → 优势体现在 范围查询、批量点查和索引连接，相比逐条索引查找，性能提升尤为明显。
+P129 [2] 读写优化07: fast_count
+P130 [Normal] FastCount旨在优化不包含WHERE条件的单表COUNT语句，例如：
+
+### TABLE 4
+R1: SQLSELECT COUNT(*) FROM t1
+P131 [Normal] 我们采用双层结构来进行优化，具体思路如下：首先在记录存储层面进行处理，在记录文件中保存总记录数，并在每个数据页上记录该页的记录数。为了满足可见性约束，我们在记录文件和内存页中都加入了最新修改的时间戳。对于COUNT语句的执行，如果查询的时间戳大于记录文件的修改时间戳，则可以直接返回总记录数；如果查询时间戳小于修改时间戳，则需要遍历每个数据页。当查询时间戳大于某页的时间戳时，可以直接加上该页的记录数；否则，需要逐条检查该页的记录可见性，最终计算出准确的COUNT结果。
+P132 [2] 读写优化08: fast_min
+P133 [Normal] FastMin旨在优化带有索引的MIN()聚合函数，例如：
+
+### TABLE 5
+R1: SQLSELECT MIN(id) FROM t1 WHERE CONDITIONS;
+P134 [Normal] 当MIN(value)中的value是与某个索引的前缀匹配时，可以根据此进行优化。具体方法是，根据WHERE条件生成的LowerKey来确定最小的约束，然后沿着B+树索引从该约束开始向后查找，找到第一个符合条件且可见的值即可。
+P135 [1] 代码注释
+P137 [Normal] 我们在重要API对应的⽅法的实现前会添加该⽅法的注释，格式如下：
+
+### TABLE 6
+R1: Python代码注释函数/** * @brief 方法功能介绍 * * @param 参数介绍 * @return 返回值介绍 * @note 其他需要注意的点 */
+P138 [1] 遇到的困难以及解决方法
+
+### TABLE 7
+R1: 遇到的问题 | 问题表征现象 | 解决方法
+R2: Commit的使用 | [WriteWriteConflictDeleteInsertTest][WriteWriteConflictUpdateTest][Deadlock] 无法通过 | 单独执行commit 不需要throw  RMDB ERROR
+R3: 并发下回滚率太高导致完成事务少 | 回滚率高 | 当新事务修改的数据项已经被老事务修改且未提交时，新事务会回滚，以避免死锁。虽然这种策略能够预防死锁，但频繁的回滚会导致性能降低，尤其在事务量大或数据竞争激烈时。
+R4: load的时间优化 |  | 
+
+## HEADERS AND FOOTERS
+
+## COMMENTS, FOOTNOTES, ENDNOTES AND OTHER TEXT PARTS
+
+## EMBEDDED MEDIA
+word/media/image1.png (732366 bytes)
+word/media/image2.png (810138 bytes)
+word/media/image3.png (709999 bytes)
+word/media/image4.png (674440 bytes)
+word/media/image5.png (1216284 bytes)
+word/media/image6.png (642927 bytes)
+word/media/image7.png (12096 bytes)

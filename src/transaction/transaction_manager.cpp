@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include <iostream>
 #include <mutex>
 #include "common/context.h"
+#include "common/perf_counters.h"
 #include "execution/execution_eval.h"
 #include "record/rm_file_handle.h"
 #include "system/sm_manager.h"
@@ -34,6 +35,7 @@ struct PerfDiagStats {
     std::atomic<uint64_t> abort_checkpoint_flush{0};
     std::atomic<uint64_t> abort_checkpoint_flush_skipped{0};
     std::atomic<uint64_t> abort_log_force_flush{0};
+    std::atomic<uint64_t> abort_log_force_flush_skipped{0};
     std::atomic<uint64_t> write_conflict_pending{0};
     std::atomic<uint64_t> write_conflict_committed_after_start{0};
     std::atomic<uint64_t> unique_conflict_pending{0};
@@ -44,6 +46,9 @@ struct PerfDiagStats {
     std::atomic<uint64_t> commit_conflict_committed_after_start{0};
     std::atomic<uint64_t> pending_waits{0};
     std::atomic<uint64_t> pending_wait_resolved{0};
+    std::atomic<uint64_t> pending_wait_resolved_committed{0};
+    std::atomic<uint64_t> pending_wait_resolved_aborted{0};
+    std::atomic<uint64_t> pending_wait_resolved_gone{0};
     std::atomic<uint64_t> pending_wait_timeout{0};
     std::atomic<uint64_t> abort_checkpoint_flush_us{0};
     std::atomic<uint64_t> abort_log_force_flush_us{0};
@@ -69,6 +74,7 @@ void print_perf_diag() {
     static std::mutex print_latch;
     std::lock_guard<std::mutex> print_guard(print_latch);
     auto &s = perf_diag_stats();
+    auto &shared = rmdb_perf::shared_counters();
     std::cerr << "RMDB_PERF_DIAG "
               << "abort_total=" << s.abort_total.load()
               << " abort_mvcc=" << s.abort_mvcc.load()
@@ -79,6 +85,8 @@ void print_perf_diag() {
               << " abort_checkpoint_flush_skipped="
               << s.abort_checkpoint_flush_skipped.load()
               << " abort_log_force_flush=" << s.abort_log_force_flush.load()
+              << " abort_log_force_flush_skipped="
+              << s.abort_log_force_flush_skipped.load()
               << " write_conflict_pending="
               << s.write_conflict_pending.load()
               << " write_conflict_committed_after_start="
@@ -98,12 +106,41 @@ void print_perf_diag() {
               << " pending_waits=" << s.pending_waits.load()
               << " pending_wait_resolved="
               << s.pending_wait_resolved.load()
+              << " pending_wait_resolved_committed="
+              << s.pending_wait_resolved_committed.load()
+              << " pending_wait_resolved_aborted="
+              << s.pending_wait_resolved_aborted.load()
+              << " pending_wait_resolved_gone="
+              << s.pending_wait_resolved_gone.load()
               << " pending_wait_timeout="
               << s.pending_wait_timeout.load()
               << " abort_checkpoint_flush_us="
               << s.abort_checkpoint_flush_us.load()
               << " abort_log_force_flush_us="
               << s.abort_log_force_flush_us.load()
+              << " buffer_fetches=" << shared.buffer_fetches.load()
+              << " buffer_hits=" << shared.buffer_hits.load()
+              << " buffer_misses=" << shared.buffer_misses.load()
+              << " buffer_latch_acquires="
+              << shared.buffer_latch_acquires.load()
+              << " buffer_latch_wait_us="
+              << shared.buffer_latch_wait_us.load()
+              << " buffer_frame_latch_acquires="
+              << shared.buffer_frame_latch_acquires.load()
+              << " buffer_frame_latch_wait_us="
+              << shared.buffer_frame_latch_wait_us.load()
+              << " commit_apply_read_acquires="
+              << shared.commit_apply_read_acquires.load()
+              << " commit_apply_read_wait_us="
+              << shared.commit_apply_read_wait_us.load()
+              << " commit_apply_write_acquires="
+              << shared.commit_apply_write_acquires.load()
+              << " commit_apply_write_wait_us="
+              << shared.commit_apply_write_wait_us.load()
+              << " mvcc_latch_acquires="
+              << shared.mvcc_latch_acquires.load()
+              << " mvcc_latch_wait_us="
+              << shared.mvcc_latch_wait_us.load()
               << std::endl;
 }
 
@@ -178,6 +215,11 @@ static void clear_write_set(Transaction *txn) {
     }
 }
 
+std::unique_lock<std::mutex>
+TransactionManager::acquire_commit_apply_latch() {
+    return rmdb_perf::lock_commit_apply_read(commit_apply_latch_);
+}
+
 Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager,
                                        IsolationLevel isolation_level) {
     if (txn == nullptr) {
@@ -192,7 +234,7 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
             // the same latch acquisition: otherwise GC could compute a
             // watermark that misses this transaction and prune versions its
             // snapshot still needs.
-            std::lock_guard<std::mutex> lock(mvcc_latch_);
+            auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
             timestamp_t start_ts = last_commit_ts_.load();
             txn->set_start_ts(start_ts);
             txn->set_read_ts(start_ts);
@@ -354,6 +396,16 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         delete write_record;
     }
 
+    // UPDATE/DELETE are only pending versions before MVCC commit. If this
+    // transaction never entered commit application and had no physical work
+    // to roll back, the table and indexes still contain the pre-transaction
+    // state. The ABORT record remains ordered in the log buffer, but it does
+    // not need an individual fsync: if it is lost in a crash, recovery treats
+    // the transaction as a loser and the already-correct physical state is
+    // unchanged. INSERT/non-MVCC/commit-apply aborts retain the durable path.
+    bool volatile_only_mvcc_abort =
+        txn->uses_mvcc() && !did_physical_rollback && !entered_mvcc_commit;
+
     if (log_manager != nullptr) {
         if (!txn->uses_mvcc() || did_physical_rollback ||
             entered_mvcc_commit) {
@@ -380,13 +432,20 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         abort_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&abort_log);
         txn->set_prev_lsn(lsn);
-        auto log_flush_start = std::chrono::steady_clock::now();
-        log_manager->flush_log_to_disk(true);
-        if (perf_diag_enabled()) {
-            perf_diag_stats().abort_log_force_flush.fetch_add(
-                1, std::memory_order_relaxed);
-            add_perf_diag_us(perf_diag_stats().abort_log_force_flush_us,
-                             log_flush_start);
+        if (volatile_only_mvcc_abort) {
+            if (perf_diag_enabled()) {
+                perf_diag_stats().abort_log_force_flush_skipped.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+        } else {
+            auto log_flush_start = std::chrono::steady_clock::now();
+            log_manager->flush_log_to_disk(true);
+            if (perf_diag_enabled()) {
+                perf_diag_stats().abort_log_force_flush.fetch_add(
+                    1, std::memory_order_relaxed);
+                add_perf_diag_us(perf_diag_stats().abort_log_force_flush_us,
+                                 log_flush_start);
+            }
         }
     }
 
@@ -430,7 +489,7 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
                    : std::make_unique<RmRecord>(*physical_record);
     }
 
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     RecordKey key{file_id, rid};
     auto history_it = record_versions_.find(key);
     if (history_it == record_versions_.end()) {
@@ -474,7 +533,7 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
 
 std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
     uint64_t file_id, const Rid &rid, const RmRecord *physical_record) {
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     RecordKey key{file_id, rid};
     auto history_it = record_versions_.find(key);
     if (history_it == record_versions_.end()) {
@@ -635,6 +694,17 @@ bool TransactionManager::wait_for_pending_writer(
         if (resolved) {
             perf_diag_stats().pending_wait_resolved.fetch_add(
                 1, std::memory_order_relaxed);
+            auto writer_it = mvcc_txns_.find(writer);
+            if (writer_it == mvcc_txns_.end()) {
+                perf_diag_stats().pending_wait_resolved_gone.fetch_add(
+                    1, std::memory_order_relaxed);
+            } else if (writer_it->second.aborted) {
+                perf_diag_stats().pending_wait_resolved_aborted.fetch_add(
+                    1, std::memory_order_relaxed);
+            } else {
+                perf_diag_stats().pending_wait_resolved_committed.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
         } else {
             perf_diag_stats().pending_wait_timeout.fetch_add(
                 1, std::memory_order_relaxed);
@@ -817,7 +887,7 @@ void TransactionManager::register_table_read(
         return;
     }
 
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
     if (state_it == mvcc_txns_.end()) {
         return;
@@ -859,7 +929,7 @@ void TransactionManager::register_record_read(
         txn->get_isolation_level() != IsolationLevel::SERIALIZABLE) {
         return;
     }
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     auto it = mvcc_txns_.find(txn->get_transaction_id());
     if (it != mvcc_txns_.end()) {
         it->second.read_records.insert(RecordKey{file_id, rid});
@@ -893,7 +963,7 @@ void TransactionManager::check_write_conflict(
         return;
     }
 
-    std::unique_lock<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     RecordKey key{file_id, rid};
     while (true) {
         auto history_it = record_versions_.find(key);
@@ -963,7 +1033,7 @@ void TransactionManager::check_unique_key_conflict(
         return true;
     };
 
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     auto candidate_it = mvcc_unique_conflict_keys_by_file_.find(file_id);
     if (candidate_it == mvcc_unique_conflict_keys_by_file_.end()) {
         return;
@@ -1026,7 +1096,7 @@ void TransactionManager::prepare_write(
         return;
     }
 
-    std::unique_lock<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     RecordKey key{file_id, rid};
 
     MvccVersion *own_pending = nullptr;
@@ -1214,7 +1284,7 @@ void TransactionManager::check_commit_conflict(Transaction *txn) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     check_commit_conflict_under_latch(txn);
 }
 
@@ -1238,9 +1308,10 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     // header). Deadlock otherwise: inserts hold the file insert_latch_ and then
     // take mvcc_latch_ via prepare_insert, while the old code held mvcc_latch_
     // and took insert_latch_ via update_record.
-    std::lock_guard<std::mutex> apply_lock(commit_apply_latch_);
+    auto apply_lock =
+        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
-        std::lock_guard<std::mutex> lock(mvcc_latch_);
+        auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
         check_commit_conflict_under_latch(txn);
         timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
         txn->set_commit_ts(commit_ts);
@@ -1378,7 +1449,7 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
     if (!uses_mvcc(txn)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
     if (state_it == mvcc_txns_.end()) {
         return;
@@ -1432,7 +1503,7 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
 }
 
 timestamp_t TransactionManager::GetWatermark() {
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     timestamp_t watermark = last_commit_ts_.load();
     for (const auto &[txn_id, state] : mvcc_txns_) {
         (void)txn_id;
@@ -1455,9 +1526,10 @@ void TransactionManager::GarbageCollection() {
     // Same lock ordering as commit_mvcc: mvcc_latch_ is a leaf lock, so all
     // physical slot reclamation happens after releasing it, serialized against
     // concurrent commit application by commit_apply_latch_.
-    std::lock_guard<std::mutex> apply_lock(commit_apply_latch_);
+    auto apply_lock =
+        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
-        std::lock_guard<std::mutex> lock(mvcc_latch_);
+        auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
 
         // The watermark is the smallest read timestamp of any in-flight MVCC
         // transaction. Any committed version older than the watermark can never
@@ -1569,7 +1641,7 @@ void TransactionManager::GarbageCollection() {
     // Shrink the reclaimed tombstones: keep the (deleted, commit_ts) marker but
     // drop the payload copies, and clear table_name so the physical delete is
     // not retried on every GC cycle.
-    std::lock_guard<std::mutex> lock(mvcc_latch_);
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
     for (const auto &reclaim : reclaims) {
         auto history_it = record_versions_.find(reclaim.key);
         if (history_it == record_versions_.end()) {
@@ -1595,9 +1667,10 @@ void TransactionManager::apply_committed_deletes_for_checkpoint() {
     };
     std::vector<Reclaim> reclaims;
 
-    std::lock_guard<std::mutex> apply_lock(commit_apply_latch_);
+    auto apply_lock =
+        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
-        std::lock_guard<std::mutex> lock(mvcc_latch_);
+        auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
         for (auto it = record_versions_.begin();
              it != record_versions_.end();) {
             const auto &history = it->second;

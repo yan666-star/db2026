@@ -8,7 +8,9 @@ paths; it contains no server-side shortcuts or score-oriented special cases.
 
 import argparse
 import json
+import os
 import random
+import re
 import statistics
 import sys
 import threading
@@ -39,6 +41,7 @@ ISOLATION_SQL = {
     "snapshot": "SET TRANSACTION ISOLATION LEVEL SNAPSHOT ISOLATION;",
     "serializable": "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
 }
+PERF_DIAG_LINE = re.compile(r"(?:^|\s)([a-z_]+)=(\d+)(?=\s|$)")
 
 
 class TransactionFailed(RuntimeError):
@@ -109,10 +112,18 @@ def run_new_order(client, rng, args):
     district = choose_dimension(rng, args.districts, args.hot_district_percent)
     customer = rng.randint(1, args.customers)
     line_count = rng.randint(args.min_order_lines, args.max_order_lines)
-    items = [
-        (choose_dimension(rng, args.items, args.hot_item_percent), rng.randint(1, 10))
-        for _ in range(line_count)
-    ]
+    if args.workload_mode == "official-shape":
+        if line_count > args.items:
+            raise TransactionFailed(
+                "official-shape requires --items >= generated order-line count"
+            )
+        item_ids = rng.sample(range(1, args.items + 1), line_count)
+        items = [(item_id, rng.randint(1, 10)) for item_id in item_ids]
+    else:
+        items = [
+            (choose_dimension(rng, args.items, args.hot_item_percent), rng.randint(1, 10))
+            for _ in range(line_count)
+        ]
     execute_ok(client, "BEGIN;")
     execute_ok(
         client,
@@ -144,24 +155,32 @@ def run_new_order(client, rng, args):
             f"SELECT s_quantity, s_ytd, s_order_cnt, s_remote_cnt FROM stock "
             f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
         )
-        # The bundled mini data is intended for path/throughput testing.  These
-        # generic arithmetic updates preserve SQL semantics without relying on
-        # any evaluator-specific SQL matching.
-        execute_ok(
-            client,
-            f"UPDATE stock SET s_quantity = s_quantity - {quantity} "
-            f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
-        )
-        execute_ok(
-            client,
-            f"UPDATE stock SET s_ytd = s_ytd + {float(quantity):.1f} "
-            f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
-        )
-        execute_ok(
-            client,
-            f"UPDATE stock SET s_order_cnt = s_order_cnt + 1 "
-            f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
-        )
+        if args.workload_mode == "official-shape":
+            execute_ok(
+                client,
+                f"UPDATE stock SET s_quantity = s_quantity - {quantity}, "
+                f"s_ytd = s_ytd + {float(quantity):.1f}, "
+                f"s_order_cnt = s_order_cnt + 1 "
+                f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
+            )
+        else:
+            # Preserve the original conflict-amplifying local workload as an
+            # explicit worst-case mode for before/after comparisons.
+            execute_ok(
+                client,
+                f"UPDATE stock SET s_quantity = s_quantity - {quantity} "
+                f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
+            )
+            execute_ok(
+                client,
+                f"UPDATE stock SET s_ytd = s_ytd + {float(quantity):.1f} "
+                f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
+            )
+            execute_ok(
+                client,
+                f"UPDATE stock SET s_order_cnt = s_order_cnt + 1 "
+                f"WHERE s_w_id = 1 AND s_i_id = {item_id};",
+            )
         execute_ok(
             client,
             f"INSERT INTO order_line VALUES ({order_id}, {district}, 1, {line_no}, "
@@ -369,6 +388,7 @@ def phase_worker(worker_id, round_id, args, barrier, clock):
 
 
 def run_phase(args, duration, round_id, label):
+    diag_before = read_latest_perf_diag(args.server_log) if args.perf_diag else {}
     barrier = threading.Barrier(args.clients + 1)
     clock = {"deadline": float("inf")}
     with ThreadPoolExecutor(max_workers=args.clients) as pool:
@@ -398,12 +418,52 @@ def run_phase(args, duration, round_id, label):
             "max_latency_ms": combined.max_latency_seconds * 1000.0,
         }
     )
+    if args.perf_diag:
+        diag_after = read_latest_perf_diag(args.server_log)
+        result["perf_diag_observed_before"] = diag_before
+        result["perf_diag_observed_after"] = diag_after
+        result["perf_diag_observed_delta"] = counter_delta(diag_before, diag_after)
     print(
         f"{label}: commits={commits}, aborts={sum(combined.aborts.values())}, "
         f"TPS={result['transactions_per_second']:.2f}, "
         f"NewOrder tpmC={result['new_order_tpmc']:.2f}"
     )
     return result
+
+
+def read_latest_perf_diag(log_path):
+    path = Path(log_path)
+    if not path.exists():
+        return {}
+    latest = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "RMDB_PERF_DIAG" not in line:
+            continue
+        values = {name: int(value) for name, value in PERF_DIAG_LINE.findall(line)}
+        if values:
+            latest = values
+    return latest
+
+
+def counter_delta(before, after):
+    return {
+        key: after.get(key, 0) - before.get(key, 0)
+        for key in sorted(set(before) | set(after))
+    }
+
+
+def effective_isolation(args):
+    if args.isolation == "default":
+        return {
+            "requested": "default",
+            "effective": "snapshot",
+            "source": "server default inherited by new connections after set output_file off",
+        }
+    return {
+        "requested": args.isolation,
+        "effective": args.isolation,
+        "source": "explicit SET TRANSACTION ISOLATION LEVEL command",
+    }
 
 
 def consistency_args(args):
@@ -519,6 +579,15 @@ def parse_args():
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--quick", action="store_true", help="Use 2s warmup + 8s measurement, one round")
     parser.add_argument("--seed", type=int, default=20260710)
+    parser.add_argument(
+        "--workload-mode",
+        choices=("official-shape", "mini-contention"),
+        default="official-shape",
+        help=(
+            "official-shape uses distinct items and one multi-column stock UPDATE; "
+            "mini-contention preserves the original repeat-item/three-UPDATE stress shape"
+        ),
+    )
     parser.add_argument("--isolation", choices=sorted(ISOLATION_SQL), default="default")
     parser.add_argument("--districts", type=int, default=3)
     parser.add_argument("--customers", type=int, default=10)
@@ -538,6 +607,17 @@ def parse_args():
     parser.add_argument("--keep-db", action="store_false", dest="reset_db")
     parser.add_argument("--skip-consistency", action="store_true")
     parser.add_argument("--crash-check", action="store_true", help="Kill -9 and restart after measurement; requires --start-server")
+    parser.add_argument(
+        "--perf-diag",
+        action="store_true",
+        help="Start the server with RMDB_PERF_DIAG and record observed per-phase counter deltas",
+    )
+    parser.add_argument("--perf-diag-interval", type=int, default=1000)
+    parser.add_argument(
+        "--pending-wait-us",
+        type=int,
+        help="Set RMDB_PENDING_WAIT_US for the started server and record it in JSON",
+    )
     parser.add_argument("--json-output", type=Path, default=REPO_ROOT / "build" / "official_like_benchmark.json")
     args = parser.parse_args()
     if args.quick:
@@ -548,12 +628,22 @@ def parse_args():
         parser.error("--clients and --rounds must be positive")
     if args.min_order_lines < 1 or args.max_order_lines < args.min_order_lines:
         parser.error("invalid order-line range")
+    if args.workload_mode == "official-shape" and args.max_order_lines > args.items:
+        parser.error("official-shape requires --max-order-lines <= --items")
+    if args.perf_diag_interval < 1:
+        parser.error("--perf-diag-interval must be positive")
+    if args.pending_wait_us is not None and args.pending_wait_us < 0:
+        parser.error("--pending-wait-us cannot be negative")
+    if args.pending_wait_us is not None and not args.start_server:
+        parser.error("--pending-wait-us requires --start-server")
     if not 0.0 <= args.hot_district_percent <= 100.0:
         parser.error("--hot-district-percent must be between 0 and 100")
     if not 0.0 <= args.hot_item_percent <= 100.0:
         parser.error("--hot-item-percent must be between 0 and 100")
     if args.crash_check and not args.start_server:
         parser.error("--crash-check requires --start-server")
+    if args.perf_diag and not args.start_server:
+        parser.error("--perf-diag requires --start-server")
     return args
 
 
@@ -564,6 +654,11 @@ def main():
     results = []
     baseline_line_gaps = None
     try:
+        if args.perf_diag:
+            os.environ["RMDB_PERF_DIAG"] = "1"
+            os.environ["RMDB_PERF_DIAG_INTERVAL"] = str(args.perf_diag_interval)
+        if args.pending_wait_us is not None:
+            os.environ["RMDB_PENDING_WAIT_US"] = str(args.pending_wait_us)
         if args.start_server:
             process, log_handle, args.db_dir = start_server(args)
         if args.setup or (args.start_server and args.reset_db):
@@ -595,9 +690,24 @@ def main():
                 "warmup_seconds": args.warmup_seconds,
                 "measure_seconds": args.measure_seconds,
                 "rounds": args.rounds,
-                "isolation": args.isolation,
+                "isolation": effective_isolation(args),
+                "workload_mode": args.workload_mode,
+                "data_scale": {
+                    "warehouses": 1,
+                    "districts": args.districts,
+                    "customers_per_district": args.customers,
+                    "items": args.items,
+                },
+                "sql_shape": {
+                    "order_lines": [args.min_order_lines, args.max_order_lines],
+                    "distinct_items_per_order": args.workload_mode == "official-shape",
+                    "stock_update_statements_per_item": 1 if args.workload_mode == "official-shape" else 3,
+                },
                 "hot_district_percent": args.hot_district_percent,
                 "hot_item_percent": args.hot_item_percent,
+                "perf_diag": args.perf_diag,
+                "perf_diag_interval": args.perf_diag_interval if args.perf_diag else None,
+                "pending_wait_us": args.pending_wait_us if args.pending_wait_us is not None else 2000,
                 "mix": "10/23 new_order, 10/23 payment, 1/23 each remaining transaction",
             },
             "rounds": results,

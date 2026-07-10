@@ -98,6 +98,26 @@ def test_rollback_atomicity(args, table):
         client.close()
 
 
+def test_volatile_update_delete_abort(args, table):
+    client = connect(args, args.isolation)
+    try:
+        execute_ok(client, "BEGIN;")
+        execute_ok(client, f"UPDATE {table} SET amount = 77.0 WHERE k = 1;")
+        execute_ok(client, f"DELETE FROM {table} WHERE k = 2;")
+        execute_ok(client, "ROLLBACK;")
+        actual = {
+            "updated_value": scalar(client, f"SELECT amount FROM {table} WHERE k = 1;"),
+            "deleted_row": scalar(client, f"SELECT COUNT(*) FROM {table} WHERE k = 2;"),
+        }
+        expected = {"updated_value": 10, "deleted_row": 1}
+        if actual != expected:
+            raise AssertionError(
+                f"volatile update/delete abort leaked state: expected={expected}, actual={actual}"
+            )
+    finally:
+        client.close()
+
+
 def test_no_dirty_read(args, table):
     writer = connect(args, args.isolation)
     reader = connect(args, args.isolation)
@@ -252,6 +272,71 @@ def test_kill9_durability(args, table, process, log_handle):
     return process, log_handle
 
 
+def restart_after_kill(args, process, log_handle):
+    process.kill()
+    process.wait(timeout=5)
+    log_handle.close()
+    old_reset = args.reset_db
+    args.reset_db = False
+    try:
+        return start_server(args)[:2]
+    finally:
+        args.reset_db = old_reset
+
+
+def verify_volatile_abort_state(args, table, expect_followup):
+    client = connect(args)
+    try:
+        actual = {
+            "updated_value": scalar(client, f"SELECT amount FROM {table} WHERE k = 1;"),
+            "deleted_row": scalar(client, f"SELECT COUNT(*) FROM {table} WHERE k = 2;"),
+            "followup_row": scalar(client, f"SELECT COUNT(*) FROM {table} WHERE k = 91;"),
+        }
+    finally:
+        client.close()
+    expected = {
+        "updated_value": 10,
+        "deleted_row": 1,
+        "followup_row": 1 if expect_followup else 0,
+    }
+    if actual != expected:
+        raise AssertionError(
+            f"volatile abort recovery mismatch: expected={expected}, actual={actual}"
+        )
+
+
+def test_volatile_abort_recovery(args, table, process, log_handle):
+    # First let a later committed transaction flush the buffered ABORT and its
+    # preceding records, then crash and verify both rollback and durability.
+    client = connect(args, args.isolation)
+    try:
+        execute_ok(client, "BEGIN;")
+        execute_ok(client, f"UPDATE {table} SET amount = 111.0 WHERE k = 1;")
+        execute_ok(client, f"DELETE FROM {table} WHERE k = 2;")
+        execute_ok(client, "ROLLBACK;")
+        execute_ok(client, "BEGIN;")
+        execute_ok(client, f"INSERT INTO {table} VALUES (91, 9, 91.0, 'followup-flush');")
+        execute_ok(client, "COMMIT;")
+    finally:
+        client.close()
+    process, log_handle = restart_after_kill(args, process, log_handle)
+    verify_volatile_abort_state(args, table, True)
+
+    # Then abort another pending UPDATE/DELETE and kill immediately, before any
+    # later transaction is allowed to force its ABORT record to disk.
+    client = connect(args, args.isolation)
+    try:
+        execute_ok(client, "BEGIN;")
+        execute_ok(client, f"UPDATE {table} SET amount = 222.0 WHERE k = 1;")
+        execute_ok(client, f"DELETE FROM {table} WHERE k = 2;")
+        execute_ok(client, "ROLLBACK;")
+    finally:
+        client.close()
+    process, log_handle = restart_after_kill(args, process, log_handle)
+    verify_volatile_abort_state(args, table, True)
+    return process, log_handle
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run table-name-independent transaction, isolation and recovery checks."
@@ -292,6 +377,7 @@ def main():
         setup_table(args, table)
         checks = [
             ("rollback_atomicity", test_rollback_atomicity),
+            ("volatile_update_delete_abort", test_volatile_update_delete_abort),
             ("no_dirty_read", test_no_dirty_read),
             ("unique_write_conflict", test_unique_write_conflict),
         ]
@@ -302,6 +388,11 @@ def main():
         report["checks"]["phantom"] = test_snapshot_phantom(args, table)
         print("phantom: PASS" if report["checks"]["phantom"]["enforced"] else "phantom: observed only (RC/default)")
         if args.crash_check:
+            process, log_handle = test_volatile_abort_recovery(
+                args, table, process, log_handle
+            )
+            report["checks"]["volatile_abort_recovery"] = "PASS"
+            print("volatile_abort_recovery: PASS")
             process, log_handle = test_kill9_durability(args, table, process, log_handle)
             report["checks"]["kill9_durability"] = "PASS"
             print("kill9_durability: PASS")
