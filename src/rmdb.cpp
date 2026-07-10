@@ -560,9 +560,17 @@ void *client_handler(void *sock_fd) {
         YY_BUFFER_STATE buf = yy_scan_string(parser_sql.c_str());
         if (yyparse() == 0) {
             if (ast::parse_tree != nullptr) {
+                // The generated parser stores its result in the global
+                // ast::parse_tree, so copy the shared_ptr while holding the
+                // parser mutex.  The AST itself is then owned by this request
+                // and analysis/planning no longer serializes unrelated clients.
+                std::shared_ptr<ast::TreeNode> parse_tree = ast::parse_tree;
+                yy_delete_buffer(buf);
+                finish_analyze = true;
+                pthread_mutex_unlock(buffer_mutex);
                 try {
                     bool is_checkpoint =
-                        std::dynamic_pointer_cast<ast::StaticCheckpoint>(ast::parse_tree) != nullptr;
+                        std::dynamic_pointer_cast<ast::StaticCheckpoint>(parse_tree) != nullptr;
                     if (!is_checkpoint) {
                         txn_manager->enter_statement(txn_id);
                         statement_entered = true;
@@ -570,10 +578,7 @@ void *client_handler(void *sock_fd) {
                     }
 
                     // analyze and rewrite
-                    std::shared_ptr<Query> query = analyze->do_analyze(ast::parse_tree);
-                    yy_delete_buffer(buf);
-                    finish_analyze = true;
-                    pthread_mutex_unlock(buffer_mutex);
+                    std::shared_ptr<Query> query = analyze->do_analyze(parse_tree);
                     // 优化器
                     std::shared_ptr<Plan> plan = optimizer->plan_query(query, context);
                     // portal
