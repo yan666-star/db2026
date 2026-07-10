@@ -440,7 +440,8 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
         // Loaded / never-versioned rows have no chain yet. Treat the physical
         // image as committed at ts=0; do not use last_commit_ts_ here because
         // unrelated commits after this snapshot would hide unchanged rows and
-        // break UPDATE scans (empty RID lists -> partial NewOrder commits).
+        // Empty UPDATE scans must not let a multi-statement transaction commit
+        // only a subset of its intended writes.
         MvccVersion baseline;
         baseline.commit_ts = 0;
         baseline.deleted = false;

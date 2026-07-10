@@ -17,7 +17,6 @@ See the Mulan PSL v2 for more details. */
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <chrono>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -61,10 +60,6 @@ pthread_mutex_t *sockfd_mutex;
 static constexpr bool kVerboseServerLog = false;
 
 namespace {
-
-std::timed_mutex serialized_si_explicit_txn_mutex;
-std::atomic<bool> serialize_explicit_si_transactions{false};
-constexpr auto kSerializedTxnWait = std::chrono::seconds(10);
 
 std::string trim_copy(const std::string &value) {
     size_t begin = 0;
@@ -314,13 +309,6 @@ void release_read_committed_explicit_guard(bool &guard_held) {
     guard_held = false;
 }
 
-void release_serialized_txn_guard(
-    std::unique_lock<std::timed_mutex> &guard) {
-    if (guard.owns_lock()) {
-        guard.unlock();
-    }
-}
-
 }  // namespace
 
 static jmp_buf jmpbuf;
@@ -362,8 +350,6 @@ void *client_handler(void *sock_fd) {
     IsolationLevel session_isolation = session_defaults::get();
     bool explicit_txn_failed = false;
     bool read_committed_explicit_guard_held = false;
-    std::unique_lock<std::timed_mutex> serialized_txn_guard(
-        serialized_si_explicit_txn_mutex, std::defer_lock);
 
     std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
     if (kVerboseServerLog) {
@@ -430,7 +416,6 @@ void *client_handler(void *sock_fd) {
             if (!output_file_enabled) {
                 session_defaults::set(
                     IsolationLevel::SNAPSHOT_ISOLATION);
-                serialize_explicit_si_transactions.store(true);
             }
             bool write_failed = write(fd, data_send, offset + 1) == -1;
             if (write_failed) {
@@ -561,9 +546,6 @@ void *client_handler(void *sock_fd) {
             if (statement_entered) {
                 txn_manager->leave_statement();
             }
-            if (txn_id == INVALID_TXN_ID) {
-                release_serialized_txn_guard(serialized_txn_guard);
-            }
             bool write_failed = write(fd, data_send, offset + 1) == -1;
             if (write_failed) {
                 break;
@@ -572,19 +554,6 @@ void *client_handler(void *sock_fd) {
         }
 
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
-        if (txn_boundary == TxnBoundary::Begin &&
-            serialize_explicit_si_transactions.load() &&
-            session_isolation == IsolationLevel::SNAPSHOT_ISOLATION &&
-            !serialized_txn_guard.owns_lock() &&
-            !serialized_txn_guard.try_lock_for(kSerializedTxnWait)) {
-            write_failure_response(data_send, &offset);
-            bool write_failed = write(fd, data_send, offset + 1) == -1;
-            if (write_failed) {
-                break;
-            }
-            continue;
-        }
-
         bool finish_analyze = false;
         pthread_mutex_lock(buffer_mutex);
         std::string parser_sql = canonical_txn_sql(txn_boundary, raw_sql);
@@ -725,9 +694,6 @@ void *client_handler(void *sock_fd) {
         if (statement_entered) {
             txn_manager->leave_statement();
         }
-        if (txn_id == INVALID_TXN_ID) {
-            release_serialized_txn_guard(serialized_txn_guard);
-        }
         // Do not report success before an implicit transaction's COMMIT record
         // is durable; otherwise an acknowledged write can be lost on crash.
         bool write_failed = write(fd, data_send, offset + 1) == -1;
@@ -748,7 +714,6 @@ void *client_handler(void *sock_fd) {
     }
     txn_manager->release_transaction(remaining_txn);
     release_read_committed_explicit_guard(read_committed_explicit_guard_held);
-    release_serialized_txn_guard(serialized_txn_guard);
     delete[] data_send;
     close(fd);           // close a file descriptor.
     pthread_exit(NULL);  // terminate calling thread!
