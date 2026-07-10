@@ -21,12 +21,9 @@ void IxScan::next() {
         iid_.page_no = node->get_next_leaf();
         bpm_->unpin_page(node->get_page_id(), false);
         delete node;
-
-        node = ih_->fetch_node(iid_.page_no);
-        node_size_ = node->get_size();
-        batch_rids_ = ih_->get_rids(iid_);
-        bpm_->unpin_page(node->get_page_id(), false);
-        delete node;
+        if (!is_end()) {
+            load_leaf(iid_.page_no);
+        }
     } else {
         iid_ = end_;
     }

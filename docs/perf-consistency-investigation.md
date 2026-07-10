@@ -772,3 +772,114 @@ These ideas are generic and compatible with the 2026 correctness gates:
   the normal path.
 - Do not generalize offline `load(context=nullptr)` shortcuts to concurrent
   DML.
+
+## 2026-07-10 update: 决战版本缓存与索引读路径优化
+
+### 当前分支状态
+
+本节记录 `0e0af15（决战）` 以及其后的索引读路径增量修改。若前文关于
+性能 worker 隔离级别或全局事务闸门的描述与本节冲突，以本节所述的当前
+代码状态为准。
+
+当前行为如下：
+
+- 普通连接仍以 `READ_COMMITTED` 为默认隔离级别。
+- 收到 `set output_file off` 后，后续新连接默认进入
+  `SNAPSHOT_ISOLATION`，满足当前性能测试的 SI 要求。
+- 已删除显式 SI 事务的进程级 `timed_mutex`。该闸门虽然可令 abort 接近
+  0，但会把写事务、只读事务和互不冲突事务全部串行化，实测成为 TPC-X
+  吞吐上限。
+- INSERT 复用索引 key，UPDATE 只处理可能受 `SET` 左值影响的索引；这些
+  优化仍基于表和索引元数据，不匹配任何固定表名或字段名。
+
+### Buffer pool 调整
+
+`BUFFER_POOL_SIZE` 从 4096 页（16MB）提高到 32768 页（128MB）。W=1 的
+主要表数据和主键索引工作集明显大于 16MB；扩大缓存可减少随机页 miss、
+磁盘重读，以及淘汰脏页时触发的同步 WAL/page 写回。
+
+同时做了两项不改变缓存语义的预分配：
+
+- `BufferPoolManager::page_table_` 按 `pool_size_` 预留哈希桶。
+- `LRUReplacer::LRUhash_` 按 frame 数预留哈希桶。
+
+这两项只减少缓存填充过程中的 rehash，不改变页命中、pin/unpin、淘汰、
+脏页标记或 WAL-before-page-write 顺序。预计服务器常驻内存约为
+0.14-0.17GB，仍属于保守容量。
+
+### 完整唯一键点查快捷路径
+
+旧的 `IndexScanExecutor` 即使面对完整主键等值条件，也会：
+
+1. 调用 `lower_bound()` 完整下降一次 B+Tree。
+2. 调用 `upper_bound()` 再完整下降一次 B+Tree。
+3. 创建 `IxScan`，重新读取叶页并按页组织 RID。
+
+TPC-C 一笔事务会执行多次主键点查，因此重复树下降和 buffer-pool
+pin/unpin 会被放大。
+
+当前增量修改只在以下条件全部成立时使用一次 `get_value()`：
+
+- 索引的每个列都存在 RHS 常量等值条件；或
+- INLJ 已通过 `set_index_lookup()` 提供单列唯一索引的完整 key。
+
+联合索引前缀、范围条件、`!=` 条件和缺少任一索引列的条件继续使用原来的
+`lower_bound + upper_bound + IxScan` 路径。点查取得的 RID 仍经过：
+
+- `TransactionManager::get_visible_record()` 所在的 MVCC 读取路径；
+- 完整残余谓词 `eval_conditions()`；
+- SERIALIZABLE 模式下的 record-read 注册。
+
+因此快捷路径只减少候选 RID 的定位成本，不绕过快照可见性、条件过滤或
+串行化依赖跟踪。
+
+### B+Tree 读写并发
+
+`IxIndexHandle::root_latch_` 从 `std::mutex` 调整为
+`std::shared_mutex`：
+
+- `get_value()`、`lower_bound()`、`upper_bound()` 使用共享锁。
+- `insert_entry()`、`delete_entry()` 使用独占锁。
+- split、merge、parent key 更新仍完整包含在写入口的独占锁范围内。
+
+原 `get_value()` 没有获取 root latch，在并发索引写入时存在读取节点结构的
+数据竞争。本轮在启用点查快捷路径前先补上共享锁，避免以性能为由扩大该
+窗口。共享读允许多个 worker 并行下降同一热点索引，同时仍与结构修改
+互斥。
+
+### IxScan 叶页读取
+
+旧 `IxScan` 已经 fetch 一个叶页取得 `node_size` 后，又通过
+`IxIndexHandle::get_rids()` fetch 同一页一次。当前实现直接在第一次 pin
+期间复制该叶页的 RID，减少一次 page-table 查询、LRU 操作和 pin/unpin。
+
+范围扫描跨叶页时仍重新读取当前叶页的最新 `next` 指针。曾考虑缓存
+`next`，但在对抗式审查中确认：并发 split 可能在两个叶页间插入新页，
+缓存旧指针会扩大漏扫窗口，因此该方案已撤销。非法 slot 的边界校验也被
+保留，异常抛出前必须 unpin 页面。
+
+### 正确性与违规审查
+
+- 未修改 WAL 生成、COMMIT/ABORT 顺序、redo/undo、checkpoint 或恢复。
+- 未修改 MVCC 版本链、`ts=0` baseline、空 UPDATE abort 或提交物理应用。
+- 未修改 INSERT/UPDATE/DELETE 的表与索引维护顺序。
+- 生产代码新增差异中没有 TPC-C 表名、字段名、事务名、数据文件路径或
+  SQL 查询文本匹配。
+- 所有快捷判断均来自 `IndexMeta`、`Condition`、列类型和通用索引 API。
+- 题目要求的 `load` 与 `set output_file off` 仍属于命令接口实现，不用于
+  识别或绕过任何业务 SQL。
+
+### 验证状态与建议
+
+当前仅完成静态差异、锁覆盖、异常 unpin、硬编码和恢复边界审查；尚未在
+本环境编译或运行测试。提交前至少验证：
+
+- 完整单列/联合索引点查。
+- 联合索引前缀和跨叶页范围查询。
+- 并发点查与并发 INSERT/DELETE。
+- Phase 1 全部功能测试和两项 Crash Recovery。
+- 压测后一致性检查及 kill -9 重启恢复。
+
+本轮没有引入 group commit、异步 WAL、物理行结果缓存或 SI 等值 RID 缓存。
+这些方向可能继续提升吞吐，但恢复和历史版本漏读风险更高，不能与本轮索引
+读优化混在同一次评测中。

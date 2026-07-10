@@ -250,6 +250,7 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
  */
 bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transaction *transaction)
 {
+    std::shared_lock<std::shared_mutex> lock(root_latch_);
     if (file_hdr_->root_page_ == INVALID_PAGE_ID) {
         return false;
     }
@@ -396,7 +397,7 @@ void IxIndexHandle::insert_into_parent(IxNodeHandle *old_node, const char *key, 
  */
 page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transaction *transaction)
 {
-    std::scoped_lock<std::mutex> lock(root_latch_);
+    std::unique_lock<std::shared_mutex> lock(root_latch_);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::INSERT, transaction);
     if (leaf_node == nullptr) {
         leaf_node = create_node();
@@ -434,7 +435,7 @@ page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transac
  */
 bool IxIndexHandle::delete_entry(const char *key, Transaction *transaction)
 {
-    std::scoped_lock<std::mutex> lock(root_latch_);
+    std::unique_lock<std::shared_mutex> lock(root_latch_);
     auto [node, root_is_latched_ignored] = find_leaf_page(key, Operation::DELETE, transaction);
     if (node == nullptr) {
         return false;
@@ -655,7 +656,7 @@ std::vector<Rid> IxIndexHandle::get_rids(const Iid &iid) const
  */
 Iid IxIndexHandle::lower_bound(const char *key)
 {
-    std::scoped_lock lock(root_latch_);
+    std::shared_lock<std::shared_mutex> lock(root_latch_);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
     if (leaf_node == nullptr) {
         return {IX_NO_PAGE, 0};
@@ -684,7 +685,7 @@ Iid IxIndexHandle::lower_bound(const char *key)
  */
 Iid IxIndexHandle::upper_bound(const char *key)
 {
-    std::scoped_lock lock(root_latch_);
+    std::shared_lock<std::shared_mutex> lock(root_latch_);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
     if (leaf_node == nullptr) {
         return {IX_NO_PAGE, 0};

@@ -155,6 +155,24 @@ class IndexScanExecutor : public AbstractExecutor {
         IxIndexHandle *ih =
             sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, full_index_col_names)).get();
 
+        std::vector<char> equality_key;
+        if (has_lookup_key_) {
+            equality_key = lookup_key_;
+        } else {
+            build_complete_equality_key(equality_key);
+        }
+        if (!equality_key.empty()) {
+            std::vector<Rid> point_rids;
+            ih->get_value(equality_key.data(), &point_rids, context_->txn_);
+            for (const auto &point_rid : point_rids) {
+                if (point_rid.page_no >= 0) {
+                    batch_rids_map_[point_rid.page_no].push_back(point_rid);
+                }
+            }
+            load_next_batch();
+            return;
+        }
+
         char *lower_key = new char[index_meta_.col_tot_len];
         char *upper_key = new char[index_meta_.col_tot_len];
         if (has_lookup_key_) {
@@ -189,7 +207,7 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void nextTuple() override {
-        if (is_end_ || !scan_) {
+        if (is_end_) {
             return;
         }
 
@@ -231,6 +249,29 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
    private:
+    bool build_complete_equality_key(std::vector<char> &key) {
+        key.resize(index_meta_.col_tot_len);
+        int offset = 0;
+        for (const auto &col : index_meta_.cols) {
+            auto conds_it = col2conds_.find(col.name);
+            if (conds_it == col2conds_.end()) {
+                key.clear();
+                return false;
+            }
+            auto equality_it = std::find_if(
+                conds_it->second.begin(), conds_it->second.end(),
+                [](const Condition &cond) { return cond.op == OP_EQ; });
+            if (equality_it == conds_it->second.end()) {
+                key.clear();
+                return false;
+            }
+            write_condition_rhs_val_to_key(
+                key.data() + offset, *equality_it, col.len);
+            offset += col.len;
+        }
+        return true;
+    }
+
     void load_next_batch() {
         batch_recs_.clear();
         batch_rids_.clear();
