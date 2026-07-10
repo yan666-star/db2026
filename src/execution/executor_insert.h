@@ -30,9 +30,9 @@ class InsertExecutor : public AbstractExecutor {
     InsertExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<Value> values, Context *context) {
         sm_manager_ = sm_manager;
         tab_ = sm_manager_->db_.get_table(tab_name);
-        values_ = values;
+        values_ = std::move(values);
         tab_name_ = tab_name;
-        if (values.size() != tab_.cols.size()) {
+        if (values_.size() != tab_.cols.size()) {
             throw InvalidValueCountError();
         }
         fh_ = sm_manager_->fhs_.at(tab_name).get();
@@ -80,25 +80,38 @@ class InsertExecutor : public AbstractExecutor {
             }
         }
 
-        // 先检查所有唯一索引，再写表和索引（与 RMDB2025 一致）
-        for (auto &index : tab_.indexes) {
-            auto ih =
-                sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            char *key = new char[index.col_tot_len];
+        std::vector<std::vector<char>> index_keys;
+        std::vector<std::string> index_names;
+        index_keys.reserve(tab_.indexes.size());
+        index_names.reserve(tab_.indexes.size());
+        for (const auto &index : tab_.indexes) {
+            index_keys.emplace_back(index.col_tot_len);
+            auto &key = index_keys.back();
             int offset = 0;
             for (int j = 0; j < index.col_num; ++j) {
-                memcpy(key + offset, rec.data + index.cols[j].offset, index.cols[j].len);
+                memcpy(key.data() + offset,
+                       rec.data + index.cols[j].offset,
+                       index.cols[j].len);
                 offset += index.cols[j].len;
             }
+            index_names.push_back(
+                sm_manager_->get_ix_manager()->get_index_name(
+                    tab_name_, index.cols));
+        }
+
+        // Check every unique index before changing either the table or index.
+        for (size_t i = 0; i < tab_.indexes.size(); ++i) {
+            const auto &index = tab_.indexes[i];
+            auto ih = sm_manager_->ihs_.at(index_names[i]).get();
             std::vector<Rid> result;
-            if (ih->get_value(key, &result, context_->txn_)) {
+            if (ih->get_value(index_keys[i].data(), &result,
+                              context_->txn_)) {
                 if (uses_mvcc) {
                     for (const auto &dup_rid : result) {
                         context_->txn_mgr_->check_write_conflict(
                             context_->txn_, fh_->GetMvccFileId(), dup_rid);
                     }
                 }
-                delete[] key;
                 throw RMDBError("failure");
             }
             if (uses_mvcc) {
@@ -106,7 +119,6 @@ class InsertExecutor : public AbstractExecutor {
                     context_->txn_, fh_->GetMvccFileId(), Rid{-1, -1}, rec,
                     index.cols);
             }
-            delete[] key;
         }
 
         rid_ = fh_->insert_record(rec.data, context_, tab_name_);
@@ -115,17 +127,9 @@ class InsertExecutor : public AbstractExecutor {
                 new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
         }
 
-        for (auto &index : tab_.indexes) {
-            auto ih =
-                sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            char *key = new char[index.col_tot_len];
-            int offset = 0;
-            for (int j = 0; j < index.col_num; ++j) {
-                memcpy(key + offset, rec.data + index.cols[j].offset, index.cols[j].len);
-                offset += index.cols[j].len;
-            }
-            ih->insert_entry(key, rid_, context_->txn_);
-            delete[] key;
+        for (size_t i = 0; i < tab_.indexes.size(); ++i) {
+            auto ih = sm_manager_->ihs_.at(index_names[i]).get();
+            ih->insert_entry(index_keys[i].data(), rid_, context_->txn_);
         }
         return nullptr;
     }

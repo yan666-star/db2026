@@ -26,6 +26,7 @@ class UpdateExecutor : public AbstractExecutor {
     std::vector<Rid> rids_;
     std::string tab_name_;
     std::vector<SetClause> set_clauses_;
+    std::vector<size_t> affected_index_positions_;
     SmManager *sm_manager_;
     bool done_ = false;
 
@@ -65,6 +66,21 @@ class UpdateExecutor : public AbstractExecutor {
         conds_ = std::move(conds);
         rids_ = std::move(rids);
         context_ = context;
+        for (size_t index_pos = 0; index_pos < tab_.indexes.size();
+             ++index_pos) {
+            const auto &index = tab_.indexes[index_pos];
+            bool affected = std::any_of(
+                index.cols.begin(), index.cols.end(), [&](const ColMeta &col) {
+                    return std::any_of(
+                        set_clauses_.begin(), set_clauses_.end(),
+                        [&](const SetClause &set_clause) {
+                            return set_clause.lhs.col_name == col.name;
+                        });
+                });
+            if (affected) {
+                affected_index_positions_.push_back(index_pos);
+            }
+        }
     }
 
     std::unique_ptr<RmRecord> Next() override {
@@ -164,12 +180,14 @@ class UpdateExecutor : public AbstractExecutor {
             }
 
             int max_key_len = 0;
-            for (auto &index : tab_.indexes) {
+            for (size_t index_pos : affected_index_positions_) {
+                const auto &index = tab_.indexes[index_pos];
                 max_key_len = std::max(max_key_len, index.col_tot_len);
             }
             char *old_key = max_key_len > 0 ? new char[max_key_len] : nullptr;
             char *new_key = max_key_len > 0 ? new char[max_key_len] : nullptr;
-            for (auto &index : tab_.indexes) {
+            for (size_t index_pos : affected_index_positions_) {
+                const auto &index = tab_.indexes[index_pos];
                 int offset = 0;
                 for (int i = 0; i < index.col_num; ++i) {
                     memcpy(old_key + offset,
@@ -227,7 +245,8 @@ class UpdateExecutor : public AbstractExecutor {
             if (!mvcc) {
                 fh_->update_record(rid, rec_new->data, context_);
 
-                for (auto &index : tab_.indexes) {
+                for (size_t index_pos : affected_index_positions_) {
+                    const auto &index = tab_.indexes[index_pos];
                     auto ih =
                         sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                     int offset = 0;

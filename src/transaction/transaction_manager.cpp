@@ -221,6 +221,17 @@ static void update_indexes(SmManager *sm_manager,
                            const Rid &rid, Transaction *txn) {
     auto &tab = sm_manager->db_.get_table(table_name);
     for (auto &index_meta : tab.indexes) {
+        bool key_changed = false;
+        for (const auto &col : index_meta.cols) {
+            if (memcmp(old_record.data + col.offset,
+                       new_record.data + col.offset, col.len) != 0) {
+                key_changed = true;
+                break;
+            }
+        }
+        if (!key_changed) {
+            continue;
+        }
         auto index_name =
             sm_manager->get_ix_manager()->get_index_name(table_name,
                                                          index_meta.cols);
@@ -236,10 +247,6 @@ static void update_indexes(SmManager *sm_manager,
                    new_record.data + index_meta.cols[i].offset,
                    index_meta.cols[i].len);
             key_offset += index_meta.cols[i].len;
-        }
-        if (memcmp(old_key.data(), new_key.data(),
-                   index_meta.col_tot_len) == 0) {
-            continue;
         }
         index_handle->delete_entry(old_key.data(), txn);
         index_handle->insert_entry(new_key.data(), rid, txn);
