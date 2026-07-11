@@ -13,6 +13,31 @@ See the Mulan PSL v2 for more details. */
 #include "bitmap.h"
 #include "rm_file_handle.h"
 
+void RmScan::load_page_rids(int page_no) {
+    rids_.clear();
+    current_index_ = 0;
+    rid_ = {RM_NO_PAGE, -1};
+
+    if (page_no >= file_handle_->file_hdr_.num_pages) {
+        return;
+    }
+
+    RmPageHandle page_handle = file_handle_->fetch_page_handle(page_no);
+    int slot_no = -1;
+    while ((slot_no = Bitmap::next_bit(
+                true, page_handle.bitmap,
+                file_handle_->file_hdr_.num_records_per_page, slot_no)) <
+           file_handle_->file_hdr_.num_records_per_page) {
+        rids_.push_back(Rid{page_no, slot_no});
+    }
+    file_handle_->buffer_pool_manager_->unpin_page(
+        PageId{file_handle_->fd_, page_no}, false);
+
+    if (!rids_.empty()) {
+        rid_ = rids_[0];
+    }
+}
+
 /**
  * @brief 初始化file_handle和rid
  * @param file_handle
@@ -25,9 +50,13 @@ RmScan::RmScan(const RmFileHandle *file_handle) : file_handle_(file_handle) {
         return;
     }
 
-    rid_.page_no = RM_FIRST_RECORD_PAGE;
-    rid_.slot_no = -1;
-    next();
+    for (int page_no = RM_FIRST_RECORD_PAGE;
+         page_no < file_handle_->file_hdr_.num_pages; ++page_no) {
+        load_page_rids(page_no);
+        if (!rids_.empty()) {
+            return;
+        }
+    }
 }
 
 /**
@@ -38,25 +67,25 @@ void RmScan::next() {
         return;
     }
 
-    int page_no = rid_.page_no;
-    int slot_no = rid_.slot_no;
+    if (current_index_ + 1 < static_cast<int>(rids_.size())) {
+        current_index_++;
+        rid_ = rids_[current_index_];
+        return;
+    }
 
-    while (page_no < file_handle_->file_hdr_.num_pages) {
-        RmPageHandle page_handle = file_handle_->fetch_page_handle(page_no);
-        slot_no = Bitmap::next_bit(true, page_handle.bitmap, file_handle_->file_hdr_.num_records_per_page, slot_no);
-        if (slot_no < file_handle_->file_hdr_.num_records_per_page) {
-            rid_.page_no = page_no;
-            rid_.slot_no = slot_no;
-            file_handle_->buffer_pool_manager_->unpin_page(PageId{file_handle_->fd_, page_no}, false);
+    int next_page = rid_.page_no + 1;
+    while (next_page < file_handle_->file_hdr_.num_pages) {
+        load_page_rids(next_page);
+        if (!rids_.empty()) {
             return;
         }
-        file_handle_->buffer_pool_manager_->unpin_page(PageId{file_handle_->fd_, page_no}, false);
-        page_no++;
-        slot_no = -1;
+        next_page++;
     }
 
     rid_.page_no = RM_NO_PAGE;
     rid_.slot_no = -1;
+    rids_.clear();
+    current_index_ = 0;
 }
 
 /**

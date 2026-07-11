@@ -36,8 +36,9 @@ class SeqScanExecutor : public AbstractExecutor {
     bool using_equality_cache_ = false;
     bool enable_equality_cache_ = false;
     bool track_serializable_reads_ = true;
-    std::vector<Rid> mvcc_rids_;
-    size_t mvcc_pos_ = 0;
+    std::vector<std::unique_ptr<RmRecord>> batch_recs_;
+    std::vector<Rid> batch_rids_;
+    size_t batch_index_ = 0;
     std::unique_ptr<RmRecord> current_rec_;
     bool is_end_ = true;
 
@@ -48,6 +49,42 @@ class SeqScanExecutor : public AbstractExecutor {
                context_->lock_mgr_ != nullptr &&
                context_->txn_mgr_ != nullptr &&
                !context_->txn_mgr_->uses_mvcc(context_->txn_);
+    }
+
+    std::vector<Rid> lock_records_for_committed_read(
+        const std::vector<Rid> &rids) {
+        std::vector<Rid> locked;
+        if (!lock_reads_for_committed_visibility()) {
+            return locked;
+        }
+        context_->lock_mgr_->lock_IS_on_table(context_->txn_, fh_->GetFd());
+        locked = rids;
+        std::sort(locked.begin(), locked.end(), [](const Rid &lhs, const Rid &rhs) {
+            return lhs.page_no == rhs.page_no ? lhs.slot_no < rhs.slot_no
+                                             : lhs.page_no < rhs.page_no;
+        });
+        try {
+            for (const auto &rid : locked) {
+                context_->lock_mgr_->lock_shared_on_record(
+                    context_->txn_, rid, fh_->GetFd());
+            }
+        } catch (...) {
+            unlock_committed_read_records(locked);
+            throw;
+        }
+        return locked;
+    }
+
+    void unlock_committed_read_records(const std::vector<Rid> &locked) {
+        if (locked.empty() || context_ == nullptr ||
+            context_->txn_ == nullptr || context_->lock_mgr_ == nullptr) {
+            return;
+        }
+        for (const auto &rid : locked) {
+            context_->lock_mgr_->unlock(
+                context_->txn_,
+                LockDataId(fh_->GetFd(), rid, LockDataType::RECORD));
+        }
     }
 
     std::unique_ptr<RmRecord> read_record_committed(const Rid &rid) {
@@ -101,66 +138,68 @@ class SeqScanExecutor : public AbstractExecutor {
         return false;
     }
 
-    bool fetch_current() {
-    while (!scan_->is_end()) {
-        rid_ = scan_->rid();
-        auto rec = read_record_committed(rid_);
-        if (rec == nullptr) {
-            scan_->next();
-            continue;
-        }
+    bool load_next_page_batch() {
+        batch_recs_.clear();
+        batch_rids_.clear();
+        batch_index_ = 0;
 
-        if (scan_plan_ != nullptr) {
-            scan_plan_->rows_++;//每读取一条原始记录，Scan rows++ 每输出一条满足条件记录，Filter rows++
-        }
+        while (scan_ != nullptr && !scan_->is_end() && batch_recs_.empty()) {
+            int batch_size = scan_->get_batch_num();
+            if (batch_size <= 0) {
+                break;
+            }
 
-        if (fed_conds_.empty() || eval_conditions(*rec, fed_conds_, cols_)) {
-            if (filter_plan_ != nullptr) {
-                filter_plan_->rows_++;
+            std::vector<Rid> page_rids;
+            page_rids.reserve(static_cast<size_t>(batch_size));
+            for (int i = 0; i < batch_size; ++i) {
+                page_rids.push_back(scan_->rid());
+                scan_->next();
             }
-            if (track_serializable_reads_ &&
-                context_->txn_mgr_ != nullptr) {
-                context_->txn_mgr_->register_record_read(
-                    context_->txn_, fh_->GetMvccFileId(), rid_);
-            }
-            current_rec_ = std::move(rec);
-            is_end_ = false;
-            return true;
-        }
-        scan_->next();
-    }
-    current_rec_.reset();
-    is_end_ = true;
-    return false;
-    }
 
-    bool fetch_mvcc_current() {
-        while (mvcc_pos_ < mvcc_rids_.size()) {
-            rid_ = mvcc_rids_[mvcc_pos_];
-            auto rec = fh_->get_record(rid_, context_);
-            if (scan_plan_ != nullptr) {
-                scan_plan_->rows_++;
+            const int page_no = page_rids[0].page_no;
+            std::vector<Rid> locked =
+                lock_records_for_committed_read(page_rids);
+            std::vector<std::unique_ptr<RmRecord>> page_recs;
+            try {
+                page_recs =
+                    fh_->batch_get_records(page_no, page_rids, context_);
+            } catch (...) {
+                unlock_committed_read_records(locked);
+                throw;
             }
-            if (rec != nullptr &&
-                (fed_conds_.empty() ||
-                 eval_conditions(*rec, fed_conds_, cols_))) {
-                if (filter_plan_ != nullptr) {
-                    filter_plan_->rows_++;
+            unlock_committed_read_records(locked);
+
+            for (size_t i = 0; i < page_recs.size(); ++i) {
+                if (scan_plan_ != nullptr) {
+                    scan_plan_->rows_++;
                 }
-                if (track_serializable_reads_ &&
-                    context_->txn_mgr_ != nullptr) {
-                    context_->txn_mgr_->register_record_read(
-                        context_->txn_, fh_->GetMvccFileId(), rid_);
+                if (fed_conds_.empty() ||
+                    eval_conditions(*page_recs[i], fed_conds_, cols_)) {
+                    if (filter_plan_ != nullptr) {
+                        filter_plan_->rows_++;
+                    }
+                    if (track_serializable_reads_ &&
+                        context_->txn_mgr_ != nullptr) {
+                        context_->txn_mgr_->register_record_read(
+                            context_->txn_, fh_->GetMvccFileId(),
+                            page_rids[i]);
+                    }
+                    batch_recs_.push_back(std::move(page_recs[i]));
+                    batch_rids_.push_back(page_rids[i]);
                 }
-                current_rec_ = std::move(rec);
-                is_end_ = false;
-                return true;
             }
-            mvcc_pos_++;
         }
-        current_rec_.reset();
-        is_end_ = true;
-        return false;
+
+        if (batch_recs_.empty()) {
+            current_rec_.reset();
+            is_end_ = true;
+            return false;
+        }
+
+        current_rec_ = std::make_unique<RmRecord>(*batch_recs_[0]);
+        rid_ = batch_rids_[0];
+        is_end_ = false;
+        return true;
     }
 
    public:
@@ -199,13 +238,12 @@ class SeqScanExecutor : public AbstractExecutor {
     bool is_end() const override { return is_end_; }
 
     void beginTuple() override {
-        if (context_->txn_mgr_ != nullptr &&
-            context_->txn_mgr_->uses_mvcc(context_->txn_)) {
-            mvcc_rids_ = fh_->all_record_slots();
-            mvcc_pos_ = 0;
-            fetch_mvcc_current();
-            return;
-        }
+        batch_recs_.clear();
+        batch_rids_.clear();
+        batch_index_ = 0;
+        current_rec_.reset();
+        scan_.reset();
+
         equality_rids_.clear();
         equality_pos_ = 0;
         using_equality_cache_ = false;
@@ -228,18 +266,13 @@ class SeqScanExecutor : public AbstractExecutor {
             fetch_cached_current();
             return;
         }
+
         scan_ = std::make_unique<RmScan>(fh_);
-        fetch_current();
+        load_next_page_batch();
     }
 
     void nextTuple() override {
         if (is_end_) {
-            return;
-        }
-        if (context_->txn_mgr_ != nullptr &&
-            context_->txn_mgr_->uses_mvcc(context_->txn_)) {
-            mvcc_pos_++;
-            fetch_mvcc_current();
             return;
         }
         if (using_equality_cache_) {
@@ -247,8 +280,15 @@ class SeqScanExecutor : public AbstractExecutor {
             fetch_cached_current();
             return;
         }
-        scan_->next();
-        fetch_current();
+
+        if (batch_index_ + 1 < batch_recs_.size()) {
+            batch_index_++;
+            current_rec_ = std::make_unique<RmRecord>(*batch_recs_[batch_index_]);
+            rid_ = batch_rids_[batch_index_];
+            return;
+        }
+
+        load_next_page_batch();
     }
 
     std::unique_ptr<RmRecord> Next() override {

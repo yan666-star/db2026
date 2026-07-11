@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <vector>
+
 #include "rm_defs.h"
 
 class RmFileHandle;
@@ -17,7 +19,12 @@ class RmFileHandle;
 class RmScan : public RecScan {
     const RmFileHandle *file_handle_;
     Rid rid_;
-public:
+    std::vector<Rid> rids_;
+    int current_index_ = 0;
+
+    void load_page_rids(int page_no);
+
+   public:
     RmScan(const RmFileHandle *file_handle);
 
     void next() override;
@@ -25,4 +32,8 @@ public:
     bool is_end() const override;
 
     Rid rid() const override;
+
+    int get_batch_num() const override {
+        return static_cast<int>(rids_.size()) - current_index_;
+    }
 };

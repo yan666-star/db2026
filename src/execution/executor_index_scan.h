@@ -292,14 +292,9 @@ class IndexScanExecutor : public AbstractExecutor {
                     continue;
                 }
                 if (uses_mvcc()) {
-                    for (const auto &rid : rids) {
-                        auto rec = fh_->get_record(rid, context_);
-                        if (rec == nullptr) {
-                            continue;
-                        }
-                        tmp_batch_recs.push_back(std::move(rec));
-                        tmp_batch_rids.push_back(rid);
-                    }
+                    tmp_batch_recs =
+                        fh_->batch_get_records(page_no, rids, context_);
+                    tmp_batch_rids = std::move(rids);
                 } else {
                     std::vector<Rid> locked =
                         lock_records_for_committed_read(rids);
