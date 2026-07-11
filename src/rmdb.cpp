@@ -413,6 +413,10 @@ void *client_handler(void *sock_fd) {
         bool output_file_enabled = true;
         if (parse_output_file_command(raw_sql, output_file_enabled)) {
             enable_output_file.store(output_file_enabled);
+            if (!output_file_enabled) {
+                session_defaults::set(
+                    IsolationLevel::SNAPSHOT_ISOLATION);
+            }
             bool write_failed = write(fd, data_send, offset + 1) == -1;
             if (write_failed) {
                 break;

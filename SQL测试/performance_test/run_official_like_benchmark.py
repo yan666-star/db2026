@@ -456,8 +456,8 @@ def effective_isolation(args):
     if args.isolation == "default":
         return {
             "requested": "default",
-            "effective": "read_committed",
-            "source": "server connection default; set output_file off only disables output",
+            "effective": "snapshot",
+            "source": "server default inherited by new connections after set output_file off",
         }
     return {
         "requested": args.isolation,

@@ -23,14 +23,6 @@ struct SharedCounters {
     std::atomic<uint64_t> commit_apply_write_wait_us{0};
     std::atomic<uint64_t> mvcc_latch_acquires{0};
     std::atomic<uint64_t> mvcc_latch_wait_us{0};
-    std::atomic<uint64_t> lock_requests{0};
-    std::atomic<uint64_t> lock_immediate_grants{0};
-    std::atomic<uint64_t> lock_waits{0};
-    std::atomic<uint64_t> lock_wait_us{0};
-    std::atomic<uint64_t> lock_timeouts{0};
-    std::atomic<uint64_t> lock_upgrade_requests{0};
-    std::atomic<uint64_t> lock_upgrade_waits{0};
-    std::atomic<uint64_t> lock_upgrade_timeouts{0};
 };
 
 inline SharedCounters &shared_counters() {
@@ -103,48 +95,18 @@ inline std::unique_lock<std::mutex> lock_buffer_frame(std::mutex &latch) {
                       c.buffer_frame_latch_wait_us);
 }
 
-inline std::shared_lock<std::shared_mutex> lock_commit_apply_read(
-    std::shared_mutex &latch, std::mutex &turnstile) {
+inline std::unique_lock<std::mutex> lock_commit_apply_read(
+    std::mutex &latch) {
     auto &c = shared_counters();
-    if (!enabled()) {
-        std::unique_lock<std::mutex> entry(turnstile);
-        std::shared_lock<std::shared_mutex> lock(latch);
-        entry.unlock();
-        return lock;
-    }
-    c.commit_apply_read_acquires.fetch_add(1, std::memory_order_relaxed);
-    auto start = std::chrono::steady_clock::now();
-    std::unique_lock<std::mutex> entry(turnstile);
-    std::shared_lock<std::shared_mutex> lock(latch);
-    entry.unlock();
-    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                       std::chrono::steady_clock::now() - start)
-                       .count();
-    c.commit_apply_read_wait_us.fetch_add(static_cast<uint64_t>(elapsed),
-                                           std::memory_order_relaxed);
-    return lock;
+    return timed_lock(latch, c.commit_apply_read_acquires,
+                      c.commit_apply_read_wait_us);
 }
 
-inline std::unique_lock<std::shared_mutex> lock_commit_apply_write(
-    std::shared_mutex &latch, std::mutex &turnstile) {
+inline std::unique_lock<std::mutex> lock_commit_apply_write(
+    std::mutex &latch) {
     auto &c = shared_counters();
-    if (!enabled()) {
-        std::unique_lock<std::mutex> entry(turnstile);
-        std::unique_lock<std::shared_mutex> lock(latch);
-        entry.unlock();
-        return lock;
-    }
-    c.commit_apply_write_acquires.fetch_add(1, std::memory_order_relaxed);
-    auto start = std::chrono::steady_clock::now();
-    std::unique_lock<std::mutex> entry(turnstile);
-    std::unique_lock<std::shared_mutex> lock(latch);
-    entry.unlock();
-    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                       std::chrono::steady_clock::now() - start)
-                       .count();
-    c.commit_apply_write_wait_us.fetch_add(static_cast<uint64_t>(elapsed),
-                                            std::memory_order_relaxed);
-    return lock;
+    return timed_lock(latch, c.commit_apply_write_acquires,
+                      c.commit_apply_write_wait_us);
 }
 
 inline std::unique_lock<std::mutex> lock_mvcc(std::mutex &latch) {

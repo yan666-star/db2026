@@ -17,7 +17,6 @@ See the Mulan PSL v2 for more details. */
 #include <cstring>
 #include <iostream>
 #include <mutex>
-#include <thread>
 #include "common/context.h"
 #include "common/perf_counters.h"
 #include "execution/execution_eval.h"
@@ -53,20 +52,6 @@ struct PerfDiagStats {
     std::atomic<uint64_t> pending_wait_timeout{0};
     std::atomic<uint64_t> abort_checkpoint_flush_us{0};
     std::atomic<uint64_t> abort_log_force_flush_us{0};
-    std::atomic<uint64_t> abort_insert_records{0};
-    std::atomic<uint64_t> abort_update_records{0};
-    std::atomic<uint64_t> abort_delete_records{0};
-    std::atomic<uint64_t> abort_transactions_with_insert{0};
-    std::atomic<uint64_t> abort_max_write_set{0};
-    std::atomic<uint64_t> abort_insert_rollback_us{0};
-    std::atomic<uint64_t> abort_insert_checkpoint_flush_us{0};
-    std::atomic<uint64_t> abort_checkpoint_actual{0};
-    std::atomic<uint64_t> abort_checkpoint_reused{0};
-    std::atomic<uint64_t> abort_checkpoint_wait_us{0};
-    std::atomic<uint64_t> commit_log_flush{0};
-    std::atomic<uint64_t> commit_log_flush_us{0};
-    std::atomic<uint64_t> rc_versions_published{0};
-    std::atomic<uint64_t> rc_versions_skipped{0};
 };
 
 PerfDiagStats &perf_diag_stats() {
@@ -133,27 +118,6 @@ void print_perf_diag() {
               << s.abort_checkpoint_flush_us.load()
               << " abort_log_force_flush_us="
               << s.abort_log_force_flush_us.load()
-              << " abort_insert_records=" << s.abort_insert_records.load()
-              << " abort_update_records=" << s.abort_update_records.load()
-              << " abort_delete_records=" << s.abort_delete_records.load()
-              << " abort_transactions_with_insert="
-              << s.abort_transactions_with_insert.load()
-              << " abort_max_write_set=" << s.abort_max_write_set.load()
-              << " abort_insert_rollback_us="
-              << s.abort_insert_rollback_us.load()
-              << " abort_insert_checkpoint_flush_us="
-              << s.abort_insert_checkpoint_flush_us.load()
-              << " abort_checkpoint_actual="
-              << s.abort_checkpoint_actual.load()
-              << " abort_checkpoint_reused="
-              << s.abort_checkpoint_reused.load()
-              << " abort_checkpoint_wait_us="
-              << s.abort_checkpoint_wait_us.load()
-              << " commit_log_flush=" << s.commit_log_flush.load()
-              << " commit_log_flush_us=" << s.commit_log_flush_us.load()
-              << " rc_versions_published="
-              << s.rc_versions_published.load()
-              << " rc_versions_skipped=" << s.rc_versions_skipped.load()
               << " buffer_fetches=" << shared.buffer_fetches.load()
               << " buffer_hits=" << shared.buffer_hits.load()
               << " buffer_misses=" << shared.buffer_misses.load()
@@ -177,18 +141,6 @@ void print_perf_diag() {
               << shared.mvcc_latch_acquires.load()
               << " mvcc_latch_wait_us="
               << shared.mvcc_latch_wait_us.load()
-              << " lock_requests=" << shared.lock_requests.load()
-              << " lock_immediate_grants="
-              << shared.lock_immediate_grants.load()
-              << " lock_waits=" << shared.lock_waits.load()
-              << " lock_wait_us=" << shared.lock_wait_us.load()
-              << " lock_timeouts=" << shared.lock_timeouts.load()
-              << " lock_upgrade_requests="
-              << shared.lock_upgrade_requests.load()
-              << " lock_upgrade_waits="
-              << shared.lock_upgrade_waits.load()
-              << " lock_upgrade_timeouts="
-              << shared.lock_upgrade_timeouts.load()
               << std::endl;
 }
 
@@ -253,32 +205,6 @@ std::chrono::microseconds pending_writer_wait_budget() {
     return budget;
 }
 
-std::chrono::microseconds abort_crash_pause_budget() {
-    static std::chrono::microseconds budget = [] {
-        const char *value = std::getenv("RMDB_ABORT_CRASH_PAUSE_US");
-        if (value == nullptr || value[0] == '\0') {
-            return std::chrono::microseconds(0);
-        }
-        char *end = nullptr;
-        unsigned long long parsed = std::strtoull(value, &end, 10);
-        if (end == value || *end != '\0') {
-            return std::chrono::microseconds(0);
-        }
-        return std::chrono::microseconds(parsed);
-    }();
-    return budget;
-}
-
-void update_perf_diag_max(std::atomic<uint64_t> &counter, uint64_t value) {
-    uint64_t current = counter.load(std::memory_order_relaxed);
-    while (current < value &&
-           !counter.compare_exchange_weak(current, value,
-                                          std::memory_order_relaxed)) {
-    }
-}
-
-std::vector<char> copy_record(const RmRecord *record);
-
 }  // namespace
 
 static void clear_write_set(Transaction *txn) {
@@ -289,10 +215,9 @@ static void clear_write_set(Transaction *txn) {
     }
 }
 
-std::shared_lock<std::shared_mutex>
+std::unique_lock<std::mutex>
 TransactionManager::acquire_commit_apply_latch() {
-    return rmdb_perf::lock_commit_apply_read(commit_apply_latch_,
-                                             commit_apply_turnstile_);
+    return rmdb_perf::lock_commit_apply_read(commit_apply_latch_);
 }
 
 Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager,
@@ -305,8 +230,6 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
             txn_map[txn_id] = txn;
         }
         if (txn->uses_mvcc()) {
-            auto apply_lock = rmdb_perf::lock_commit_apply_read(
-                commit_apply_latch_, commit_apply_turnstile_);
             // Read the snapshot timestamp and register the transaction under
             // the same latch acquisition: otherwise GC could compute a
             // watermark that misses this transaction and prune versions its
@@ -415,8 +338,6 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         if ((mvcc_commit_count_.fetch_add(1) & 0xFFu) == 0) {
             GarbageCollection();
         }
-    } else {
-        publish_non_mvcc_commit(txn);
     }
 
     if (log_manager != nullptr) {
@@ -424,16 +345,7 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         commit_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&commit_log);
         txn->set_prev_lsn(lsn);
-        if (perf_diag_enabled()) {
-            auto flush_start = std::chrono::steady_clock::now();
-            log_manager->flush_log_to_disk();
-            perf_diag_stats().commit_log_flush.fetch_add(
-                1, std::memory_order_relaxed);
-            add_perf_diag_us(perf_diag_stats().commit_log_flush_us,
-                             flush_start);
-        } else {
-            log_manager->flush_log_to_disk();
-        }
+        log_manager->flush_log_to_disk();
     }
 
     auto lock_set = *txn->get_lock_set();
@@ -446,127 +358,6 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
     finish_transaction(txn);
 }
 
-void TransactionManager::publish_non_mvcc_commit(Transaction *txn) {
-    if (txn == nullptr || txn->uses_mvcc()) {
-        return;
-    }
-
-    struct PublishedChange {
-        bool before_deleted = true;
-        std::vector<char> before;
-        bool deleted = true;
-        std::vector<char> data;
-        std::string table_name;
-    };
-
-    std::unordered_map<RecordKey, PublishedChange, RecordKeyHash> changes;
-    auto write_set = txn->get_write_set();
-    if (write_set == nullptr || write_set->empty()) {
-        return;
-    }
-
-    auto apply_lock = rmdb_perf::lock_commit_apply_write(
-        commit_apply_latch_, commit_apply_turnstile_);
-
-    for (WriteRecord *write : *write_set) {
-        if (write == nullptr) {
-            continue;
-        }
-        auto fh_it = sm_manager_->fhs_.find(write->GetTableName());
-        if (fh_it == sm_manager_->fhs_.end()) {
-            continue;
-        }
-        RecordKey key{fh_it->second->GetMvccFileId(), write->GetRid()};
-        auto [change_it, inserted] = changes.try_emplace(key);
-        auto &change = change_it->second;
-        if (inserted) {
-            change.table_name = write->GetTableName();
-            if (write->GetWriteType() != WType::INSERT_TUPLE) {
-                change.before_deleted = false;
-                change.before = copy_record(&write->GetRecord());
-            }
-        }
-    }
-
-    uint64_t skipped = 0;
-    {
-        auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-        bool has_active_mvcc = false;
-        for (const auto &[txn_id, state] : mvcc_txns_) {
-            (void)txn_id;
-            if (!state.aborted && state.commit_ts == INVALID_TS) {
-                has_active_mvcc = true;
-                break;
-            }
-        }
-        if (!has_active_mvcc) {
-            for (auto it = changes.begin(); it != changes.end();) {
-                if (record_versions_.find(it->first) == record_versions_.end()) {
-                    it = changes.erase(it);
-                    skipped++;
-                } else {
-                    ++it;
-                }
-            }
-        }
-    }
-    if (perf_diag_enabled() && skipped != 0) {
-        perf_diag_stats().rc_versions_skipped.fetch_add(
-            skipped, std::memory_order_relaxed);
-    }
-    if (changes.empty()) {
-        return;
-    }
-
-    for (auto &[key, change] : changes) {
-        auto fh_it = sm_manager_->fhs_.find(change.table_name);
-        if (fh_it == sm_manager_->fhs_.end()) {
-            continue;
-        }
-        auto *fh = fh_it->second.get();
-        if (fh->record_exists(key.rid)) {
-            auto record = fh->get_record(key.rid, nullptr);
-            change.deleted = false;
-            change.data = copy_record(record.get());
-        }
-    }
-
-    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-    timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
-    txn->set_commit_ts(commit_ts);
-    if (perf_diag_enabled()) {
-        perf_diag_stats().rc_versions_published.fetch_add(
-            changes.size(), std::memory_order_relaxed);
-    }
-    for (auto &[key, change] : changes) {
-        if (change.before_deleted && change.deleted) {
-            continue;
-        }
-        auto &history = record_versions_[key];
-        if (history.empty() && !change.before_deleted) {
-            MvccVersion baseline;
-            baseline.commit_ts = 0;
-            baseline.before_deleted = true;
-            baseline.deleted = false;
-            baseline.data = change.before;
-            baseline.table_name = change.table_name;
-            history.push_back(std::move(baseline));
-        }
-
-        MvccVersion committed;
-        committed.owner = txn->get_transaction_id();
-        committed.commit_ts = commit_ts;
-        committed.before_deleted = change.before_deleted;
-        committed.before = std::move(change.before);
-        committed.deleted = change.deleted;
-        committed.data = std::move(change.data);
-        committed.table_name = change.table_name;
-        history.push_back(std::move(committed));
-        mvcc_unique_conflict_keys_by_file_[key.file_id].insert(key);
-    }
-    mvcc_cv_.notify_all();
-}
-
 void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     if (txn == nullptr || txn->get_state() == TransactionState::COMMITTED ||
         txn->get_state() == TransactionState::ABORTED) {
@@ -574,24 +365,18 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     }
 
     ensure_perf_diag_registered();
-    uint64_t abort_count = 0;
     if (perf_diag_enabled()) {
         auto &stats = perf_diag_stats();
-        abort_count =
+        uint64_t abort_count =
             stats.abort_total.fetch_add(1, std::memory_order_relaxed) + 1;
         if (txn->uses_mvcc()) {
             stats.abort_mvcc.fetch_add(1, std::memory_order_relaxed);
         }
+        maybe_print_perf_diag(abort_count);
     }
 
     Context context(lock_manager_, log_manager, txn);
     auto write_set = txn->get_write_set();
-    const bool collect_diag = perf_diag_enabled();
-    bool has_insert = false;
-    if (collect_diag) {
-        update_perf_diag_max(perf_diag_stats().abort_max_write_set,
-                             write_set->size());
-    }
     bool did_physical_rollback = false;
     bool entered_mvcc_commit =
         txn->uses_mvcc() && txn->get_commit_ts() != INVALID_TS;
@@ -601,40 +386,14 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     }
     while (!write_set->empty()) {
         WriteRecord *write_record = write_set->back();
-        WType write_type = write_record->GetWriteType();
-        if (collect_diag) {
-            auto &stats = perf_diag_stats();
-            if (write_type == WType::INSERT_TUPLE) {
-                stats.abort_insert_records.fetch_add(1,
-                                                     std::memory_order_relaxed);
-                has_insert = true;
-            } else if (write_type == WType::UPDATE_TUPLE) {
-                stats.abort_update_records.fetch_add(1,
-                                                     std::memory_order_relaxed);
-            } else if (write_type == WType::DELETE_TUPLE) {
-                stats.abort_delete_records.fetch_add(1,
-                                                     std::memory_order_relaxed);
-            }
-        }
         if (!txn->uses_mvcc() ||
-            (write_type != WType::UPDATE_TUPLE &&
-             write_type != WType::DELETE_TUPLE)) {
-            if (collect_diag && write_type == WType::INSERT_TUPLE) {
-                auto rollback_start = std::chrono::steady_clock::now();
-                sm_manager_->rollback(write_record, &context);
-                add_perf_diag_us(perf_diag_stats().abort_insert_rollback_us,
-                                 rollback_start);
-            } else {
-                sm_manager_->rollback(write_record, &context);
-            }
+            (write_record->GetWriteType() != WType::UPDATE_TUPLE &&
+             write_record->GetWriteType() != WType::DELETE_TUPLE)) {
+            sm_manager_->rollback(write_record, &context);
             did_physical_rollback = true;
         }
         write_set->pop_back();
         delete write_record;
-    }
-    if (collect_diag && has_insert) {
-        perf_diag_stats().abort_transactions_with_insert.fetch_add(
-            1, std::memory_order_relaxed);
     }
 
     // UPDATE/DELETE are only pending versions before MVCC commit. If this
@@ -659,33 +418,15 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
                 perf_diag_stats().abort_checkpoint_flush.fetch_add(
                     1, std::memory_order_relaxed);
             }
-            if (perf_diag_enabled()) {
-                perf_diag_stats().abort_checkpoint_actual.fetch_add(
-                    1, std::memory_order_relaxed);
-            }
             auto flush_start = std::chrono::steady_clock::now();
             sm_manager_->flush_for_checkpoint();
-            uint64_t flush_elapsed = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - flush_start)
-                    .count());
             if (perf_diag_enabled()) {
-                perf_diag_stats().abort_checkpoint_flush_us.fetch_add(
-                    flush_elapsed, std::memory_order_relaxed);
-                if (has_insert) {
-                    perf_diag_stats().abort_insert_checkpoint_flush_us.fetch_add(
-                        flush_elapsed, std::memory_order_relaxed);
-                }
+                add_perf_diag_us(perf_diag_stats().abort_checkpoint_flush_us,
+                                 flush_start);
             }
         } else if (perf_diag_enabled()) {
             perf_diag_stats().abort_checkpoint_flush_skipped.fetch_add(
                 1, std::memory_order_relaxed);
-        }
-        auto crash_pause = abort_crash_pause_budget();
-        if (did_physical_rollback && crash_pause.count() > 0) {
-            std::cerr << "RMDB_ABORT_CRASH_WINDOW txn="
-                      << txn->get_transaction_id() << std::endl;
-            std::this_thread::sleep_for(crash_pause);
         }
         AbortLogRecord abort_log(txn->get_transaction_id());
         abort_log.prev_lsn_ = txn->get_prev_lsn();
@@ -718,9 +459,6 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     }
     txn->set_state(TransactionState::ABORTED);
     finish_transaction(txn);
-    if (perf_diag_enabled()) {
-        maybe_print_perf_diag(abort_count);
-    }
 }
 
 namespace {
@@ -752,39 +490,6 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
     }
 
     auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-    return get_visible_record_under_latch(txn, file_id, rid, physical_record);
-}
-
-std::vector<std::unique_ptr<RmRecord>>
-TransactionManager::get_visible_records(
-    Transaction *txn, uint64_t file_id, const std::vector<Rid> &rids,
-    const std::vector<std::unique_ptr<RmRecord>> &physical_records) {
-    std::vector<std::unique_ptr<RmRecord>> visible_records;
-    const size_t count = std::min(rids.size(), physical_records.size());
-    visible_records.reserve(count);
-
-    if (!uses_mvcc(txn)) {
-        for (size_t i = 0; i < count; ++i) {
-            visible_records.push_back(
-                physical_records[i] == nullptr
-                    ? nullptr
-                    : std::make_unique<RmRecord>(*physical_records[i]));
-        }
-        return visible_records;
-    }
-
-    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-    for (size_t i = 0; i < count; ++i) {
-        visible_records.push_back(get_visible_record_under_latch(
-            txn, file_id, rids[i], physical_records[i].get()));
-    }
-    return visible_records;
-}
-
-std::unique_ptr<RmRecord>
-TransactionManager::get_visible_record_under_latch(
-    Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord *physical_record) {
     RecordKey key{file_id, rid};
     auto history_it = record_versions_.find(key);
     if (history_it == record_versions_.end()) {
@@ -1597,103 +1302,89 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     };
     std::vector<PhysicalOp> ops;
 
-    // Phase 1 (version publish): under exclusive commit_apply_latch_ +
-    // mvcc_latch_, validate conflicts, stamp commit_ts, and publish versions.
-    // check_commit_conflict_under_latch() already calls
-    // validate_pending_physical_before() which verifies every physical before-image
-    // matches the current on-disk state.  After the commit_ts is published, SI
-    // conflict detection (check_write_conflict) prevents any other writer from
-    // modifying these records, so the physical state guaranteed by Phase 1 stays
-    // valid throughout Phase 2.
-    //
-    // Phase 2 (physical apply): runs outside the global commit_apply latch so
-    // that concurrent get_record / get_visible_record calls on unrelated records
-    // are not blocked.  Physical application uses the per-file insert_latch_
-    // and per-index root_latch_ for serialisation at the table/index level.
+    // commit_apply_latch_ serializes commit application so that two commits
+    // touching the same rid land in commit_ts order, while mvcc_latch_ stays a
+    // leaf lock (no file/index calls under it — see lock-ordering note in the
+    // header). Deadlock otherwise: inserts hold the file insert_latch_ and then
+    // take mvcc_latch_ via prepare_insert, while the old code held mvcc_latch_
+    // and took insert_latch_ via update_record.
+    auto apply_lock =
+        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
-        auto apply_lock =
-            rmdb_perf::lock_commit_apply_write(commit_apply_latch_,
-                                               commit_apply_turnstile_);
-        {
-            auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-            check_commit_conflict_under_latch(txn);
-            timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
-            txn->set_commit_ts(commit_ts);
-            auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-            if (state_it != mvcc_txns_.end()) {
-                state_it->second.commit_ts = commit_ts;
-                for (const auto &key : state_it->second.write_records) {
-                    auto history_it = record_versions_.find(key);
-                    MvccVersion *own_pending = nullptr;
-                    if (history_it != record_versions_.end()) {
-                        own_pending = find_own_pending_version(
-                            history_it->second, txn->get_transaction_id());
-                    }
-                    if (own_pending == nullptr) {
-                        if (write_record_is_insert_only(txn, key)) {
-                            continue;
-                        }
-                        mark_mvcc_txn_aborted(txn->get_transaction_id());
-                        throw TransactionAbortException(
-                            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                    }
-
+        auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+        check_commit_conflict_under_latch(txn);
+        timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
+        txn->set_commit_ts(commit_ts);
+        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+        if (state_it != mvcc_txns_.end()) {
+            state_it->second.commit_ts = commit_ts;
+            for (const auto &key : state_it->second.write_records) {
+                auto history_it = record_versions_.find(key);
+                MvccVersion *own_pending = nullptr;
+                if (history_it != record_versions_.end()) {
+                    own_pending = find_own_pending_version(
+                        history_it->second, txn->get_transaction_id());
+                }
+                if (own_pending == nullptr) {
                     if (write_record_is_insert_only(txn, key)) {
-                        own_pending->commit_ts = commit_ts;
                         continue;
                     }
-
-                    std::vector<char> before = own_pending->before;
-                    if (has_multiple_mutating_writes(txn, key)) {
-                        WriteRecord *mutating =
-                            first_mutating_write_record(txn, key);
-                        if (mutating != nullptr && mutating->GetRecord().size > 0) {
-                            before = copy_record(&mutating->GetRecord());
-                        }
-                    } else if (before.empty()) {
-                        WriteRecord *mutating =
-                            first_mutating_write_record(txn, key);
-                        if (mutating != nullptr && mutating->GetRecord().size > 0) {
-                            before = copy_record(&mutating->GetRecord());
-                        }
-                    }
-                    std::string table_name = own_pending->table_name;
-                    if (table_name.empty()) {
-                        WriteRecord *mutating =
-                            first_mutating_write_record(txn, key);
-                        if (mutating != nullptr) {
-                            table_name = mutating->GetTableName();
-                        }
-                    }
-                    if (before.empty() || table_name.empty()) {
-                        mark_mvcc_txn_aborted(txn->get_transaction_id());
-                        throw TransactionAbortException(
-                            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                    }
-                    if (!own_pending->deleted && own_pending->data.empty()) {
-                        mark_mvcc_txn_aborted(txn->get_transaction_id());
-                        throw TransactionAbortException(
-                            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                    }
-                    ops.push_back(PhysicalOp{own_pending->deleted, table_name,
-                                             key.rid, before, own_pending->data});
-                    own_pending->commit_ts = commit_ts;
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
                 }
+
+                if (write_record_is_insert_only(txn, key)) {
+                    own_pending->commit_ts = commit_ts;
+                    continue;
+                }
+
+                std::vector<char> before = own_pending->before;
+                if (has_multiple_mutating_writes(txn, key)) {
+                    WriteRecord *mutating =
+                        first_mutating_write_record(txn, key);
+                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                        before = copy_record(&mutating->GetRecord());
+                    }
+                } else if (before.empty()) {
+                    WriteRecord *mutating =
+                        first_mutating_write_record(txn, key);
+                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                        before = copy_record(&mutating->GetRecord());
+                    }
+                }
+                std::string table_name = own_pending->table_name;
+                if (table_name.empty()) {
+                    WriteRecord *mutating =
+                        first_mutating_write_record(txn, key);
+                    if (mutating != nullptr) {
+                        table_name = mutating->GetTableName();
+                    }
+                }
+                if (before.empty() || table_name.empty()) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                }
+                if (!own_pending->deleted && own_pending->data.empty()) {
+                    mark_mvcc_txn_aborted(txn->get_transaction_id());
+                    throw TransactionAbortException(
+                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                }
+                ops.push_back(PhysicalOp{own_pending->deleted, table_name,
+                                         key.rid, before, own_pending->data});
+                own_pending->commit_ts = commit_ts;
             }
         }
-        mvcc_cv_.notify_all();
-    }  // commit_apply exclusive latch released — Phase 1 complete
+    }
+    mvcc_cv_.notify_all();
 
-    // Phase 2: physical application without global commit_apply latch.
-    // check_physical_before() is not re-executed here because
-    // validate_pending_physical_before() already verified every before-image
-    // inside Phase 1, and the published commit_ts prevents any concurrent
-    // writer from mutating these records (SI write-conflict check).
     for (size_t op_index = 0; op_index < ops.size(); ++op_index) {
         auto &op = ops[op_index];
         RmRecord before(static_cast<int>(op.before.size()),
                         const_cast<char *>(op.before.data()));
         try {
+            check_physical_before(txn, op.table_name, op.rid, &before);
             if (op.is_delete) {
                 delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
                 auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
@@ -1836,8 +1527,7 @@ void TransactionManager::GarbageCollection() {
     // physical slot reclamation happens after releasing it, serialized against
     // concurrent commit application by commit_apply_latch_.
     auto apply_lock =
-        rmdb_perf::lock_commit_apply_write(commit_apply_latch_,
-                                           commit_apply_turnstile_);
+        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
         auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
 
@@ -1978,8 +1668,7 @@ void TransactionManager::apply_committed_deletes_for_checkpoint() {
     std::vector<Reclaim> reclaims;
 
     auto apply_lock =
-        rmdb_perf::lock_commit_apply_write(commit_apply_latch_,
-                                           commit_apply_turnstile_);
+        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
         auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
         for (auto it = record_versions_.begin();

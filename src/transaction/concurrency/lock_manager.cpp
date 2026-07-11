@@ -12,7 +12,6 @@ See the Mulan PSL v2 for more details. */
 
 #include <algorithm>
 #include <chrono>
-#include "common/perf_counters.h"
 
 namespace {
 constexpr auto kLockWaitTimeout = std::chrono::seconds(5);
@@ -139,10 +138,6 @@ bool LockManager::lock(Transaction *txn, const LockDataId &lock_data_id,
     }
 
     std::unique_lock<std::mutex> guard(latch_);
-    auto &perf = rmdb_perf::shared_counters();
-    if (rmdb_perf::enabled()) {
-        perf.lock_requests.fetch_add(1, std::memory_order_relaxed);
-    }
     auto &request_queue = lock_table_[lock_data_id];
     const txn_id_t txn_id = txn->get_transaction_id();
 
@@ -154,48 +149,15 @@ bool LockManager::lock(Transaction *txn, const LockDataId &lock_data_id,
 
     if (existing != request_queue.request_queue_.end()) {
         if (existing->granted_ && is_stronger_or_equal(existing->lock_mode_, lock_mode)) {
-            if (rmdb_perf::enabled()) {
-                perf.lock_immediate_grants.fetch_add(1,
-                                                     std::memory_order_relaxed);
-            }
             return true;
-        }
-        if (rmdb_perf::enabled()) {
-            perf.lock_upgrade_requests.fetch_add(1,
-                                                  std::memory_order_relaxed);
         }
         const LockMode old_mode = existing->lock_mode_;
         const bool old_granted = existing->granted_;
-        bool granted = compatible(request_queue, txn_id, lock_mode);
+        const auto deadline = std::chrono::steady_clock::now() + kLockWaitTimeout;
+        const bool granted = request_queue.cv_.wait_until(guard, deadline, [&] {
+            return compatible(request_queue, txn_id, lock_mode);
+        });
         if (!granted) {
-            if (rmdb_perf::enabled()) {
-                perf.lock_waits.fetch_add(1, std::memory_order_relaxed);
-                perf.lock_upgrade_waits.fetch_add(1,
-                                                  std::memory_order_relaxed);
-            }
-            const auto wait_start = std::chrono::steady_clock::now();
-            const auto deadline = wait_start + kLockWaitTimeout;
-            granted = request_queue.cv_.wait_until(guard, deadline, [&] {
-                return compatible(request_queue, txn_id, lock_mode);
-            });
-            if (rmdb_perf::enabled()) {
-                const auto elapsed =
-                    std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - wait_start)
-                        .count();
-                perf.lock_wait_us.fetch_add(static_cast<uint64_t>(elapsed),
-                                            std::memory_order_relaxed);
-            }
-        } else if (rmdb_perf::enabled()) {
-            perf.lock_immediate_grants.fetch_add(1,
-                                                 std::memory_order_relaxed);
-        }
-        if (!granted) {
-            if (rmdb_perf::enabled()) {
-                perf.lock_timeouts.fetch_add(1, std::memory_order_relaxed);
-                perf.lock_upgrade_timeouts.fetch_add(
-                    1, std::memory_order_relaxed);
-            }
             existing->lock_mode_ = old_mode;
             existing->granted_ = old_granted;
             recompute_group_lock_mode(request_queue);
@@ -211,31 +173,11 @@ bool LockManager::lock(Transaction *txn, const LockDataId &lock_data_id,
 
     request_queue.request_queue_.emplace_back(txn_id, lock_mode);
     auto request_it = std::prev(request_queue.request_queue_.end());
-    bool granted = compatible(request_queue, txn_id, lock_mode);
+    const auto deadline = std::chrono::steady_clock::now() + kLockWaitTimeout;
+    const bool granted = request_queue.cv_.wait_until(guard, deadline, [&] {
+        return compatible(request_queue, txn_id, lock_mode);
+    });
     if (!granted) {
-        if (rmdb_perf::enabled()) {
-            perf.lock_waits.fetch_add(1, std::memory_order_relaxed);
-        }
-        const auto wait_start = std::chrono::steady_clock::now();
-        const auto deadline = wait_start + kLockWaitTimeout;
-        granted = request_queue.cv_.wait_until(guard, deadline, [&] {
-            return compatible(request_queue, txn_id, lock_mode);
-        });
-        if (rmdb_perf::enabled()) {
-            const auto elapsed =
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - wait_start)
-                    .count();
-            perf.lock_wait_us.fetch_add(static_cast<uint64_t>(elapsed),
-                                        std::memory_order_relaxed);
-        }
-    } else if (rmdb_perf::enabled()) {
-        perf.lock_immediate_grants.fetch_add(1, std::memory_order_relaxed);
-    }
-    if (!granted) {
-        if (rmdb_perf::enabled()) {
-            perf.lock_timeouts.fetch_add(1, std::memory_order_relaxed);
-        }
         request_queue.request_queue_.erase(request_it);
         recompute_group_lock_mode(request_queue);
         request_queue.cv_.notify_all();

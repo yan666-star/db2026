@@ -39,9 +39,26 @@ class Bitmap {
      * @return 找到了就返回偏移位置，没找到就返回max_n
      */
     static int next_bit(bool bit, const char *bm, int max_n, int curr) {
-        for (int i = curr + 1; i < max_n; i++) {
-            if (is_set(bm, i) == bit) {
-                return i;
+        int pos = curr + 1;
+        while (pos < max_n) {
+            int bucket = get_bucket(pos);
+            unsigned char byte = static_cast<unsigned char>(bm[bucket]);
+            int bucket_end = (bucket + 1) * BITMAP_WIDTH;
+            if (bucket_end > max_n) {
+                bucket_end = max_n;
+            }
+
+            // Empty/full bytes are common in record pages. Skip the remaining
+            // part of such a byte without testing each bit separately.
+            if ((bit && byte == 0u) || (!bit && byte == 0xFFu)) {
+                pos = bucket_end;
+                continue;
+            }
+            while (pos < bucket_end) {
+                if (is_set(bm, pos) == bit) {
+                    return pos;
+                }
+                ++pos;
             }
         }
         return max_n;

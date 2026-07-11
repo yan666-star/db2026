@@ -33,6 +33,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "record/bitmap.h"
 #include "replacer/lru_replacer.h"
 #include "storage/disk_manager.h"
 
@@ -47,6 +48,33 @@ constexpr size_t TEST_BUFFER_POOL_SIZE = MAX_FILES * MAX_PAGES;
 // 创建BufferPoolManager
 auto disk_manager = std::make_unique<DiskManager>();
 auto buffer_pool_manager = std::make_unique<BufferPoolManager>(TEST_BUFFER_POOL_SIZE, disk_manager.get());
+
+TEST(BitmapTest, NextBitMatchesScalarReference) {
+    std::mt19937 rng(20260712);
+    for (int max_n = 1; max_n <= 129; ++max_n) {
+        std::vector<char> bitmap(
+            static_cast<size_t>((max_n + BITMAP_WIDTH - 1) / BITMAP_WIDTH));
+        for (int round = 0; round < 32; ++round) {
+            for (char &byte : bitmap) {
+                byte = static_cast<char>(rng() & 0xFFu);
+            }
+            for (bool bit : {false, true}) {
+                for (int curr = -1; curr < max_n; ++curr) {
+                    int expected = max_n;
+                    for (int pos = curr + 1; pos < max_n; ++pos) {
+                        if (Bitmap::is_set(bitmap.data(), pos) == bit) {
+                            expected = pos;
+                            break;
+                        }
+                    }
+                    EXPECT_EQ(Bitmap::next_bit(
+                                  bit, bitmap.data(), max_n, curr),
+                              expected);
+                }
+            }
+        }
+    }
+}
 
 std::unordered_map<int, char *> mock;  // fd -> buffer
 
