@@ -1597,90 +1597,103 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     };
     std::vector<PhysicalOp> ops;
 
-    // commit_apply_latch_ serializes commit application so that two commits
-    // touching the same rid land in commit_ts order, while mvcc_latch_ stays a
-    // leaf lock (no file/index calls under it — see lock-ordering note in the
-    // header). Deadlock otherwise: inserts hold the file insert_latch_ and then
-    // take mvcc_latch_ via prepare_insert, while the old code held mvcc_latch_
-    // and took insert_latch_ via update_record.
-    auto apply_lock =
-        rmdb_perf::lock_commit_apply_write(commit_apply_latch_,
-                                           commit_apply_turnstile_);
+    // Phase 1 (version publish): under exclusive commit_apply_latch_ +
+    // mvcc_latch_, validate conflicts, stamp commit_ts, and publish versions.
+    // check_commit_conflict_under_latch() already calls
+    // validate_pending_physical_before() which verifies every physical before-image
+    // matches the current on-disk state.  After the commit_ts is published, SI
+    // conflict detection (check_write_conflict) prevents any other writer from
+    // modifying these records, so the physical state guaranteed by Phase 1 stays
+    // valid throughout Phase 2.
+    //
+    // Phase 2 (physical apply): runs outside the global commit_apply latch so
+    // that concurrent get_record / get_visible_record calls on unrelated records
+    // are not blocked.  Physical application uses the per-file insert_latch_
+    // and per-index root_latch_ for serialisation at the table/index level.
     {
-        auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-        check_commit_conflict_under_latch(txn);
-        timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
-        txn->set_commit_ts(commit_ts);
-        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-        if (state_it != mvcc_txns_.end()) {
-            state_it->second.commit_ts = commit_ts;
-            for (const auto &key : state_it->second.write_records) {
-                auto history_it = record_versions_.find(key);
-                MvccVersion *own_pending = nullptr;
-                if (history_it != record_versions_.end()) {
-                    own_pending = find_own_pending_version(
-                        history_it->second, txn->get_transaction_id());
-                }
-                if (own_pending == nullptr) {
+        auto apply_lock =
+            rmdb_perf::lock_commit_apply_write(commit_apply_latch_,
+                                               commit_apply_turnstile_);
+        {
+            auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+            check_commit_conflict_under_latch(txn);
+            timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
+            txn->set_commit_ts(commit_ts);
+            auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+            if (state_it != mvcc_txns_.end()) {
+                state_it->second.commit_ts = commit_ts;
+                for (const auto &key : state_it->second.write_records) {
+                    auto history_it = record_versions_.find(key);
+                    MvccVersion *own_pending = nullptr;
+                    if (history_it != record_versions_.end()) {
+                        own_pending = find_own_pending_version(
+                            history_it->second, txn->get_transaction_id());
+                    }
+                    if (own_pending == nullptr) {
+                        if (write_record_is_insert_only(txn, key)) {
+                            continue;
+                        }
+                        mark_mvcc_txn_aborted(txn->get_transaction_id());
+                        throw TransactionAbortException(
+                            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                    }
+
                     if (write_record_is_insert_only(txn, key)) {
+                        own_pending->commit_ts = commit_ts;
                         continue;
                     }
-                    mark_mvcc_txn_aborted(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                }
 
-                if (write_record_is_insert_only(txn, key)) {
+                    std::vector<char> before = own_pending->before;
+                    if (has_multiple_mutating_writes(txn, key)) {
+                        WriteRecord *mutating =
+                            first_mutating_write_record(txn, key);
+                        if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                            before = copy_record(&mutating->GetRecord());
+                        }
+                    } else if (before.empty()) {
+                        WriteRecord *mutating =
+                            first_mutating_write_record(txn, key);
+                        if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                            before = copy_record(&mutating->GetRecord());
+                        }
+                    }
+                    std::string table_name = own_pending->table_name;
+                    if (table_name.empty()) {
+                        WriteRecord *mutating =
+                            first_mutating_write_record(txn, key);
+                        if (mutating != nullptr) {
+                            table_name = mutating->GetTableName();
+                        }
+                    }
+                    if (before.empty() || table_name.empty()) {
+                        mark_mvcc_txn_aborted(txn->get_transaction_id());
+                        throw TransactionAbortException(
+                            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                    }
+                    if (!own_pending->deleted && own_pending->data.empty()) {
+                        mark_mvcc_txn_aborted(txn->get_transaction_id());
+                        throw TransactionAbortException(
+                            txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+                    }
+                    ops.push_back(PhysicalOp{own_pending->deleted, table_name,
+                                             key.rid, before, own_pending->data});
                     own_pending->commit_ts = commit_ts;
-                    continue;
                 }
-
-                std::vector<char> before = own_pending->before;
-                if (has_multiple_mutating_writes(txn, key)) {
-                    WriteRecord *mutating =
-                        first_mutating_write_record(txn, key);
-                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
-                        before = copy_record(&mutating->GetRecord());
-                    }
-                } else if (before.empty()) {
-                    WriteRecord *mutating =
-                        first_mutating_write_record(txn, key);
-                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
-                        before = copy_record(&mutating->GetRecord());
-                    }
-                }
-                std::string table_name = own_pending->table_name;
-                if (table_name.empty()) {
-                    WriteRecord *mutating =
-                        first_mutating_write_record(txn, key);
-                    if (mutating != nullptr) {
-                        table_name = mutating->GetTableName();
-                    }
-                }
-                if (before.empty() || table_name.empty()) {
-                    mark_mvcc_txn_aborted(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                }
-                if (!own_pending->deleted && own_pending->data.empty()) {
-                    mark_mvcc_txn_aborted(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                }
-                ops.push_back(PhysicalOp{own_pending->deleted, table_name,
-                                         key.rid, before, own_pending->data});
-                own_pending->commit_ts = commit_ts;
             }
         }
-    }
-    mvcc_cv_.notify_all();
+        mvcc_cv_.notify_all();
+    }  // commit_apply exclusive latch released — Phase 1 complete
 
+    // Phase 2: physical application without global commit_apply latch.
+    // check_physical_before() is not re-executed here because
+    // validate_pending_physical_before() already verified every before-image
+    // inside Phase 1, and the published commit_ts prevents any concurrent
+    // writer from mutating these records (SI write-conflict check).
     for (size_t op_index = 0; op_index < ops.size(); ++op_index) {
         auto &op = ops[op_index];
         RmRecord before(static_cast<int>(op.before.size()),
                         const_cast<char *>(op.before.data()));
         try {
-            check_physical_before(txn, op.table_name, op.rid, &before);
             if (op.is_delete) {
                 delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
                 auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
