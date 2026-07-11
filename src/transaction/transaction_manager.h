@@ -101,6 +101,10 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &rid,
         const RmRecord *physical_record);
 
+    std::vector<std::unique_ptr<RmRecord>> get_visible_records(
+        Transaction *txn, uint64_t file_id, const std::vector<Rid> &rids,
+        const std::vector<std::unique_ptr<RmRecord>> &physical_records);
+
     std::unique_ptr<RmRecord> get_latest_committed_record(
         uint64_t file_id, const Rid &rid, const RmRecord *physical_record);
 
@@ -130,7 +134,7 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
 
-    std::unique_lock<std::mutex> acquire_commit_apply_latch();
+    std::shared_lock<std::shared_mutex> acquire_commit_apply_latch();
 
     /**
      * @description: 获取事务ID为txn_id的事务对象
@@ -216,9 +220,13 @@ public:
 
 
 private:
+    std::unique_ptr<RmRecord> get_visible_record_under_latch(
+        Transaction *txn, uint64_t file_id, const Rid &rid,
+        const RmRecord *physical_record);
     void finish_transaction(Transaction *txn);
     void check_commit_conflict(Transaction *txn);
     void check_commit_conflict_under_latch(Transaction *txn);
+    void publish_non_mvcc_commit(Transaction *txn);
     void commit_mvcc(Transaction *txn);
     void abort_mvcc(Transaction *txn);
 
@@ -320,13 +328,17 @@ private:
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC
     std::atomic<uint64_t> mvcc_commit_count_{0};    // 用于按周期触发MVCC垃圾回收
 
-    // Lock ordering: commit_apply_latch_ -> (file insert_latch_ / index latches)
-    // and commit_apply_latch_ -> mvcc_latch_. mvcc_latch_ is a LEAF lock: no
+    // Lock ordering: commit_apply_turnstile_ -> commit_apply_latch_ ->
+    // (file insert_latch_ / index latches), and commit_apply_latch_ ->
+    // mvcc_latch_. The turnstile is released immediately after the shared or
+    // exclusive latch is acquired, preventing readers from starving a queued
+    // commit. mvcc_latch_ is a LEAF lock: no
     // file-handle or index operation may be invoked while holding it, because
     // inserts acquire the file insert_latch_ first and then mvcc_latch_ (via
     // prepare_insert); calling back into the file layer under mvcc_latch_
     // deadlocks (ABBA).
-    std::mutex commit_apply_latch_;
+    std::mutex commit_apply_turnstile_;
+    std::shared_mutex commit_apply_latch_;
     mutable std::mutex mvcc_latch_;
     std::condition_variable mvcc_cv_;
     std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;

@@ -20,6 +20,10 @@ fi
 
 "$build_dir/bin/unit_test"
 
+python3 'SQL测试/performance_test/probe_output_file_isolation_independence.py' \
+    --start-server --build-dir "$build_dir" \
+    --db-name output_file_isolation_test_db
+
 python3 'SQL测试/performance_test/run_generic_acid_suite.py' \
     --start-server --isolation default --build-dir "$build_dir" \
     --db-name generic_rc_test_db
@@ -39,6 +43,7 @@ benchmark_args=(
     --start-server
     --crash-check
     --clients "$clients"
+    --isolation snapshot
     --build-dir "$build_dir"
     --db-name official_like_test_db
 )
