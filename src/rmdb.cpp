@@ -323,7 +323,8 @@ void sigint_handler(int) {
 
 // 判断当前正在执行的是显式事务还是单条SQL语句的事务，并更新事务ID
 void SetTransaction(txn_id_t *txn_id, Context *context,
-                    IsolationLevel session_isolation) {
+                    IsolationLevel session_isolation,
+                    bool admit_execution = true) {
     context->txn_ = txn_manager->get_transaction(*txn_id);
     if(context->txn_ == nullptr || context->txn_->get_state() == TransactionState::COMMITTED ||
         context->txn_->get_state() == TransactionState::ABORTED) {
@@ -331,6 +332,9 @@ void SetTransaction(txn_id_t *txn_id, Context *context,
             txn_manager->begin(nullptr, context->log_mgr_, session_isolation);
         *txn_id = context->txn_->get_transaction_id();
         context->txn_->set_txn_mode(false);
+    }
+    if (admit_execution) {
+        txn_manager->ensure_snapshot_admission(context->txn_);
     }
 }
 
@@ -574,7 +578,8 @@ void *client_handler(void *sock_fd) {
                     if (!is_checkpoint) {
                         txn_manager->enter_statement(txn_id);
                         statement_entered = true;
-                        SetTransaction(&txn_id, context, session_isolation);
+                        SetTransaction(&txn_id, context, session_isolation,
+                                       txn_boundary != TxnBoundary::Begin);
                     }
 
                     // analyze and rewrite

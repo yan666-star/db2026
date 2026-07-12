@@ -98,6 +98,8 @@ public:
         return txn != nullptr && txn->uses_mvcc();
     }
 
+    void ensure_snapshot_admission(Transaction *txn);
+
     std::unique_ptr<RmRecord> get_visible_record(
         Transaction *txn, uint64_t file_id, const Rid &rid,
         const RmRecord *physical_record);
@@ -218,7 +220,7 @@ public:
 
 private:
     void finish_transaction(Transaction *txn);
-    void admit_snapshot_transaction(txn_id_t txn_id,
+    bool admit_snapshot_transaction(txn_id_t txn_id,
                                     IsolationLevel isolation_level);
     void release_snapshot_admission(txn_id_t txn_id);
     void check_commit_conflict(Transaction *txn);

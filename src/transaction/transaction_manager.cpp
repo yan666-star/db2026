@@ -246,7 +246,6 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
     if (txn == nullptr) {
         txn_id_t txn_id = next_txn_id_.fetch_add(1);
         txn = new Transaction(txn_id, isolation_level);
-        admit_snapshot_transaction(txn_id, isolation_level);
         {
             std::lock_guard<std::mutex> lock(latch_);
             txn_map[txn_id] = txn;
@@ -278,15 +277,42 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
     return txn;
 }
 
-void TransactionManager::admit_snapshot_transaction(
+void TransactionManager::ensure_snapshot_admission(Transaction *txn) {
+    if (txn == nullptr) {
+        return;
+    }
+    if (!admit_snapshot_transaction(txn->get_transaction_id(),
+                                    txn->get_isolation_level())) {
+        return;
+    }
+
+    // Snapshot isolation establishes its snapshot on the first actual data
+    // access, not merely when BEGIN is acknowledged. Transactions waiting in
+    // the admission queue must not retain a timestamp that became stale while
+    // earlier admitted transactions committed.
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+    timestamp_t start_ts = last_commit_ts_.load();
+    txn->set_start_ts(start_ts);
+    txn->set_read_ts(start_ts);
+    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+    if (state_it != mvcc_txns_.end()) {
+        state_it->second.start_ts = start_ts;
+    }
+}
+
+bool TransactionManager::admit_snapshot_transaction(
     txn_id_t txn_id, IsolationLevel isolation_level) {
     size_t limit = si_max_active();
     if (isolation_level != IsolationLevel::SNAPSHOT_ISOLATION || limit == 0) {
-        return;
+        return false;
     }
 
     auto wait_start = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lock(si_admission_latch_);
+    if (admitted_snapshot_txns_.find(txn_id) !=
+        admitted_snapshot_txns_.end()) {
+        return false;
+    }
     snapshot_admission_waiters_.push_back(txn_id);
     bool waited = admitted_snapshot_txns_.size() >= limit ||
                   snapshot_admission_waiters_.front() != txn_id;
@@ -302,6 +328,7 @@ void TransactionManager::admit_snapshot_transaction(
             1, std::memory_order_relaxed);
         add_perf_diag_us(perf_diag_stats().si_admission_wait_us, wait_start);
     }
+    return true;
 }
 
 void TransactionManager::release_snapshot_admission(txn_id_t txn_id) {

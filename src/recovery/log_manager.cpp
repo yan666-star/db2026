@@ -25,13 +25,9 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
         throw InternalError("Log record is larger than the log buffer");
     }
 
-    std::unique_lock<std::mutex> lock(latch_);
-    while (log_buffer_.is_full(log_record->log_tot_len_)) {
-        // Keep the lock order flush_latch_ -> latch_ everywhere. Releasing
-        // latch_ here also lets the current flusher detach the full batch.
-        lock.unlock();
-        flush_log_to_disk();
-        lock.lock();
+    std::lock_guard<std::mutex> lock(latch_);
+    if (log_buffer_.is_full(log_record->log_tot_len_)) {
+        flush_log_to_disk_locked();
     }
 
     log_record->lsn_ = global_lsn_.fetch_add(1);
@@ -44,33 +40,8 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */
 void LogManager::flush_log_to_disk(bool force_sync) {
-    std::lock_guard<std::mutex> flush_lock(flush_latch_);
-
-    std::vector<char> batch;
-    lsn_t batch_lsn = INVALID_LSN;
-    {
-        std::lock_guard<std::mutex> lock(latch_);
-        if (log_buffer_.offset_ > 0) {
-            batch.assign(log_buffer_.buffer_,
-                         log_buffer_.buffer_ + log_buffer_.offset_);
-            batch_lsn = global_lsn_.load() - 1;
-            log_buffer_.offset_ = 0;
-        }
-    }
-
-    // Appenders can fill the next batch while this write is in progress.
-    // Concurrent flush callers serialize on flush_latch_; the first one that
-    // follows writes the whole accumulated batch and the rest reuse it.
-    if (!batch.empty()) {
-        disk_manager_->write_log(batch.data(), static_cast<int>(batch.size()));
-    }
-    if (force_sync) {
-        disk_manager_->sync_log();
-    }
-    if (batch_lsn != INVALID_LSN) {
-        std::lock_guard<std::mutex> lock(latch_);
-        persist_lsn_ = std::max(persist_lsn_, batch_lsn);
-    }
+    std::lock_guard<std::mutex> lock(latch_);
+    flush_log_to_disk_locked(force_sync);
 }
 
 void LogManager::flush_log_to_disk_locked(bool force_sync) {
@@ -170,7 +141,6 @@ void LogManager::initialize_from_disk() {
 
 int64_t LogManager::write_checkpoint_record(
     const std::vector<txn_id_t> &active_txns) {
-    std::lock_guard<std::mutex> flush_lock(flush_latch_);
     std::lock_guard<std::mutex> lock(latch_);
 
     // The checkpoint starts after every log record generated before it.
