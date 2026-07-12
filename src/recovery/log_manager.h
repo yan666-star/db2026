@@ -483,7 +483,8 @@ private:
     void flush_log_to_disk_locked(bool force_sync = false);
 
     std::atomic<lsn_t> global_lsn_{0};  // 全局lsn，递增，用于为每条记录分发lsn
-    std::mutex latch_;                  // 用于对log_buffer_的互斥访问
+    std::mutex latch_;                  // 保护log_buffer_和persist_lsn_
+    std::mutex flush_latch_;            // 串行化日志文件写入，不阻塞日志追加
     LogBuffer log_buffer_;              // 日志缓冲区
     lsn_t persist_lsn_;                 // 记录已经持久化到磁盘中的最后一条日志的日志号
     DiskManager* disk_manager_;
