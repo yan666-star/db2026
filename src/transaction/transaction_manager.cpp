@@ -52,8 +52,6 @@ struct PerfDiagStats {
     std::atomic<uint64_t> pending_wait_timeout{0};
     std::atomic<uint64_t> abort_checkpoint_flush_us{0};
     std::atomic<uint64_t> abort_log_force_flush_us{0};
-    std::atomic<uint64_t> si_admission_waits{0};
-    std::atomic<uint64_t> si_admission_wait_us{0};
 };
 
 PerfDiagStats &perf_diag_stats() {
@@ -67,23 +65,6 @@ bool perf_diag_enabled() {
         return value != nullptr && value[0] != '\0' && value[0] != '0';
     }();
     return enabled;
-}
-
-size_t si_max_active() {
-    static size_t limit = [] {
-        constexpr size_t kDefaultLimit = 1;
-        const char *value = std::getenv("RMDB_SI_MAX_ACTIVE");
-        if (value == nullptr || value[0] == '\0') {
-            return kDefaultLimit;
-        }
-        char *end = nullptr;
-        unsigned long long parsed = std::strtoull(value, &end, 10);
-        if (end == value || *end != '\0') {
-            return kDefaultLimit;
-        }
-        return static_cast<size_t>(parsed);
-    }();
-    return limit;
 }
 
 void print_perf_diag() {
@@ -137,8 +118,6 @@ void print_perf_diag() {
               << s.abort_checkpoint_flush_us.load()
               << " abort_log_force_flush_us="
               << s.abort_log_force_flush_us.load()
-              << " si_admission_waits=" << s.si_admission_waits.load()
-              << " si_admission_wait_us=" << s.si_admission_wait_us.load()
               << " buffer_fetches=" << shared.buffer_fetches.load()
               << " buffer_hits=" << shared.buffer_hits.load()
               << " buffer_misses=" << shared.buffer_misses.load()
@@ -275,71 +254,6 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
     }
     txn->set_state(TransactionState::GROWING);
     return txn;
-}
-
-void TransactionManager::ensure_snapshot_admission(Transaction *txn) {
-    if (txn == nullptr) {
-        return;
-    }
-    if (!admit_snapshot_transaction(txn->get_transaction_id(),
-                                    txn->get_isolation_level())) {
-        return;
-    }
-
-    // Snapshot isolation establishes its snapshot on the first actual data
-    // access, not merely when BEGIN is acknowledged. Transactions waiting in
-    // the admission queue must not retain a timestamp that became stale while
-    // earlier admitted transactions committed.
-    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-    timestamp_t start_ts = last_commit_ts_.load();
-    txn->set_start_ts(start_ts);
-    txn->set_read_ts(start_ts);
-    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-    if (state_it != mvcc_txns_.end()) {
-        state_it->second.start_ts = start_ts;
-    }
-}
-
-bool TransactionManager::admit_snapshot_transaction(
-    txn_id_t txn_id, IsolationLevel isolation_level) {
-    size_t limit = si_max_active();
-    if (isolation_level != IsolationLevel::SNAPSHOT_ISOLATION || limit == 0) {
-        return false;
-    }
-
-    auto wait_start = std::chrono::steady_clock::now();
-    std::unique_lock<std::mutex> lock(si_admission_latch_);
-    if (admitted_snapshot_txns_.find(txn_id) !=
-        admitted_snapshot_txns_.end()) {
-        return false;
-    }
-    snapshot_admission_waiters_.push_back(txn_id);
-    bool waited = admitted_snapshot_txns_.size() >= limit ||
-                  snapshot_admission_waiters_.front() != txn_id;
-    si_admission_cv_.wait(lock, [&] {
-        return admitted_snapshot_txns_.size() < limit &&
-               snapshot_admission_waiters_.front() == txn_id;
-    });
-    snapshot_admission_waiters_.pop_front();
-    admitted_snapshot_txns_.insert(txn_id);
-    si_admission_cv_.notify_all();
-    if (waited && perf_diag_enabled()) {
-        perf_diag_stats().si_admission_waits.fetch_add(
-            1, std::memory_order_relaxed);
-        add_perf_diag_us(perf_diag_stats().si_admission_wait_us, wait_start);
-    }
-    return true;
-}
-
-void TransactionManager::release_snapshot_admission(txn_id_t txn_id) {
-    bool released = false;
-    {
-        std::lock_guard<std::mutex> lock(si_admission_latch_);
-        released = admitted_snapshot_txns_.erase(txn_id) != 0;
-    }
-    if (released) {
-        si_admission_cv_.notify_all();
-    }
 }
 
 static void update_indexes(SmManager *sm_manager,
@@ -1814,7 +1728,6 @@ void TransactionManager::finish_transaction(Transaction *txn) {
         active_txns_.erase(txn->get_transaction_id());
     }
     checkpoint_cv_.notify_all();
-    release_snapshot_admission(txn->get_transaction_id());
 }
 
 void TransactionManager::release_transaction(Transaction *txn) {

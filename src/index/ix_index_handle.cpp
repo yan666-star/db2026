@@ -494,23 +494,7 @@ bool IxIndexHandle::coalesce_or_redistribute(IxNodeHandle *node, Transaction *tr
 {
     if (node->is_root_page())
         return adjust_root(node);
-
-    // Use lazy deletion for non-root nodes. This implementation has no
-    // reusable index-page free list (release_node_handle is intentionally a
-    // no-op), so eager merge does not reclaim storage. More importantly,
-    // recursively merging an internal parent while callers still own handles
-    // to the old child/parent can leave a child whose parent no longer
-    // contains its page id. The next delete then fails in find_child().
-    //
-    // Keeping an under-full node is a valid B+ tree search layout: separator
-    // ranges and the leaf chain remain intact, and a later insert can reuse
-    // the same node. Root adjustment is retained above.
-    (void)transaction;
-    (void)root_is_latched;
-    return false;
-
-#if 0
-    if (node->get_size() >= (node->get_max_size() >> 1))
+    else if (node->get_size() >= (node->get_max_size() >> 1))
         return false;
 
     auto parent = fetch_node(node->get_parent_page_no());
@@ -551,7 +535,6 @@ bool IxIndexHandle::coalesce_or_redistribute(IxNodeHandle *node, Transaction *tr
     delete parent;
     delete sibling_node;
     return is_success;
-#endif
 }
 
 /**

@@ -1,6 +1,6 @@
-#line 2 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/lex.yy.cpp"
+#line 2 "/home/osboxes/Desktop/VMware/db2026/src/parser/lex.yy.cpp"
 
-#line 4 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/lex.yy.cpp"
+#line 4 "/home/osboxes/Desktop/VMware/db2026/src/parser/lex.yy.cpp"
 
 #define  YY_INT_ALIGNED short int
 
@@ -741,9 +741,9 @@ char *yytext;
         } \
     }
 
-#line 745 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/lex.yy.cpp"
+#line 745 "/home/osboxes/Desktop/VMware/db2026/src/parser/lex.yy.cpp"
 
-#line 747 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/lex.yy.cpp"
+#line 747 "/home/osboxes/Desktop/VMware/db2026/src/parser/lex.yy.cpp"
 
 #define INITIAL 0
 #define STATE_COMMENT 1
@@ -981,7 +981,7 @@ YY_DECL
 
 #line 51 "lex.l"
     /* block comment */
-#line 985 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/lex.yy.cpp"
+#line 985 "/home/osboxes/Desktop/VMware/db2026/src/parser/lex.yy.cpp"
 
 	while ( /*CONSTCOND*/1 )		/* loops until end-of-file is reached */
 		{
@@ -1418,7 +1418,7 @@ YY_RULE_SETUP
 #line 156 "lex.l"
 ECHO;
 	YY_BREAK
-#line 1422 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/lex.yy.cpp"
+#line 1422 "/home/osboxes/Desktop/VMware/db2026/src/parser/lex.yy.cpp"
 
 	case YY_END_OF_BUFFER:
 		{
