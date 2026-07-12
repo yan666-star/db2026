@@ -213,7 +213,7 @@ class IndexScanExecutor : public AbstractExecutor {
 
         if (batch_index_ + 1 < batch_recs_.size()) {
             batch_index_++;
-            rec_ = std::move(batch_recs_[batch_index_]);
+            rec_ = std::make_unique<RmRecord>(*batch_recs_[batch_index_]);
             rid_ = batch_rids_[batch_index_];
             return;
         }
@@ -339,7 +339,7 @@ class IndexScanExecutor : public AbstractExecutor {
         }
 
         if (!batch_recs_.empty()) {
-            rec_ = std::move(batch_recs_[0]);
+            rec_ = std::make_unique<RmRecord>(*batch_recs_[0]);
             rid_ = batch_rids_[0];
         } else {
             is_end_ = true;
