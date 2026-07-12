@@ -321,6 +321,25 @@ class IndexScanExecutor : public AbstractExecutor {
                 break;
             }
 
+            if (uses_mvcc()) {
+                std::vector<std::unique_ptr<RmRecord>> visible_recs;
+                std::vector<Rid> visible_rids;
+                visible_recs.reserve(tmp_batch_recs.size());
+                visible_rids.reserve(tmp_batch_recs.size());
+                for (size_t j = 0; j < tmp_batch_recs.size(); ++j) {
+                    auto visible =
+                        context_->txn_mgr_->get_visible_record(
+                            context_->txn_, fh_->GetMvccFileId(),
+                            tmp_batch_rids[j], tmp_batch_recs[j].get());
+                    if (visible != nullptr) {
+                        visible_recs.push_back(std::move(visible));
+                        visible_rids.push_back(tmp_batch_rids[j]);
+                    }
+                }
+                tmp_batch_recs = std::move(visible_recs);
+                tmp_batch_rids = std::move(visible_rids);
+            }
+
             for (size_t i = 0; i < tmp_batch_recs.size(); ++i) {
                 if (scan_plan_ != nullptr) {
                     scan_plan_->rows_++;
