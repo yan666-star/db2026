@@ -1119,6 +1119,25 @@ void TransactionManager::check_unique_key_conflict(
         return;
     }
 
+    // The full validation below can reject only an uncommitted version owned
+    // by another writer, or a committed version newer than this snapshot. If
+    // neither class can exist, walking every RID/history would produce the
+    // same successful result. This is only a sufficient fast-path condition;
+    // any uncertainty falls through to the unchanged candidate validation.
+    bool has_other_pending_writer = false;
+    for (const auto &[other_txn_id, state] : mvcc_txns_) {
+        if (other_txn_id == txn->get_transaction_id() || state.aborted ||
+            state.commit_ts != INVALID_TS || state.write_records.empty()) {
+            continue;
+        }
+        has_other_pending_writer = true;
+        break;
+    }
+    if (!has_other_pending_writer &&
+        last_commit_ts_.load() <= txn->get_start_ts()) {
+        return;
+    }
+
     for (const auto &key : candidate_it->second) {
         if (key.rid == target_rid) {
             continue;
