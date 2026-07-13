@@ -169,26 +169,6 @@ class SeqScanExecutor : public AbstractExecutor {
             }
             unlock_committed_read_records(locked);
 
-            if (context_->txn_mgr_ != nullptr &&
-                context_->txn_mgr_->uses_mvcc(context_->txn_)) {
-                std::vector<std::unique_ptr<RmRecord>> visible_recs;
-                std::vector<Rid> visible_rids;
-                visible_recs.reserve(page_recs.size());
-                visible_rids.reserve(page_recs.size());
-                for (size_t i = 0; i < page_recs.size(); ++i) {
-                    auto visible =
-                        context_->txn_mgr_->get_visible_record(
-                            context_->txn_, fh_->GetMvccFileId(),
-                            page_rids[i], page_recs[i].get());
-                    if (visible != nullptr) {
-                        visible_recs.push_back(std::move(visible));
-                        visible_rids.push_back(page_rids[i]);
-                    }
-                }
-                page_recs = std::move(visible_recs);
-                page_rids = std::move(visible_rids);
-            }
-
             for (size_t i = 0; i < page_recs.size(); ++i) {
                 if (scan_plan_ != nullptr) {
                     scan_plan_->rows_++;

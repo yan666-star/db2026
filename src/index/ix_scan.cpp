@@ -15,17 +15,31 @@ void IxScan::next() {
         iid_.slot_no++;
         return;
     }
-    if (!is_end() && iid_.page_no != ih_->file_hdr_->last_leaf_) {
-        auto node = ih_->fetch_node(iid_.page_no);
-        iid_.slot_no = 0;
-        iid_.page_no = node->get_next_leaf();
+    if (is_end() || iid_.page_no == ih_->file_hdr_->last_leaf_) {
+        iid_ = end_;
+        return;
+    }
+
+    page_id_t page_no = iid_.page_no;
+    while (true) {
+        auto node = ih_->fetch_node(page_no);
+        page_id_t next_page = node->get_next_leaf();
         bpm_->unpin_page(node->get_page_id(), false);
         delete node;
-        if (!is_end()) {
-            load_leaf(iid_.page_no);
+
+        if (next_page == IX_LEAF_HEADER_PAGE ||
+            next_page == INVALID_PAGE_ID || next_page == IX_NO_PAGE) {
+            iid_ = end_;
+            return;
         }
-    } else {
-        iid_ = end_;
+        iid_ = {next_page, 0};
+        if (is_end()) {
+            return;
+        }
+        if (load_leaf(next_page)) {
+            return;
+        }
+        page_no = next_page;
     }
 }
 

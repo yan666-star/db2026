@@ -150,12 +150,14 @@ class IxNodeHandle {
      */
     int find_child(IxNodeHandle *child) {
         int rid_idx;
-        for (rid_idx = 0; rid_idx < page_hdr->num_key; rid_idx++) {
+        // Internal nodes contain num_key separator keys and num_key + 1
+        // child pointers. The right-most child is therefore at num_key.
+        for (rid_idx = 0; rid_idx <= page_hdr->num_key; rid_idx++) {
             if (get_rid(rid_idx)->page_no == child->get_page_no()) {
                 break;
             }
         }
-        assert(rid_idx < page_hdr->num_key);
+        assert(rid_idx <= page_hdr->num_key);
         return rid_idx;
     }
 };

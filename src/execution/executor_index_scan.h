@@ -194,15 +194,6 @@ class IndexScanExecutor : public AbstractExecutor {
         scan_ = std::make_unique<IxScan>(ih, lower_iid, upper_iid, sm_manager_->get_bpm());
         delete[] lower_key;
         delete[] upper_key;
-
-        while (!scan_->is_end()) {
-            Rid r = scan_->rid();
-            if (r.page_no >= 0) {
-                batch_rids_map_[r.page_no].push_back(r);
-            }
-            scan_->next();
-        }
-
         load_next_batch();
     }
 
@@ -238,12 +229,42 @@ class IndexScanExecutor : public AbstractExecutor {
     const std::vector<ColMeta> &cols() const override { return cols_; }
 
     bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) override {
-        if (target.tab_name != tab_name_ || index_meta_.col_num != 1 ||
-            index_meta_.cols[0].name != target.col_name ||
-            index_meta_.cols[0].type != type || index_meta_.cols[0].len != len) {
+        has_lookup_key_ = false;
+        lookup_key_.clear();
+        if (target.tab_name != tab_name_ || data == nullptr) {
             return false;
         }
-        lookup_key_.assign(data, data + len);
+
+        std::vector<char> key(index_meta_.col_tot_len);
+        int offset = 0;
+        bool bound_dynamic_col = false;
+        for (const auto &col : index_meta_.cols) {
+            if (col.name == target.col_name) {
+                if (col.type != type || col.len != len) {
+                    return false;
+                }
+                memcpy(key.data() + offset, data, col.len);
+                bound_dynamic_col = true;
+            } else {
+                auto conds_it = col2conds_.find(col.name);
+                if (conds_it == col2conds_.end()) {
+                    return false;
+                }
+                auto equality_it = std::find_if(
+                    conds_it->second.begin(), conds_it->second.end(),
+                    [](const Condition &cond) { return cond.op == OP_EQ; });
+                if (equality_it == conds_it->second.end()) {
+                    return false;
+                }
+                write_condition_rhs_val_to_key(
+                    key.data() + offset, *equality_it, col.len);
+            }
+            offset += col.len;
+        }
+        if (!bound_dynamic_col) {
+            return false;
+        }
+        lookup_key_ = std::move(key);
         has_lookup_key_ = true;
         return true;
     }
@@ -279,7 +300,31 @@ class IndexScanExecutor : public AbstractExecutor {
         rec_.reset();
         rid_ = {-1, -1};
 
-        while (batch_recs_.empty() && !batch_rids_map_.empty()) {
+        while (batch_recs_.empty()) {
+            // Pull at most one index leaf at a time. The old implementation
+            // materialized the complete range before returning the first
+            // tuple, which made MIN/MAX, LIMIT and wide range scans pay the
+            // full cost eagerly and retain every RID in memory.
+            if (batch_rids_map_.empty() && scan_ != nullptr &&
+                !scan_->is_end()) {
+                int batch_size = scan_->get_batch_num();
+                if (batch_size <= 0) {
+                    scan_->next();
+                    continue;
+                }
+                for (int i = 0; i < batch_size && !scan_->is_end(); ++i) {
+                    Rid scan_rid = scan_->rid();
+                    if (scan_rid.page_no >= 0) {
+                        batch_rids_map_[scan_rid.page_no].push_back(scan_rid);
+                    }
+                    scan_->next();
+                }
+            }
+
+            if (batch_rids_map_.empty()) {
+                break;
+            }
+
             std::vector<std::unique_ptr<RmRecord>> tmp_batch_recs;
             std::vector<Rid> tmp_batch_rids;
             bool has_found = false;
@@ -319,25 +364,6 @@ class IndexScanExecutor : public AbstractExecutor {
 
             if (!has_found) {
                 break;
-            }
-
-            if (uses_mvcc()) {
-                std::vector<std::unique_ptr<RmRecord>> visible_recs;
-                std::vector<Rid> visible_rids;
-                visible_recs.reserve(tmp_batch_recs.size());
-                visible_rids.reserve(tmp_batch_recs.size());
-                for (size_t j = 0; j < tmp_batch_recs.size(); ++j) {
-                    auto visible =
-                        context_->txn_mgr_->get_visible_record(
-                            context_->txn_, fh_->GetMvccFileId(),
-                            tmp_batch_rids[j], tmp_batch_recs[j].get());
-                    if (visible != nullptr) {
-                        visible_recs.push_back(std::move(visible));
-                        visible_rids.push_back(tmp_batch_rids[j]);
-                    }
-                }
-                tmp_batch_recs = std::move(visible_recs);
-                tmp_batch_rids = std::move(visible_rids);
             }
 
             for (size_t i = 0; i < tmp_batch_recs.size(); ++i) {

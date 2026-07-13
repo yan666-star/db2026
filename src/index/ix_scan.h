@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <algorithm>
+
 #include "ix_defs.h"
 #include "ix_index_handle.h"
 
@@ -22,9 +24,15 @@ class IxScan : public RecScan {
     int node_size_ = 0;
     std::vector<Rid> batch_rids_;
 
-    void load_leaf(page_id_t page_no) {
+    bool load_leaf(page_id_t page_no) {
         auto node = ih_->fetch_node(page_no);
         node_size_ = node->get_size();
+        if (node_size_ == 0) {
+            batch_rids_.clear();
+            bpm_->unpin_page(node->get_page_id(), false);
+            delete node;
+            return false;
+        }
         if (iid_.slot_no < 0 || iid_.slot_no >= node_size_) {
             bpm_->unpin_page(node->get_page_id(), false);
             delete node;
@@ -37,6 +45,7 @@ class IxScan : public RecScan {
         }
         bpm_->unpin_page(node->get_page_id(), false);
         delete node;
+        return true;
     }
 
    public:
@@ -45,7 +54,9 @@ class IxScan : public RecScan {
         if (is_end()) {
             return;
         }
-        load_leaf(iid_.page_no);
+        if (!load_leaf(iid_.page_no)) {
+            next();
+        }
     }
 
     void next() override;
@@ -53,6 +64,17 @@ class IxScan : public RecScan {
     bool is_end() const override { return iid_ == end_; }
 
     Rid rid() const override;
+
+    int get_batch_num() const override {
+        if (is_end()) {
+            return 0;
+        }
+        int stop = node_size_;
+        if (iid_.page_no == end_.page_no) {
+            stop = std::min(stop, end_.slot_no);
+        }
+        return std::max(0, stop - iid_.slot_no);
+    }
 
     const Iid &iid() const { return iid_; }
 };

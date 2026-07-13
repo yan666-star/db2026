@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
@@ -96,6 +97,8 @@ public:
     bool uses_mvcc(const Transaction *txn) const {
         return txn != nullptr && txn->uses_mvcc();
     }
+
+    void ensure_snapshot_admission(Transaction *txn);
 
     std::unique_ptr<RmRecord> get_visible_record(
         Transaction *txn, uint64_t file_id, const Rid &rid,
@@ -217,6 +220,9 @@ public:
 
 private:
     void finish_transaction(Transaction *txn);
+    bool admit_snapshot_transaction(txn_id_t txn_id,
+                                    IsolationLevel isolation_level);
+    void release_snapshot_admission(txn_id_t txn_id);
     void check_commit_conflict(Transaction *txn);
     void check_commit_conflict_under_latch(Transaction *txn);
     void commit_mvcc(Transaction *txn);
@@ -315,6 +321,11 @@ private:
     bool checkpoint_in_progress_ = false;
     size_t active_statements_ = 0;
     std::unordered_set<txn_id_t> active_txns_;
+
+    std::mutex si_admission_latch_;
+    std::condition_variable si_admission_cv_;
+    std::deque<txn_id_t> snapshot_admission_waiters_;
+    std::unordered_set<txn_id_t> admitted_snapshot_txns_;
 
     std::atomic<timestamp_t> last_commit_ts_{0};    // 最后提交的时间戳,仅用于MVCC
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC

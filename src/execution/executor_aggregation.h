@@ -298,30 +298,41 @@ class AggregationExecutor : public AbstractExecutor {
 
         std::unordered_map<std::string, GroupState> groups;
         std::vector<std::string> group_order;
-        while (!prev_->is_end()) {
-            auto rec = prev_->Next();
-            std::vector<std::pair<ColType, std::string>> gvals;
-            for (auto &g : plan_->group_bys_) {
-                gvals.push_back(read_col_bin(*rec, g));
+        if (plan_->group_bys_.empty()) {
+            // Scalar aggregates always have exactly one logical group,
+            // including the empty-input case. Avoid constructing an empty
+            // group-key vector/string and probing an unordered_map per row.
+            GroupState scalar_group;
+            while (!prev_->is_end()) {
+                auto rec = prev_->Next();
+                for (auto &kv : required_aggs) {
+                    update_agg(kv.second,
+                               scalar_group.agg_states[kv.first], *rec);
+                }
+                prev_->nextTuple();
             }
-            auto gk = make_group_key(gvals);
-            if (groups.find(gk) == groups.end()) {
-                GroupState st;
-                st.group_vals = gvals;
-                groups[gk] = st;
-                group_order.push_back(gk);
-            }
-            auto &st = groups[gk];
-            for (auto &kv : required_aggs) {
-                update_agg(kv.second, st.agg_states[kv.first], *rec);
-            }
-            prev_->nextTuple();
-        }
-
-        if (groups.empty() && plan_->group_bys_.empty()) {
-            GroupState st;
-            groups[""] = st;
+            groups.emplace("", std::move(scalar_group));
             group_order.push_back("");
+        } else {
+            while (!prev_->is_end()) {
+                auto rec = prev_->Next();
+                std::vector<std::pair<ColType, std::string>> gvals;
+                for (auto &g : plan_->group_bys_) {
+                    gvals.push_back(read_col_bin(*rec, g));
+                }
+                auto gk = make_group_key(gvals);
+                if (groups.find(gk) == groups.end()) {
+                    GroupState st;
+                    st.group_vals = gvals;
+                    groups[gk] = st;
+                    group_order.push_back(gk);
+                }
+                auto &st = groups[gk];
+                for (auto &kv : required_aggs) {
+                    update_agg(kv.second, st.agg_states[kv.first], *rec);
+                }
+                prev_->nextTuple();
+            }
         }
 
         for (auto &k : group_order) {

@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "planner.h"
 
+#include <algorithm>
 #include <memory>
 #include <set>
 
@@ -208,6 +209,43 @@ static bool select_inner_join_index(SmManager *sm_manager,
         if (tab.is_index(index_cols)) {
             scan->tag = T_IndexScan;
             scan->index_col_names_ = std::move(index_cols);
+            return true;
+        }
+
+        // A parameterized nested-loop lookup can also use a composite index
+        // when the join supplies one key column and literal equality
+        // predicates supply every remaining column. Example: (w_id, i_id)
+        // with w_id = 1 and i_id = outer.i_id. Keep all predicates in the
+        // plan; the executor only uses the complete key as an access path.
+        for (const auto &index : tab.indexes) {
+            bool contains_dynamic_col = false;
+            bool complete_key = true;
+            for (const auto &index_col : index.cols) {
+                if (index_col.name == inner_col) {
+                    contains_dynamic_col = true;
+                    continue;
+                }
+                bool has_literal_eq = std::any_of(
+                    scan->conds_.begin(), scan->conds_.end(),
+                    [&](const Condition &scan_cond) {
+                        return scan_cond.is_rhs_val &&
+                               scan_cond.op == OP_EQ &&
+                               scan_cond.lhs_col.tab_name == inner_table &&
+                               scan_cond.lhs_col.col_name == index_col.name;
+                    });
+                if (!has_literal_eq) {
+                    complete_key = false;
+                    break;
+                }
+            }
+            if (!contains_dynamic_col || !complete_key) {
+                continue;
+            }
+            scan->tag = T_IndexScan;
+            scan->index_col_names_.clear();
+            for (const auto &index_col : index.cols) {
+                scan->index_col_names_.push_back(index_col.name);
+            }
             return true;
         }
     }
