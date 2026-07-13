@@ -579,20 +579,14 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
     RecordKey key{file_id, rid};
     auto history_it = record_versions_.find(key);
     if (history_it == record_versions_.end()) {
-        if (physical_record == nullptr) {
-            return nullptr;
-        }
-        // Loaded / never-versioned rows have no chain yet. Treat the physical
-        // image as committed at ts=0; do not use last_commit_ts_ here because
-        // unrelated commits after this snapshot would hide unchanged rows and
-        // Empty UPDATE scans must not let a multi-statement transaction commit
-        // only a subset of its intended writes.
-        MvccVersion baseline;
-        baseline.commit_ts = 0;
-        baseline.deleted = false;
-        baseline.data = copy_record(physical_record);
-        history_it =
-            record_versions_.emplace(key, std::vector<MvccVersion>{std::move(baseline)}).first;
+        // Loaded / never-versioned rows are implicitly committed at ts=0.
+        // A read does not need to materialize that baseline in the global
+        // version map: prepare_write() creates it from old_record on the first
+        // UPDATE/DELETE. Avoiding read-only entries keeps large scans from
+        // permanently growing record_versions_ and every later GC pass.
+        return physical_record == nullptr
+                   ? nullptr
+                   : std::make_unique<RmRecord>(*physical_record);
     }
 
     const auto &history = history_it->second;

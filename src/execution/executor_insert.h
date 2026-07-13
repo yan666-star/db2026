@@ -64,22 +64,6 @@ class InsertExecutor : public AbstractExecutor {
             unique_insert_guard = fh_->acquire_logical_update_latch();
         }
 
-        if (uses_mvcc && tab_.indexes.empty() && !tab_.cols.empty()) {
-            const ColMeta &identity_col = tab_.cols.front();
-            for (const auto &rid : fh_->all_record_slots()) {
-                auto existing = fh_->get_record(rid, context_);
-                if (existing == nullptr) {
-                    continue;
-                }
-                if (memcmp(existing->data + identity_col.offset,
-                           rec.data + identity_col.offset,
-                           identity_col.len) == 0) {
-                    context_->txn_mgr_->check_write_conflict(
-                        context_->txn_, fh_->GetMvccFileId(), rid);
-                }
-            }
-        }
-
         std::vector<std::vector<char>> index_keys;
         std::vector<std::string> index_names;
         index_keys.reserve(tab_.indexes.size());
