@@ -1653,18 +1653,25 @@ void TransactionManager::GarbageCollection() {
                 MvccVersion &only = history.front();
                 if (only.commit_ts != INVALID_TS &&
                     only.commit_ts <= watermark) {
-                    if (!only.deleted) {
-                        auto candidate_it =
-                            mvcc_unique_conflict_keys_by_file_.find(
-                                it->first.file_id);
-                        if (candidate_it !=
-                            mvcc_unique_conflict_keys_by_file_.end()) {
-                            candidate_it->second.erase(it->first);
-                            if (candidate_it->second.empty()) {
-                                mvcc_unique_conflict_keys_by_file_.erase(
-                                    candidate_it);
-                            }
+                    // Once a version is settled below the watermark it can no
+                    // longer conflict with a future unique-key write.  In
+                    // particular, committed tombstones were previously kept in
+                    // this candidate set forever even though
+                    // check_unique_key_conflict() explicitly ignores deleted
+                    // versions.  Delivery-style delete/insert workloads then
+                    // paid an ever-growing linear scan for every insert.
+                    auto candidate_it =
+                        mvcc_unique_conflict_keys_by_file_.find(
+                            it->first.file_id);
+                    if (candidate_it !=
+                        mvcc_unique_conflict_keys_by_file_.end()) {
+                        candidate_it->second.erase(it->first);
+                        if (candidate_it->second.empty()) {
+                            mvcc_unique_conflict_keys_by_file_.erase(
+                                candidate_it);
                         }
+                    }
+                    if (!only.deleted) {
                         // Keep the newest committed version so snapshot readers
                         // and deferred MVCC writers can still resolve visibility
                         // after physical apply; erasing the chain causes silent
