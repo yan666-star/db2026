@@ -1182,6 +1182,9 @@ void TransactionManager::prepare_write(
     MvccVersion *own_pending = nullptr;
     while (true) {
         auto &history = record_versions_[key];
+        // Mark the chain before creating a baseline or running validation that
+        // may throw.  That keeps the worklist complete even on conflict paths.
+        gc_dirty_keys_.insert(key);
         if (history.empty() && old_record != nullptr) {
             MvccVersion baseline;
             baseline.commit_ts = 0;
@@ -1596,16 +1599,9 @@ timestamp_t TransactionManager::GetWatermark() {
 }
 
 void TransactionManager::GarbageCollection() {
-    struct Reclaim {
-        std::string table_name;
-        RecordKey key;
-        timestamp_t commit_ts;
-    };
-    std::vector<Reclaim> reclaims;
-
-    // Same lock ordering as commit_mvcc: mvcc_latch_ is a leaf lock, so all
-    // physical slot reclamation happens after releasing it, serialized against
-    // concurrent commit application by commit_apply_latch_.
+    // Same lock ordering as commit_mvcc.  GC only compacts in-memory version
+    // metadata; committed DELETEs have already been applied to the heap before
+    // commit_mvcc() returns.
     auto apply_lock =
         rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
@@ -1623,8 +1619,15 @@ void TransactionManager::GarbageCollection() {
             watermark = std::min(watermark, state.start_ts);
         }
 
-        for (auto it = record_versions_.begin();
-             it != record_versions_.end();) {
+        for (auto dirty_it = gc_dirty_keys_.begin();
+             dirty_it != gc_dirty_keys_.end();) {
+            RecordKey candidate_key = *dirty_it;
+            auto current_dirty_it = dirty_it++;
+            auto it = record_versions_.find(candidate_key);
+            if (it == record_versions_.end()) {
+                gc_dirty_keys_.erase(current_dirty_it);
+                continue;
+            }
             auto &history = it->second;
 
             // Find the newest committed version visible at the watermark. It is
@@ -1649,6 +1652,7 @@ void TransactionManager::GarbageCollection() {
                     history.end());
             }
 
+            bool keep_dirty = false;
             if (history.size() == 1) {
                 MvccVersion &only = history.front();
                 if (only.commit_ts != INVALID_TS &&
@@ -1671,27 +1675,30 @@ void TransactionManager::GarbageCollection() {
                                 candidate_it);
                         }
                     }
-                    if (!only.deleted) {
-                        // Keep the newest committed version so snapshot readers
-                        // and deferred MVCC writers can still resolve visibility
-                        // after physical apply; erasing the chain causes silent
-                        // UPDATE skips once last_commit_ts advances.
-                        ++it;
-                        continue;
+                    // Keep the newest committed version so snapshot readers and
+                    // deferred MVCC writers can still resolve visibility after
+                    // physical apply; erasing the chain causes silent UPDATE
+                    // skips once last_commit_ts advances.
+                    if (only.deleted) {
+                        // The heap row is already gone.  Retain the tombstone's
+                        // timestamp while the chain exists so a copied/reused
+                        // physical slot cannot resurrect for an older snapshot,
+                        // but its payload and table metadata are no longer used.
+                        only.table_name.clear();
+                        only.before.clear();
+                        only.data.clear();
                     }
-                    if (!only.table_name.empty()) {
-                        // Deleted rows keep a tombstone in the chain forever:
-                        // a concurrent reader may have copied the physical
-                        // bytes right before we reclaim the slot, and only the
-                        // tombstone stops that row from resurrecting. The
-                        // physical delete happens outside mvcc_latch_.
-                        reclaims.push_back(
-                            Reclaim{only.table_name, it->first,
-                                    only.commit_ts});
-                    }
+                } else {
+                    keep_dirty = true;
                 }
+            } else if (!history.empty()) {
+                // Pending or multiple committed versions need another pass
+                // after the watermark or writer state advances.
+                keep_dirty = true;
             }
-            ++it;
+            if (!keep_dirty) {
+                gc_dirty_keys_.erase(current_dirty_it);
+            }
         }
 
         // Prune bookkeeping for transactions that can no longer participate in
@@ -1706,42 +1713,6 @@ void TransactionManager::GarbageCollection() {
                 it = mvcc_txns_.erase(it);
             } else {
                 ++it;
-            }
-        }
-    }
-
-    if (reclaims.empty()) {
-        return;
-    }
-
-    for (const auto &reclaim : reclaims) {
-        auto fh_it = sm_manager_->fhs_.find(reclaim.table_name);
-        if (fh_it == sm_manager_->fhs_.end()) {
-            continue;
-        }
-        RmFileHandle *file_handle = fh_it->second.get();
-        if (file_handle->record_exists(reclaim.key.rid)) {
-            file_handle->delete_record(reclaim.key.rid, nullptr);
-        }
-    }
-
-    // Shrink the reclaimed tombstones: keep the (deleted, commit_ts) marker but
-    // drop the payload copies, and clear table_name so the physical delete is
-    // not retried on every GC cycle.
-    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-    for (const auto &reclaim : reclaims) {
-        auto history_it = record_versions_.find(reclaim.key);
-        if (history_it == record_versions_.end()) {
-            continue;
-        }
-        for (auto &version : history_it->second) {
-            if (version.deleted && version.commit_ts == reclaim.commit_ts) {
-                version.table_name.clear();
-                version.table_name.shrink_to_fit();
-                version.before.clear();
-                version.before.shrink_to_fit();
-                version.data.clear();
-                version.data.shrink_to_fit();
             }
         }
     }

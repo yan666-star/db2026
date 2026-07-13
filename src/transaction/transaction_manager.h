@@ -341,6 +341,10 @@ private:
     mutable std::mutex mvcc_latch_;
     std::condition_variable mvcc_cv_;
     std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
+    // Version chains changed since the previous GC pass.  Unresolved chains
+    // remain in this worklist, so the frequent GC cycle prunes hot histories
+    // without rescanning every stable row accumulated since server start.
+    std::unordered_set<RecordKey, RecordKeyHash> gc_dirty_keys_;
     std::unordered_map<uint64_t, std::unordered_set<RecordKey, RecordKeyHash>>
         mvcc_unique_conflict_keys_by_file_;
     std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;
