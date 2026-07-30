@@ -1,8 +1,8 @@
 # 决赛 Wire Protocol、类型化执行与 SSI 重构设计
 
-日期：2026-07-30  
-状态：已确认，可进入实施计划  
-适用仓库：`D:\DMS-DESIGN\db2026`  
+日期：2026-07-30
+状态：已确认，可进入实施计划
+适用仓库：`D:\DMS-DESIGN\db2026`
 交叉测试资源：`D:\DMS-DESIGN\TPCC-Tester-main`
 
 ## 1. 设计目标
