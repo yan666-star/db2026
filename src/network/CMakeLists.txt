@@ -1,4 +1,5 @@
 set(SOURCES
+    socket_io.cpp
     wire_codec.cpp
 )
 

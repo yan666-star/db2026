@@ -28,3 +28,7 @@ target_link_libraries(unit_test storage lru_replacer record gtest_main)  # add g
 add_executable(test_wire_codec test/wire_codec_test.cpp)
 target_link_libraries(test_wire_codec network)
 add_test(NAME test_wire_codec COMMAND test_wire_codec)
+
+add_executable(test_socket_io test/socket_io_test.cpp)
+target_link_libraries(test_socket_io network)
+add_test(NAME test_socket_io COMMAND test_socket_io)
