@@ -44,3 +44,11 @@ add_test(NAME test_prepared_dictionary COMMAND test_prepared_dictionary)
 add_executable(test_wire_messages test/wire_messages_test.cpp)
 target_link_libraries(test_wire_messages network)
 add_test(NAME test_wire_messages COMMAND test_wire_messages)
+
+add_executable(test_request_dispatcher test/request_dispatcher_test.cpp)
+target_link_libraries(test_request_dispatcher network)
+add_test(NAME test_request_dispatcher COMMAND test_request_dispatcher)
+
+add_executable(test_connection_session test/connection_session_test.cpp)
+target_link_libraries(test_connection_session network)
+add_test(NAME test_connection_session COMMAND test_connection_session)

@@ -1,5 +1,7 @@
 set(SOURCES
+    connection_session.cpp
     prepared_dictionary.cpp
+    request_dispatcher.cpp
     socket_io.cpp
     wire_codec.cpp
     wire_messages.cpp
