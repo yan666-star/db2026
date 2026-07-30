@@ -124,6 +124,9 @@ void WireWriter::put_bytes(const uint8_t *data, size_t size) {
         bytes_.size() > kMaxPayloadBytes - size) {
         throw ProtocolError("wire payload exceeds 1 MiB");
     }
+    if (size == 0) {
+        return;
+    }
     bytes_.insert(bytes_.end(), data, data + size);
 }
 
@@ -133,6 +136,14 @@ void WireWriter::put_bytes(const std::vector<uint8_t> &bytes) {
 
 void WireWriter::put_string(const std::string &value) {
     put_bytes(reinterpret_cast<const uint8_t *>(value.data()), value.size());
+}
+
+void WireWriter::put_string_u32(const std::string &value) {
+    if (value.size() > UINT32_MAX) {
+        throw ProtocolError("length-prefixed string is too large");
+    }
+    put_u32(static_cast<uint32_t>(value.size()));
+    put_string(value);
 }
 
 const std::vector<uint8_t> &WireWriter::bytes() const { return bytes_; }
@@ -168,6 +179,64 @@ void validate_client_header(const FrameHeader &header) {
             return;
     }
     throw ProtocolError("unknown client frame tag");
+}
+
+bool is_valid_utf8(const std::string &value) noexcept {
+    const auto *bytes =
+        reinterpret_cast<const unsigned char *>(value.data());
+    size_t index = 0;
+    while (index < value.size()) {
+        const unsigned char first = bytes[index];
+        if (first <= 0x7fU) {
+            index++;
+            continue;
+        }
+
+        size_t continuation_count = 0;
+        unsigned char second_min = 0x80U;
+        unsigned char second_max = 0xbfU;
+        if (first >= 0xc2U && first <= 0xdfU) {
+            continuation_count = 1;
+        } else if (first >= 0xe0U && first <= 0xefU) {
+            continuation_count = 2;
+            if (first == 0xe0U) {
+                second_min = 0xa0U;
+            } else if (first == 0xedU) {
+                second_max = 0x9fU;
+            }
+        } else if (first >= 0xf0U && first <= 0xf4U) {
+            continuation_count = 3;
+            if (first == 0xf0U) {
+                second_min = 0x90U;
+            } else if (first == 0xf4U) {
+                second_max = 0x8fU;
+            }
+        } else {
+            return false;
+        }
+
+        if (continuation_count > value.size() - index - 1U) {
+            return false;
+        }
+        const unsigned char second = bytes[index + 1U];
+        if (second < second_min || second > second_max) {
+            return false;
+        }
+        for (size_t offset = 2U; offset <= continuation_count; ++offset) {
+            const unsigned char current = bytes[index + offset];
+            if (current < 0x80U || current > 0xbfU) {
+                return false;
+            }
+        }
+        index += continuation_count + 1U;
+    }
+    return true;
+}
+
+void require_valid_utf8(const std::string &value, const char *field_name) {
+    if (!is_valid_utf8(value)) {
+        throw ProtocolError(std::string(field_name) + " must be valid UTF-8");
+    }
 }
 
 FrameHeader decode_header(const uint8_t *data, size_t size) {

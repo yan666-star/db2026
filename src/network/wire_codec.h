@@ -43,6 +43,7 @@ class WireWriter {
     void put_bytes(const uint8_t *data, size_t size);
     void put_bytes(const std::vector<uint8_t> &bytes);
     void put_string(const std::string &value);
+    void put_string_u32(const std::string &value);
 
     const std::vector<uint8_t> &bytes() const;
     std::vector<uint8_t> take_bytes();
@@ -59,5 +60,7 @@ std::vector<uint8_t> encode_frame(uint8_t tag, uint8_t flags,
 
 void validate_common_header(const FrameHeader &header);
 void validate_client_header(const FrameHeader &header);
+bool is_valid_utf8(const std::string &value) noexcept;
+void require_valid_utf8(const std::string &value, const char *field_name);
 
 }  // namespace rmdb::wire

@@ -36,3 +36,11 @@ add_test(NAME test_socket_io COMMAND test_socket_io)
 add_executable(test_execution_result test/execution_result_test.cpp)
 target_link_libraries(test_execution_result network)
 add_test(NAME test_execution_result COMMAND test_execution_result)
+
+add_executable(test_prepared_dictionary test/prepared_dictionary_test.cpp)
+target_link_libraries(test_prepared_dictionary network)
+add_test(NAME test_prepared_dictionary COMMAND test_prepared_dictionary)
+
+add_executable(test_wire_messages test/wire_messages_test.cpp)
+target_link_libraries(test_wire_messages network)
+add_test(NAME test_wire_messages COMMAND test_wire_messages)

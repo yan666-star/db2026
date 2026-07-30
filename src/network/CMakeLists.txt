@@ -1,6 +1,8 @@
 set(SOURCES
+    prepared_dictionary.cpp
     socket_io.cpp
     wire_codec.cpp
+    wire_messages.cpp
 )
 
 add_library(network STATIC ${SOURCES})
