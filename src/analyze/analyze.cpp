@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+#include <cmath>
+
 static void cast_val_to_col(Value &val, ColType col_type) {
     if (val.type == col_type) {
         return;
@@ -369,6 +371,12 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
                 item.is_agg = true;
                 item.agg.type = convert_agg_type(sv_agg->func_type);
                 item.agg.is_star = sv_agg->is_star;
+                item.agg.is_distinct = sv_agg->is_distinct;
+                if (item.agg.is_distinct &&
+                    (item.agg.type != AGG_COUNT || item.agg.is_star)) {
+                    throw RMDBError(
+                        "DISTINCT is supported only by COUNT(column)");
+                }
                 if (!sv_agg->is_star) {
                     item.agg.col =
                         check_column(all_cols, {.tab_name = sv_agg->col->tab_name, .col_name = sv_agg->col->col_name},
@@ -398,6 +406,12 @@ std::shared_ptr<Query> Analyze::analyze_select(std::shared_ptr<ast::SelectStmt> 
         HavingCond h;
         h.lhs.type = convert_agg_type(sv_having->lhs->func_type);
         h.lhs.is_star = sv_having->lhs->is_star;
+        h.lhs.is_distinct = sv_having->lhs->is_distinct;
+        if (h.lhs.is_distinct &&
+            (h.lhs.type != AGG_COUNT || h.lhs.is_star)) {
+            throw RMDBError(
+                "DISTINCT is supported only by COUNT(column)");
+        }
         if (!h.lhs.is_star) {
             h.lhs.col = check_column(all_cols,
                                      {.tab_name = sv_having->lhs->col->tab_name, .col_name = sv_having->lhs->col->col_name},
@@ -571,6 +585,23 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
     return query;
 }
 
+std::shared_ptr<Query> Analyze::do_analyze_prepared(
+    std::shared_ptr<ast::TreeNode> parse,
+    const std::vector<ColType> &parameter_types) {
+    if (!prepared_parameter_types_.empty()) {
+        throw InternalError("Nested prepared analysis is not supported");
+    }
+    prepared_parameter_types_ = parameter_types;
+    try {
+        auto query = do_analyze(std::move(parse));
+        prepared_parameter_types_.clear();
+        return query;
+    } catch (...) {
+        prepared_parameter_types_.clear();
+        throw;
+    }
+}
+
 
     
 TabCol Analyze::check_column(const std::vector<ColMeta> &all_cols,
@@ -677,10 +708,37 @@ Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
         val.set_int(int_lit->val);
    } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
+        if (!std::isfinite(float_lit->val)) {
+            throw RMDBError("FLOAT literal must be finite");
+        }
         val.set_float(float_lit->val);
         val.from_float_literal = true;
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {
         val.set_str(str_lit->val);
+    } else if (auto parameter =
+                   std::dynamic_pointer_cast<ast::ParamRef>(sv_val)) {
+        if (parameter->ordinal == 0 ||
+            parameter->ordinal > prepared_parameter_types_.size()) {
+            throw InternalError(
+                "Prepared parameter ordinal has no declared type");
+        }
+        const uint16_t index =
+            static_cast<uint16_t>(parameter->ordinal - 1U);
+        const ColType declared_type = prepared_parameter_types_[index];
+        switch (declared_type) {
+            case TYPE_INT:
+                val.set_int(0);
+                break;
+            case TYPE_FLOAT:
+                val.set_float(0.0F);
+                break;
+            case TYPE_STRING:
+                val.set_str("");
+                break;
+        }
+        val.is_param = true;
+        val.param_index = index;
+        val.parameter_declared_type = declared_type;
     } else {
         throw InternalError("Unexpected sv value type");
     }

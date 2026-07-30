@@ -19,9 +19,9 @@ See the Mulan PSL v2 for more details. */
 
 #include "common/config.h"
 #include "errors.h"
+#include "execution/execution_result.h"
 #include "index/ix.h"
 #include "record/rm.h"
-#include "record_printer.h"
 
 namespace {
 
@@ -303,30 +303,23 @@ void SmManager::close_db() {
 }
 
 /**
- * @description: 显示所有的表,通过测试需要将其结果写入到output.txt,详情看题目文档
- * @param {Context*} context 
+ * @description: 通过类型化结果 sink 返回当前数据库中的全部表
+ * @param {Context*} context
  */
 void SmManager::show_tables(Context* context) {
-    std::fstream outfile;
-    if (enable_output_file.load()) {
-        outfile.open("output.txt", std::ios::out | std::ios::app);
-        outfile << "| Tables |\n";
+    if (context->result_sink_ == nullptr) {
+        throw InternalError("Missing typed result sink");
     }
-    RecordPrinter printer(1);
-    printer.print_separator(context);
-    printer.print_record({"Tables"}, context);
-    printer.print_separator(context);
+    context->result_sink_->begin_query(
+        {{"Tables", rmdb::wire::SqlType::CHAR}});
+    uint64_t row_count = 0;
     for (auto &entry : db_.tabs_) {
         auto &tab = entry.second;
-        printer.print_record({tab.name}, context);
-        if (outfile.is_open()) {
-            outfile << "| " << tab.name << " |\n";
-        }
+        context->result_sink_->push_row(
+            {rmdb::execution::TypedValue::Char(tab.name)});
+        row_count++;
     }
-    printer.print_separator(context);
-    if (outfile.is_open()) {
-        outfile.close();
-    }
+    context->result_sink_->end_query(row_count);
 }
 
 /**
@@ -336,20 +329,23 @@ void SmManager::show_tables(Context* context) {
  */
 void SmManager::desc_table(const std::string& tab_name, Context* context) {
     TabMeta &tab = db_.get_table(tab_name);
-
-    std::vector<std::string> captions = {"Field", "Type", "Index"};
-    RecordPrinter printer(captions.size());
-    // Print header
-    printer.print_separator(context);
-    printer.print_record(captions, context);
-    printer.print_separator(context);
-    // Print fields
-    for (auto &col : tab.cols) {
-        std::vector<std::string> field_info = {col.name, coltype2str(col.type), col.index ? "YES" : "NO"};
-        printer.print_record(field_info, context);
+    if (context->result_sink_ == nullptr) {
+        throw InternalError("Missing typed result sink");
     }
-    // Print footer
-    printer.print_separator(context);
+    context->result_sink_->begin_query(
+        {{"Field", rmdb::wire::SqlType::CHAR},
+         {"Type", rmdb::wire::SqlType::CHAR},
+         {"Index", rmdb::wire::SqlType::CHAR}});
+    uint64_t row_count = 0;
+    for (auto &col : tab.cols) {
+        context->result_sink_->push_row(
+            {rmdb::execution::TypedValue::Char(col.name),
+             rmdb::execution::TypedValue::Char(coltype2str(col.type)),
+             rmdb::execution::TypedValue::Char(
+                 col.index ? "YES" : "NO")});
+        row_count++;
+    }
+    context->result_sink_->end_query(row_count);
 }
 
 /**
@@ -519,15 +515,14 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMet
 
 void SmManager::show_index(const std::string& tab_name, Context* context) {
     TabMeta& tab = db_.get_table(tab_name);
-    if (tab.indexes.empty()) {
-        return;
+    if (context->result_sink_ == nullptr) {
+        throw InternalError("Missing typed result sink");
     }
-    std::fstream outfile;
-    if (enable_output_file.load()) {
-        outfile.open("output.txt", std::ios::out | std::ios::app);
-    }
-    RecordPrinter printer(3);
-    printer.print_separator(context);
+    context->result_sink_->begin_query(
+        {{"Table", rmdb::wire::SqlType::CHAR},
+         {"Kind", rmdb::wire::SqlType::CHAR},
+         {"Columns", rmdb::wire::SqlType::CHAR}});
+    uint64_t row_count = 0;
     for (auto& index : tab.indexes) {
         std::string col_str = "(";
         for (auto& col : index.cols) {
@@ -535,15 +530,13 @@ void SmManager::show_index(const std::string& tab_name, Context* context) {
         }
         col_str.pop_back();
         col_str += ")";
-        printer.print_record({tab_name, "unique", col_str}, context);
-        if (outfile.is_open()) {
-            outfile << "| " << tab.name << " | unique | " << col_str << " |\n";
-        }
-        printer.print_separator(context);
+        context->result_sink_->push_row(
+            {rmdb::execution::TypedValue::Char(tab_name),
+             rmdb::execution::TypedValue::Char("unique"),
+             rmdb::execution::TypedValue::Char(col_str)});
+        row_count++;
     }
-    if (outfile.is_open()) {
-        outfile.close();
-    }
+    context->result_sink_->end_query(row_count);
 }
 
 void SmManager::rollback(WriteRecord* record, Context* context) {

@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 #pragma once
 
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <memory>
@@ -152,6 +153,12 @@ struct StringLit : public Value {
     StringLit(std::string val_) : val(std::move(val_)) {}
 };
 
+struct ParamRef : public Value {
+    uint16_t ordinal;
+
+    explicit ParamRef(uint16_t ordinal_) : ordinal(ordinal_) {}
+};
+
 struct BoolLit : public Value {
     bool val;
 
@@ -171,10 +178,15 @@ enum AggFuncType { AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM, AGG_AVG };
 struct AggFunc : public Expr {
     AggFuncType func_type;
     bool is_star = false;
+    bool is_distinct = false;
     std::shared_ptr<Col> col;
 
-    AggFunc(AggFuncType func_type_, bool is_star_, std::shared_ptr<Col> col_)
-        : func_type(func_type_), is_star(is_star_), col(std::move(col_)) {}
+    AggFunc(AggFuncType func_type_, bool is_star_,
+            std::shared_ptr<Col> col_, bool is_distinct_ = false)
+        : func_type(func_type_),
+          is_star(is_star_),
+          is_distinct(is_distinct_),
+          col(std::move(col_)) {}
 };
 
 struct SelectItem : public TreeNode {

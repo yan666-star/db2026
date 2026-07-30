@@ -24,14 +24,14 @@ using namespace ast;
 %token SHOW TABLES CREATE TABLE STATIC_CHECKPOINT DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY ENABLE_NESTLOOP ENABLE_SORTMERGE
 EXPLAIN ANALYZE ON AS
-GROUP HAVING LIMIT COUNT MAX MIN SUM AVG UNION
+GROUP HAVING LIMIT COUNT DISTINCT MAX MIN SUM AVG UNION
 SET_TXN_SNAPSHOT SET_TXN_SERIALIZABLE
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
 // type-specific tokens
 %token <sv_str> IDENTIFIER VALUE_STRING
-%token <sv_int> VALUE_INT
+%token <sv_int> VALUE_INT PARAMETER
 %token <sv_float> VALUE_FLOAT
 %token <sv_bool> VALUE_BOOL
 
@@ -279,6 +279,10 @@ value:
     {
         $$ = std::make_shared<BoolLit>($1);
     }
+    |   PARAMETER
+    {
+        $$ = std::make_shared<ParamRef>(static_cast<uint16_t>($1));
+    }
     ;
 
 condition:
@@ -451,6 +455,10 @@ select_item:
 agg_func:
       COUNT '(' '*' ')'        { $$ = std::make_shared<AggFunc>(AGG_COUNT, true, nullptr); }
     | COUNT '(' col ')'        { $$ = std::make_shared<AggFunc>(AGG_COUNT, false, $3); }
+    | COUNT '(' DISTINCT col ')'
+                                { $$ = std::make_shared<AggFunc>(AGG_COUNT, false, $4, true); }
+    | COUNT '(' DISTINCT '(' col ')' ')'
+                                { $$ = std::make_shared<AggFunc>(AGG_COUNT, false, $5, true); }
     | MAX '(' col ')'          { $$ = std::make_shared<AggFunc>(AGG_MAX, false, $3); }
     | MIN '(' col ')'          { $$ = std::make_shared<AggFunc>(AGG_MIN, false, $3); }
     | SUM '(' col ')'          { $$ = std::make_shared<AggFunc>(AGG_SUM, false, $3); }

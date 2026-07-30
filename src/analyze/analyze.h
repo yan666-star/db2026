@@ -68,6 +68,9 @@ public:
     ~Analyze(){}
 
     std::shared_ptr<Query> do_analyze(std::shared_ptr<ast::TreeNode> root);
+    std::shared_ptr<Query> do_analyze_prepared(
+        std::shared_ptr<ast::TreeNode> root,
+        const std::vector<ColType> &parameter_types);
 
     std::shared_ptr<Query> analyze_select(std::shared_ptr<ast::SelectStmt> x, bool allow_derived);
 
@@ -93,5 +96,7 @@ private:
     Value convert_sv_value(const std::shared_ptr<ast::Value> &sv_val);
     CompOp convert_sv_comp_op(ast::SvCompOp op);
     AggType convert_agg_type(ast::AggFuncType func_type);
+
+    std::vector<ColType> prepared_parameter_types_;
 };
 

@@ -174,7 +174,12 @@ void PreparedDictionary::install_atomically(
     replacement_index.reserve(entries.size());
 
     for (const auto &entry : entries) {
-        auto schema = prepare(entry);
+        auto artifact = prepare(entry);
+        auto &schema = artifact.output_schema;
+        if (artifact.executable == nullptr) {
+            throw ProtocolError(
+                "prepared statement has no reusable executable plan");
+        }
         if (entry.result_kind == ResultKind::QUERY && schema.empty()) {
             throw ProtocolError(
                 "prepared query must expose at least one result column");
@@ -190,7 +195,8 @@ void PreparedDictionary::install_atomically(
              entry.result_kind,
              entry.parameter_types,
              entry.sql,
-             std::move(schema)});
+             std::move(schema),
+             std::move(artifact.executable)});
     }
 
     statements_.swap(replacement);

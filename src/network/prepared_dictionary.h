@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -13,6 +14,16 @@ namespace rmdb::wire {
 enum class ResultKind : uint8_t {
     COMMAND = 0,
     QUERY = 1,
+};
+
+class PreparedExecutable {
+ public:
+    virtual ~PreparedExecutable() = default;
+};
+
+struct PreparedArtifact {
+    std::vector<execution::OutputColumn> output_schema;
+    std::shared_ptr<PreparedExecutable> executable;
 };
 
 struct PrepareEntry {
@@ -28,9 +39,10 @@ struct PreparedStatement {
     std::vector<SqlType> parameter_types;
     std::string sql;
     std::vector<execution::OutputColumn> output_schema;
+    std::shared_ptr<PreparedExecutable> executable;
 };
 
-using PrepareCallback = std::function<std::vector<execution::OutputColumn>(
+using PrepareCallback = std::function<PreparedArtifact(
     const PrepareEntry &entry)>;
 
 std::vector<uint16_t> scan_parameter_markers(const std::string &sql);

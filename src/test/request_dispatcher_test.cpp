@@ -12,6 +12,8 @@ namespace {
 
 int failures = 0;
 
+class TestExecutable final : public rmdb::wire::PreparedExecutable {};
+
 void expect_true(bool condition, const std::string &message) {
     if (!condition) {
         std::cerr << "FAIL: " << message << '\n';
@@ -21,12 +23,18 @@ void expect_true(bool condition, const std::string &message) {
 
 class FakeExecutionService final : public rmdb::wire::ExecutionService {
  public:
-    std::vector<rmdb::execution::OutputColumn> prepare(
+    rmdb::wire::PreparedArtifact prepare(
         const rmdb::wire::PrepareEntry &entry) override {
         if (entry.result_kind == rmdb::wire::ResultKind::QUERY) {
-            return {{"value", rmdb::wire::SqlType::INT32}};
+            const auto type =
+                entry.statement_id == 5
+                    ? rmdb::wire::SqlType::CHAR
+                    : rmdb::wire::SqlType::INT32;
+            return {
+                {{"value", type}},
+                std::make_shared<TestExecutable>()};
         }
-        return {};
+        return {{}, std::make_shared<TestExecutable>()};
     }
 
     void execute_stream(
@@ -57,6 +65,14 @@ class FakeExecutionService final : public rmdb::wire::ExecutionService {
             throw rmdb::wire::TransactionAbortError("write conflict");
         } else if (statement.statement_id == 4) {
             throw std::runtime_error("broken statement");
+        } else if (statement.statement_id == 5) {
+            sink.begin_query(statement.output_schema);
+            const std::string large_value(600U * 1024U, 'x');
+            sink.push_row(
+                {rmdb::execution::TypedValue::Char(large_value)});
+            sink.push_row(
+                {rmdb::execution::TypedValue::Char(large_value)});
+            sink.end_query(2);
         } else {
             sink.command_ok();
         }
@@ -75,7 +91,7 @@ class FakeExecutionService final : public rmdb::wire::ExecutionService {
 
 std::vector<uint8_t> make_prepare_payload() {
     rmdb::wire::WireWriter payload;
-    payload.put_u16(4);
+    payload.put_u16(5);
     payload.put_u16(1);
     payload.put_u8(0);
     payload.put_u16(0);
@@ -92,6 +108,10 @@ std::vector<uint8_t> make_prepare_payload() {
     payload.put_u8(0);
     payload.put_u16(0);
     payload.put_string_u32("DELETE FROM t;");
+    payload.put_u16(5);
+    payload.put_u8(1);
+    payload.put_u16(0);
+    payload.put_string_u32("SELECT big_value FROM t;");
     return payload.take_bytes();
 }
 
@@ -256,6 +276,40 @@ void test_success_batch_has_no_per_command_ack() {
         "Successful batch must aggregate all output into one BATCH_RESULT");
 }
 
+void test_oversized_batch_result_aborts_before_small_failure_reply() {
+    FakeExecutionService service;
+    rmdb::wire::RequestDispatcher dispatcher(service);
+    install_dictionary(dispatcher);
+    service.events.clear();
+
+    const auto payload = make_batch_payload({1, 5});
+    std::vector<std::vector<uint8_t>> frames;
+    dispatcher.dispatch(
+        request_header(
+            rmdb::wire::ClientTag::EXEC_BATCH,
+            static_cast<uint32_t>(payload.size()),
+            rmdb::wire::kExecBatchAutoAbort),
+        payload,
+        [&](const std::vector<uint8_t> &frame) {
+            service.events.push_back("reply");
+            frames.push_back(frame);
+        });
+
+    expect_true(
+        service.events ==
+            std::vector<std::string>(
+                {"execute:1", "execute:5", "abort", "reply"}),
+        "Oversized batch output must rollback before its failure reply");
+    expect_true(
+        frames.size() == 1 &&
+            response_header(frames.front()).tag ==
+                static_cast<uint8_t>(
+                    rmdb::wire::ServerTag::BATCH_RESULT) &&
+            response_header(frames.front()).payload_bytes <=
+                rmdb::wire::kMaxPayloadBytes,
+        "Oversized output must become one bounded BATCH_RESULT error");
+}
+
 }  // namespace
 
 int main() {
@@ -263,6 +317,7 @@ int main() {
     test_batch_abort_happens_before_unique_failure_reply();
     test_decode_error_also_auto_aborts_before_top_level_error();
     test_success_batch_has_no_per_command_ack();
+    test_oversized_batch_result_aborts_before_small_failure_reply();
 
     if (failures != 0) {
         std::cerr << failures << " request dispatcher test(s) failed\n";

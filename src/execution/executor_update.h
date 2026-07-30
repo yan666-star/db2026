@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <cmath>
 #include <mutex>
 #include <algorithm>
 #include "execution_defs.h"
@@ -154,6 +155,10 @@ class UpdateExecutor : public AbstractExecutor {
                     memcpy(&current, rec->data + rhs_col->offset,
                            sizeof(current));
                     float operand = set_clause.rhs.float_val;
+                    if (!std::isfinite(current) ||
+                        !std::isfinite(operand)) {
+                        throw RMDBError("FLOAT operand must be finite");
+                    }
                     float result;
                     switch (set_clause.arithmetic_op) {
                         case '+': result = current + operand; break;
@@ -166,6 +171,9 @@ class UpdateExecutor : public AbstractExecutor {
                             result = current / operand;
                             break;
                         default: throw RMDBError("failure");
+                    }
+                    if (!std::isfinite(result)) {
+                        throw RMDBError("FLOAT result must be finite");
                     }
                     memcpy(rec_new->data + col->offset, &result,
                            sizeof(result));

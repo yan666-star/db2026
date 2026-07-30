@@ -36,6 +36,21 @@ bool same_schema(const std::vector<execution::OutputColumn> &left,
     return true;
 }
 
+size_t encoded_cell_bytes(const execution::TypedValue &value) {
+    size_t bytes = 1U;
+    if (!value.present()) {
+        return bytes;
+    }
+    switch (value.type()) {
+        case SqlType::INT32:
+        case SqlType::FLOAT32:
+            return bytes + sizeof(uint32_t);
+        case SqlType::CHAR:
+            return bytes + sizeof(uint32_t) + value.char_value().size();
+    }
+    throw ProtocolError("unknown typed result value");
+}
+
 class StreamResultSink final : public execution::ResultSink {
  public:
     explicit StreamResultSink(FrameEmitter emit) : emit_(std::move(emit)) {}
@@ -118,6 +133,25 @@ class BatchResultSink final : public execution::ResultSink {
         if (row.size() != statement_.output_schema.size()) {
             throw ProtocolError("prepared row width differs from schema");
         }
+        size_t row_bytes = 0;
+        for (size_t index = 0; index < row.size(); ++index) {
+            if (row[index].type() !=
+                statement_.output_schema[index].type) {
+                throw ProtocolError(
+                    "prepared row type differs from schema");
+            }
+            const size_t cell_bytes = encoded_cell_bytes(row[index]);
+            if (cell_bytes > kMaxPayloadBytes - row_bytes) {
+                throw ProtocolError(
+                    "prepared query result exceeds frame limit");
+            }
+            row_bytes += cell_bytes;
+        }
+        if (row_bytes > kMaxPayloadBytes - encoded_rows_bytes_) {
+            throw ProtocolError(
+                "prepared query result exceeds frame limit");
+        }
+        encoded_rows_bytes_ += row_bytes;
         rows_.push_back(row);
     }
 
@@ -151,6 +185,10 @@ class BatchResultSink final : public execution::ResultSink {
         return std::move(rows_);
     }
 
+    size_t encoded_rows_bytes() const noexcept {
+        return encoded_rows_bytes_;
+    }
+
  private:
     void require_idle() const {
         if (query_started_ || terminal_) {
@@ -161,6 +199,7 @@ class BatchResultSink final : public execution::ResultSink {
 
     const PreparedStatement &statement_;
     std::vector<std::vector<execution::TypedValue>> rows_;
+    size_t encoded_rows_bytes_{0};
     bool query_started_{false};
     bool terminal_{false};
 };
@@ -251,6 +290,8 @@ void RequestDispatcher::dispatch_batch(
     }
 
     BatchResult result;
+    // BATCH_RESULT fixed fields excluding diagnostic bytes are 11 bytes.
+    size_t encoded_response_bytes = 11U;
     for (size_t index = 0; index < request.operations.size(); ++index) {
         const auto &operation = request.operations[index];
         try {
@@ -259,6 +300,16 @@ void RequestDispatcher::dispatch_batch(
                 *operation.statement, operation.parameters, sink);
             sink.require_complete();
             if (operation.statement->result_kind == ResultKind::QUERY) {
+                constexpr size_t kQueryHeaderBytes =
+                    sizeof(uint16_t) + sizeof(uint32_t);
+                const size_t query_bytes =
+                    kQueryHeaderBytes + sink.encoded_rows_bytes();
+                if (query_bytes >
+                    kMaxPayloadBytes - encoded_response_bytes) {
+                    throw ProtocolError(
+                        "BATCH_RESULT exceeds 1 MiB frame limit");
+                }
+                encoded_response_bytes += query_bytes;
                 result.results.push_back(
                     {static_cast<uint16_t>(index), sink.take_rows()});
             }

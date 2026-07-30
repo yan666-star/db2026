@@ -27,8 +27,7 @@ class ExecutionService {
  public:
     virtual ~ExecutionService() = default;
 
-    virtual std::vector<execution::OutputColumn> prepare(
-        const PrepareEntry &entry) = 0;
+    virtual PreparedArtifact prepare(const PrepareEntry &entry) = 0;
     virtual void execute_stream(const std::string &sql,
                                 execution::ResultSink &sink) = 0;
     virtual void execute_prepared(

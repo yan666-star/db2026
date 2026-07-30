@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <condition_variable>
 #include <mutex>
 #include <cstdint>
 #include <memory>
@@ -469,10 +470,14 @@ public:
 class LogManager {
 public:
     LogManager(DiskManager* disk_manager)
-        : persist_lsn_(INVALID_LSN), disk_manager_(disk_manager) {}
+        : written_lsn_(INVALID_LSN),
+          durable_lsn_(INVALID_LSN),
+          disk_manager_(disk_manager) {}
 
     lsn_t add_log_to_buffer(LogRecord* log_record);
     void flush_log_to_disk(bool force_sync = false);
+    void force_flush_up_to(lsn_t target_lsn);
+    lsn_t durable_lsn();
     void initialize_from_disk();
     int64_t write_checkpoint_record(const std::vector<txn_id_t> &active_txns);
     void persist_restart_offset(int64_t offset);
@@ -484,7 +489,10 @@ private:
 
     std::atomic<lsn_t> global_lsn_{0};  // 全局lsn，递增，用于为每条记录分发lsn
     std::mutex latch_;                  // 用于对log_buffer_的互斥访问
+    std::condition_variable durable_cv_;
+    bool group_flush_in_progress_{false};
     LogBuffer log_buffer_;              // 日志缓冲区
-    lsn_t persist_lsn_;                 // 记录已经持久化到磁盘中的最后一条日志的日志号
+    lsn_t written_lsn_;                 // 已写入 WAL 文件（可能尚在页缓存）的最大 LSN
+    lsn_t durable_lsn_;                 // 已被 fsync/fdatasync 覆盖的最大 LSN
     DiskManager* disk_manager_;
-}; 
+};

@@ -36,6 +36,7 @@ struct AggExpr {
     AggType type = AGG_NONE;
     TabCol col;
     bool is_star = false;  // only valid for COUNT(*)
+    bool is_distinct = false;  // only valid for COUNT(column)
 };
 
 struct SelectItem {
@@ -53,7 +54,10 @@ struct OrderByItem {
 };
 
 struct Value {
-    bool from_float_literal = false; 
+    bool from_float_literal = false;
+    bool is_param = false;
+    uint16_t param_index = 0;
+    ColType parameter_declared_type = TYPE_INT;
     ColType type;  // type of value
     union {
         int int_val;      // int value

@@ -282,6 +282,9 @@ private:
                        const RmRecord *new_record, bool deleted,
                        const std::string &table_name = "");
     bool add_rw_dependency(txn_id_t reader, txn_id_t writer);
+    void check_new_rw_dependency_or_abort(Transaction *current_txn,
+                                          txn_id_t reader,
+                                          txn_id_t writer);
     bool dependency_forms_dangerous_structure(txn_id_t reader,
                                               txn_id_t writer) const;
     bool predicate_matches(const ReadPredicate &predicate,

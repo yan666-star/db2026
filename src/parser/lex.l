@@ -13,6 +13,8 @@
 %{
 #include "ast.h"
 #include "yacc.tab.h"
+#include <cstdint>
+#include <cstdlib>
 #include <iostream>
 
 // automatically update location
@@ -42,6 +44,7 @@ identifier {alpha}(_|{alpha}|{digit})*
 value_int {sign}?{digit}+
 value_float {sign}?{digit}+\.({digit}+)?
 value_string '[^']*'
+parameter \$[1-9]{digit}*
 single_op ";"|"("|")"|","|"+"|"-"|"*"|"/"|"="|">"|"<"|"."
 
 %x STATE_COMMENT
@@ -99,6 +102,7 @@ single_op ";"|"("|")"|","|"+"|"-"|"*"|"/"|"="|">"|"<"|"."
 "HAVING" { return HAVING; }
 "LIMIT" { return LIMIT; }
 "COUNT" { return COUNT; }
+"DISTINCT" { return DISTINCT; }
 "MAX" { return MAX; }
 "MIN" { return MIN; }
 "SUM" { return SUM; }
@@ -147,6 +151,15 @@ single_op ";"|"("|")"|","|"+"|"-"|"*"|"/"|"="|">"|"<"|"."
 {value_string} {
     yylval->sv_str = std::string(yytext + 1, strlen(yytext) - 2);
     return VALUE_STRING;
+}
+{parameter} {
+    unsigned long ordinal = strtoul(yytext + 1, nullptr, 10);
+    if (ordinal > UINT16_MAX) {
+        std::cerr << "Lexer Error: parameter ordinal exceeds u16" << std::endl;
+        return YYerror;
+    }
+    yylval->sv_int = static_cast<int>(ordinal);
+    return PARAMETER;
 }
     /* EOF */
 <<EOF>> { return T_EOF; }

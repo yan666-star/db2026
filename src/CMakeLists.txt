@@ -19,7 +19,7 @@ add_subdirectory(test)
 target_link_libraries(parser execution pthread)
 
 add_executable(rmdb rmdb.cpp)
-target_link_libraries(rmdb parser execution recovery readline pthread planner analyze)
+target_link_libraries(rmdb parser execution recovery pthread planner analyze network)
 
 # unit_test
 add_executable(unit_test unit_test.cpp)
@@ -52,3 +52,23 @@ add_test(NAME test_request_dispatcher COMMAND test_request_dispatcher)
 add_executable(test_connection_session test/connection_session_test.cpp)
 target_link_libraries(test_connection_session network)
 add_test(NAME test_connection_session COMMAND test_connection_session)
+
+add_executable(test_parameter_binding test/parameter_binding_test.cpp)
+target_link_libraries(test_parameter_binding network)
+add_test(NAME test_parameter_binding COMMAND test_parameter_binding)
+
+add_executable(test_ssi_source_contract test/ssi_source_contract_test.cpp)
+add_test(
+    NAME test_ssi_source_contract
+    COMMAND test_ssi_source_contract ${CMAKE_SOURCE_DIR}
+)
+
+add_executable(
+    test_log_manager_durability
+    test/log_manager_durability_test.cpp
+)
+target_link_libraries(test_log_manager_durability recovery storage pthread)
+add_test(NAME test_log_manager_durability COMMAND test_log_manager_durability)
+
+add_executable(test_aggregate_distinct test/aggregate_distinct_test.cpp)
+add_test(NAME test_aggregate_distinct COMMAND test_aggregate_distinct)

@@ -1,0 +1,516 @@
+#include "execution/sql_execution_service.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <fstream>
+#include <memory>
+#include <sstream>
+#include <utility>
+
+#include "analyze/analyze.h"
+#include "common/context.h"
+#include "common/session_defaults.h"
+#include "errors.h"
+#include "execution/execution_manager.h"
+#include "execution/executor_insert.h"
+#include "execution/parameter_binding.h"
+#include "optimizer/optimizer.h"
+#include "parser/parser.h"
+#include "portal.h"
+#include "recovery/log_manager.h"
+#include "system/sm.h"
+#include "transaction/transaction_manager.h"
+
+namespace rmdb::execution {
+namespace {
+
+class PlanExecutable final : public wire::PreparedExecutable {
+ public:
+    explicit PlanExecutable(std::shared_ptr<Plan> plan_value)
+        : plan(std::move(plan_value)) {}
+
+    std::shared_ptr<Plan> plan;
+};
+
+class TrackingResultSink final : public ResultSink {
+ public:
+    explicit TrackingResultSink(ResultSink &target) : target_(target) {}
+
+    void begin_query(const std::vector<OutputColumn> &schema) override {
+        require_idle();
+        query_started_ = true;
+        target_.begin_query(schema);
+    }
+
+    void push_row(const std::vector<TypedValue> &row) override {
+        if (!query_started_ || terminal_) {
+            throw InternalError("Typed row emitted outside a query");
+        }
+        target_.push_row(row);
+        row_count_++;
+    }
+
+    void end_query(uint64_t row_count) override {
+        if (!query_started_ || terminal_ || row_count != row_count_) {
+            throw InternalError("Typed query terminal is inconsistent");
+        }
+        terminal_ = true;
+        target_.end_query(row_count);
+    }
+
+    void command_ok() override {
+        require_idle();
+        terminal_ = true;
+        target_.command_ok();
+    }
+
+    bool terminal() const noexcept { return terminal_; }
+
+ private:
+    void require_idle() const {
+        if (query_started_ || terminal_) {
+            throw InternalError("Execution emitted multiple result starts");
+        }
+    }
+
+    ResultSink &target_;
+    uint64_t row_count_{0};
+    bool query_started_{false};
+    bool terminal_{false};
+};
+
+ColType engine_type(wire::SqlType type) {
+    switch (type) {
+        case wire::SqlType::INT32:
+            return TYPE_INT;
+        case wire::SqlType::FLOAT32:
+            return TYPE_FLOAT;
+        case wire::SqlType::CHAR:
+            return TYPE_STRING;
+    }
+    throw wire::ProtocolError("Unknown prepared SQL type");
+}
+
+wire::SqlType wire_type(ColType type) {
+    switch (type) {
+        case TYPE_INT:
+            return wire::SqlType::INT32;
+        case TYPE_FLOAT:
+            return wire::SqlType::FLOAT32;
+        case TYPE_STRING:
+            return wire::SqlType::CHAR;
+    }
+    throw InternalError("Unexpected output column type");
+}
+
+bool is_begin_plan(const std::shared_ptr<Plan> &plan) {
+    return plan != nullptr && plan->tag == T_Transaction_begin;
+}
+
+std::string trim_copy(const std::string &value) {
+    size_t begin = 0;
+    while (begin < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[begin]))) {
+        begin++;
+    }
+    size_t end = value.size();
+    while (end > begin &&
+           std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        end--;
+    }
+    return value.substr(begin, end - begin);
+}
+
+std::string lower_copy(std::string value) {
+    std::transform(
+        value.begin(), value.end(), value.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+    return value;
+}
+
+bool parse_load_command(const std::string &sql,
+                        std::string *file_name,
+                        std::string *table_name) {
+    std::string text = trim_copy(sql);
+    if (!text.empty() && text.back() == ';') {
+        text.pop_back();
+        text = trim_copy(text);
+    }
+    std::istringstream input(text);
+    std::string load_keyword;
+    std::string into_keyword;
+    std::string extra;
+    if (!(input >> load_keyword >> *file_name >> into_keyword >>
+          *table_name) ||
+        (input >> extra)) {
+        return false;
+    }
+    return lower_copy(load_keyword) == "load" &&
+           lower_copy(into_keyword) == "into" &&
+           !file_name->empty() && !table_name->empty();
+}
+
+std::vector<std::string> parse_csv_line(const std::string &line) {
+    std::vector<std::string> fields;
+    std::string field;
+    char quote = '\0';
+    for (size_t index = 0; index < line.size(); ++index) {
+        const char character = line[index];
+        if (quote != '\0') {
+            if (character == quote) {
+                if (index + 1U < line.size() &&
+                    line[index + 1U] == quote) {
+                    field.push_back(character);
+                    index++;
+                } else {
+                    quote = '\0';
+                }
+            } else {
+                field.push_back(character);
+            }
+        } else if (character == '\'' || character == '"') {
+            quote = character;
+        } else if (character == ',') {
+            fields.push_back(trim_copy(field));
+            field.clear();
+        } else {
+            field.push_back(character);
+        }
+    }
+    if (quote != '\0') {
+        throw RMDBError("Unterminated CSV quote");
+    }
+    fields.push_back(trim_copy(field));
+    return fields;
+}
+
+Value csv_value(const std::string &field, const ColMeta &column) {
+    Value value;
+    const std::string text = trim_copy(field);
+    if (column.type == TYPE_INT) {
+        value.set_int(std::stoi(text));
+    } else if (column.type == TYPE_FLOAT) {
+        value.set_float(std::stof(text));
+    } else {
+        value.set_str(text);
+    }
+    return value;
+}
+
+}  // namespace
+
+SqlExecutionService::SqlExecutionService(
+    SmManager *sm_manager,
+    LockManager *lock_manager,
+    TransactionManager *transaction_manager,
+    Optimizer *optimizer,
+    QlManager *ql_manager,
+    LogManager *log_manager,
+    std::mutex *parser_mutex,
+    std::mutex *optimizer_mutex)
+    : sm_manager_(sm_manager),
+      lock_manager_(lock_manager),
+      transaction_manager_(transaction_manager),
+      optimizer_(optimizer),
+      ql_manager_(ql_manager),
+      log_manager_(log_manager),
+      parser_mutex_(parser_mutex),
+      optimizer_mutex_(optimizer_mutex),
+      analyze_(std::make_unique<Analyze>(sm_manager)),
+      portal_(std::make_unique<Portal>(sm_manager)),
+      isolation_level_(session_defaults::get()) {
+    if (sm_manager_ == nullptr || lock_manager_ == nullptr ||
+        transaction_manager_ == nullptr || optimizer_ == nullptr ||
+        ql_manager_ == nullptr || log_manager_ == nullptr ||
+        parser_mutex_ == nullptr || optimizer_mutex_ == nullptr) {
+        throw InternalError("SQL execution service dependency is null");
+    }
+}
+
+SqlExecutionService::~SqlExecutionService() {
+    try {
+        abort_active_transaction();
+    } catch (...) {
+    }
+}
+
+std::shared_ptr<ast::TreeNode> SqlExecutionService::parse_sql(
+    const std::string &sql) {
+    std::lock_guard<std::mutex> guard(*parser_mutex_);
+    YY_BUFFER_STATE buffer = yy_scan_string(sql.c_str());
+    const int parse_result = yyparse();
+    std::shared_ptr<ast::TreeNode> parse_tree = ast::parse_tree;
+    yy_delete_buffer(buffer);
+    ast::parse_tree.reset();
+    if (parse_result != 0 || parse_tree == nullptr) {
+        throw RMDBError("SQL parse failure");
+    }
+    return parse_tree;
+}
+
+std::shared_ptr<Plan> SqlExecutionService::build_plan(
+    const std::string &sql,
+    const std::vector<wire::SqlType> *parameter_types) {
+    auto parse_tree = parse_sql(sql);
+    std::shared_ptr<Query> query;
+    if (parameter_types == nullptr) {
+        query = analyze_->do_analyze(std::move(parse_tree));
+    } else {
+        std::vector<ColType> types;
+        types.reserve(parameter_types->size());
+        for (const wire::SqlType type : *parameter_types) {
+            types.push_back(engine_type(type));
+        }
+        query = analyze_->do_analyze_prepared(
+            std::move(parse_tree), types);
+    }
+
+    Context planning_context(
+        lock_manager_, log_manager_, nullptr, transaction_manager_,
+        &isolation_level_, nullptr);
+    std::lock_guard<std::mutex> optimizer_guard(*optimizer_mutex_);
+    return optimizer_->plan_query(std::move(query), &planning_context);
+}
+
+std::vector<OutputColumn> SqlExecutionService::infer_output_schema(
+    const std::shared_ptr<Plan> &plan) {
+    if (plan == nullptr) {
+        throw InternalError("Cannot infer schema from a null plan");
+    }
+    if (plan->tag == T_Help) {
+        return {{"help", wire::SqlType::CHAR}};
+    }
+    if (plan->tag == T_ShowTable) {
+        return {{"Tables", wire::SqlType::CHAR}};
+    }
+    if (plan->tag == T_ShowIndex) {
+        return {{"Table", wire::SqlType::CHAR},
+                {"Kind", wire::SqlType::CHAR},
+                {"Columns", wire::SqlType::CHAR}};
+    }
+    if (plan->tag == T_DescTable) {
+        return {{"Field", wire::SqlType::CHAR},
+                {"Type", wire::SqlType::CHAR},
+                {"Index", wire::SqlType::CHAR}};
+    }
+
+    auto dml = std::dynamic_pointer_cast<DMLPlan>(plan);
+    if (dml == nullptr || dml->tag != T_select) {
+        return {};
+    }
+    if (dml->is_explain_analyze_) {
+        return {{"plan", wire::SqlType::CHAR}};
+    }
+
+    Context planning_context(
+        lock_manager_, log_manager_, nullptr, transaction_manager_,
+        &isolation_level_, nullptr);
+    auto statement = portal_->start(plan, &planning_context);
+    if (statement == nullptr || statement->tag != PORTAL_ONE_SELECT ||
+        statement->root == nullptr) {
+        throw InternalError("Prepared query has no executable query root");
+    }
+    const auto &columns = statement->root->cols();
+    std::vector<OutputColumn> schema;
+    schema.reserve(columns.size());
+    for (size_t index = 0; index < columns.size(); ++index) {
+        std::string name = columns[index].name;
+        if (index < statement->sel_cols.size() &&
+            !statement->sel_cols[index].col_name.empty()) {
+            name = statement->sel_cols[index].col_name;
+        }
+        schema.push_back({std::move(name), wire_type(columns[index].type)});
+    }
+    return schema;
+}
+
+wire::PreparedArtifact SqlExecutionService::prepare(
+    const wire::PrepareEntry &entry) {
+    auto plan = build_plan(entry.sql, &entry.parameter_types);
+    auto schema = infer_output_schema(plan);
+    return {
+        std::move(schema),
+        std::make_shared<PlanExecutable>(std::move(plan))};
+}
+
+void SqlExecutionService::execute_stream(
+    const std::string &sql, ResultSink &sink) {
+    std::string file_name;
+    std::string table_name;
+    if (parse_load_command(sql, &file_name, &table_name)) {
+        execute_load(file_name, table_name, sink);
+        return;
+    }
+    execute_plan(build_plan(sql, nullptr), sink);
+}
+
+void SqlExecutionService::execute_prepared(
+    const wire::PreparedStatement &statement,
+    const std::vector<TypedValue> &parameters,
+    ResultSink &sink) {
+    auto executable =
+        std::dynamic_pointer_cast<PlanExecutable>(statement.executable);
+    if (executable == nullptr || executable->plan == nullptr) {
+        throw InternalError("Prepared statement plan is unavailable");
+    }
+    bind_plan_parameters(executable->plan, parameters);
+    execute_plan(executable->plan, sink);
+}
+
+void SqlExecutionService::ensure_transaction(
+    Context *context, bool admit_execution) {
+    context->txn_ =
+        transaction_manager_->get_transaction(transaction_id_);
+    if (context->txn_ == nullptr ||
+        context->txn_->get_state() == TransactionState::COMMITTED ||
+        context->txn_->get_state() == TransactionState::ABORTED) {
+        context->txn_ = transaction_manager_->begin(
+            nullptr, log_manager_, isolation_level_);
+        transaction_id_ = context->txn_->get_transaction_id();
+        context->txn_->set_txn_mode(false);
+    }
+    if (admit_execution) {
+        transaction_manager_->ensure_snapshot_admission(context->txn_);
+    }
+}
+
+void SqlExecutionService::execute_plan(
+    const std::shared_ptr<Plan> &plan, ResultSink &sink) {
+    TrackingResultSink tracking_sink(sink);
+    Context context(
+        lock_manager_, log_manager_, nullptr, transaction_manager_,
+        &isolation_level_, &tracking_sink);
+    bool statement_entered = false;
+    try {
+        const bool checkpoint =
+            plan != nullptr && plan->tag == T_StaticCheckpoint;
+        if (!checkpoint) {
+            transaction_manager_->enter_statement(transaction_id_);
+            statement_entered = true;
+            ensure_transaction(&context, !is_begin_plan(plan));
+        }
+
+        auto portal_statement = portal_->start(plan, &context);
+        portal_->run(
+            portal_statement, ql_manager_, &transaction_id_, &context);
+        portal_->drop();
+
+        if (context.txn_ != nullptr &&
+            !context.txn_->get_txn_mode()) {
+            transaction_manager_->commit(context.txn_, log_manager_);
+            transaction_manager_->release_transaction(context.txn_);
+            context.txn_ = nullptr;
+            transaction_id_ = INVALID_TXN_ID;
+        }
+        if (!tracking_sink.terminal()) {
+            tracking_sink.command_ok();
+        }
+        if (statement_entered) {
+            transaction_manager_->leave_statement();
+        }
+    } catch (TransactionAbortException &error) {
+        abort_active_transaction();
+        if (statement_entered) {
+            transaction_manager_->leave_statement();
+        }
+        throw wire::TransactionAbortError(error.GetInfo());
+    } catch (...) {
+        abort_active_transaction();
+        if (statement_entered) {
+            transaction_manager_->leave_statement();
+        }
+        throw;
+    }
+}
+
+void SqlExecutionService::execute_load(
+    const std::string &file_name,
+    const std::string &table_name,
+    ResultSink &sink) {
+    TrackingResultSink tracking_sink(sink);
+    Context context(
+        lock_manager_, log_manager_, nullptr, transaction_manager_,
+        &isolation_level_, &tracking_sink);
+    bool statement_entered = false;
+    try {
+        transaction_manager_->enter_statement(transaction_id_);
+        statement_entered = true;
+        ensure_transaction(&context, true);
+
+        std::ifstream input(file_name);
+        if (!input.is_open()) {
+            throw RMDBError("Cannot open LOAD input");
+        }
+        const auto &table = sm_manager_->db_.get_table(table_name);
+        std::string line;
+        bool header = true;
+        while (std::getline(input, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (header) {
+                header = false;
+                continue;
+            }
+            if (trim_copy(line).empty()) {
+                continue;
+            }
+            const auto fields = parse_csv_line(line);
+            if (fields.size() != table.cols.size()) {
+                throw InvalidValueCountError();
+            }
+            std::vector<Value> values;
+            values.reserve(fields.size());
+            for (size_t index = 0; index < fields.size(); ++index) {
+                values.push_back(csv_value(fields[index], table.cols[index]));
+            }
+            InsertExecutor executor(
+                sm_manager_, table_name, std::move(values), &context);
+            executor.Next();
+        }
+
+        transaction_manager_->commit(context.txn_, log_manager_);
+        transaction_manager_->release_transaction(context.txn_);
+        context.txn_ = nullptr;
+        transaction_id_ = INVALID_TXN_ID;
+        tracking_sink.command_ok();
+        transaction_manager_->leave_statement();
+    } catch (TransactionAbortException &error) {
+        abort_active_transaction();
+        if (statement_entered) {
+            transaction_manager_->leave_statement();
+        }
+        throw wire::TransactionAbortError(error.GetInfo());
+    } catch (...) {
+        abort_active_transaction();
+        if (statement_entered) {
+            transaction_manager_->leave_statement();
+        }
+        throw;
+    }
+}
+
+bool SqlExecutionService::has_active_transaction() const {
+    Transaction *transaction =
+        transaction_manager_->get_transaction(transaction_id_);
+    return transaction != nullptr &&
+           transaction->get_state() != TransactionState::COMMITTED &&
+           transaction->get_state() != TransactionState::ABORTED;
+}
+
+void SqlExecutionService::abort_active_transaction() {
+    Transaction *transaction =
+        transaction_manager_->get_transaction(transaction_id_);
+    if (transaction != nullptr &&
+        transaction->get_state() != TransactionState::COMMITTED &&
+        transaction->get_state() != TransactionState::ABORTED) {
+        transaction_manager_->abort(transaction, log_manager_);
+    }
+    transaction_manager_->release_transaction(transaction);
+    transaction_id_ = INVALID_TXN_ID;
+}
+
+}  // namespace rmdb::execution

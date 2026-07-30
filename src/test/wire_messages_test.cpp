@@ -12,6 +12,8 @@ namespace {
 
 int failures = 0;
 
+class TestExecutable final : public rmdb::wire::PreparedExecutable {};
+
 void expect_true(bool condition, const std::string &message) {
     if (!condition) {
         std::cerr << "FAIL: " << message << '\n';
@@ -42,12 +44,14 @@ rmdb::wire::PreparedDictionary make_dictionary() {
         },
         [](const rmdb::wire::PrepareEntry &entry) {
             if (entry.result_kind == rmdb::wire::ResultKind::COMMAND) {
-                return std::vector<rmdb::execution::OutputColumn>{};
+                return rmdb::wire::PreparedArtifact{
+                    {}, std::make_shared<TestExecutable>()};
             }
-            return std::vector<rmdb::execution::OutputColumn>{
-                {"a", rmdb::wire::SqlType::INT32},
-                {"b", rmdb::wire::SqlType::FLOAT32},
-                {"c", rmdb::wire::SqlType::CHAR}};
+            return rmdb::wire::PreparedArtifact{
+                {{"a", rmdb::wire::SqlType::INT32},
+                 {"b", rmdb::wire::SqlType::FLOAT32},
+                 {"c", rmdb::wire::SqlType::CHAR}},
+                std::make_shared<TestExecutable>()};
         });
     return dictionary;
 }

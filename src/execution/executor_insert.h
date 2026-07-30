@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <cmath>
 #include <mutex>
 
 #include "execution_defs.h"
@@ -51,6 +52,10 @@ class InsertExecutor : public AbstractExecutor {
                 } else {
                     throw IncompatibleTypeError(coltype2str(col.type), coltype2str(val.type));
                 }
+            }
+            if (col.type == TYPE_FLOAT &&
+                !std::isfinite(val.float_val)) {
+                throw RMDBError("FLOAT value must be finite");
             }
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);

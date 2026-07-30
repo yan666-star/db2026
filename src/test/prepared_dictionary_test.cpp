@@ -11,6 +11,13 @@ namespace {
 
 int failures = 0;
 
+class TestExecutable final : public rmdb::wire::PreparedExecutable {};
+
+rmdb::wire::PreparedArtifact artifact(
+    std::vector<rmdb::execution::OutputColumn> schema = {}) {
+    return {std::move(schema), std::make_shared<TestExecutable>()};
+}
+
 void expect_true(bool condition, const std::string &message) {
     if (!condition) {
         std::cerr << "FAIL: " << message << '\n';
@@ -108,7 +115,7 @@ void test_failed_install_keeps_old_dictionary() {
     dictionary.install_atomically(
         {make_entry(1, rmdb::wire::ResultKind::COMMAND, {}, "BEGIN;")},
         [](const rmdb::wire::PrepareEntry &) {
-            return std::vector<rmdb::execution::OutputColumn>{};
+            return artifact();
         });
 
     expect_protocol_error(
@@ -121,7 +128,7 @@ void test_failed_install_keeps_old_dictionary() {
                         2, rmdb::wire::ResultKind::COMMAND, {}, "ABORT;"),
                 },
                 [](const rmdb::wire::PrepareEntry &) {
-                    return std::vector<rmdb::execution::OutputColumn>{};
+                    return artifact();
                 });
         },
         "Duplicate statement ids must reject the complete replacement");
@@ -140,7 +147,7 @@ void test_query_schema_must_match_result_kind() {
                 {make_entry(
                     3, rmdb::wire::ResultKind::QUERY, {}, "SELECT a FROM t;")},
                 [](const rmdb::wire::PrepareEntry &) {
-                    return std::vector<rmdb::execution::OutputColumn>{};
+                    return artifact();
                 });
         },
         "A query must expose at least one prepared result column");
@@ -151,8 +158,8 @@ void test_query_schema_must_match_result_kind() {
                 {make_entry(
                     4, rmdb::wire::ResultKind::COMMAND, {}, "COMMIT;")},
                 [](const rmdb::wire::PrepareEntry &) {
-                    return std::vector<rmdb::execution::OutputColumn>{
-                        {"unexpected", rmdb::wire::SqlType::INT32}};
+                    return artifact(
+                        {{"unexpected", rmdb::wire::SqlType::INT32}});
                 });
         },
         "A command must expose zero prepared result columns");

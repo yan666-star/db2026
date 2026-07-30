@@ -22,7 +22,6 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_seq_scan.h"
 #include "execution/executor_update.h"
 #include "index/ix.h"
-#include "record_printer.h"
 
 // 最左前缀匹配：选择能连续匹配最多索引列的索引
 bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_conds, std::vector<std::string>& index_col_names) {

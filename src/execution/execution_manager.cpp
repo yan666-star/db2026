@@ -24,7 +24,7 @@ See the Mulan PSL v2 for more details. */
 #include "executor_seq_scan.h"
 #include "executor_update.h"
 #include "index/ix.h"
-#include "record_printer.h"
+#include "execution/execution_result.h"
 
 const char *help_info = "Supported SQL syntax:\n"
                    "  command ;\n"
@@ -88,8 +88,14 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
         switch(x->tag) {
             case T_Help:
             {
-                memcpy(context->data_send_ + *(context->offset_), help_info, strlen(help_info));
-                *(context->offset_) = strlen(help_info);
+                if (context->result_sink_ == nullptr) {
+                    throw InternalError("Missing typed result sink");
+                }
+                context->result_sink_->begin_query(
+                    {{"help", rmdb::wire::SqlType::CHAR}});
+                context->result_sink_->push_row(
+                    {rmdb::execution::TypedValue::Char(help_info)});
+                context->result_sink_->end_query(1);
                 break;
             }
             case T_ShowTable:
@@ -219,58 +225,70 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
 
 void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, std::vector<TabCol> sel_cols,
                             Context *context) {
-    const bool agg_float_fixed = true;
-    std::vector<std::string> captions;
-    captions.reserve(sel_cols.size());
-    for (auto &sel_col : sel_cols) {
-        captions.push_back(sel_col.col_name);
+    if (context->result_sink_ == nullptr) {
+        throw InternalError("Missing typed result sink");
     }
-
-    // Print header into buffer
-    RecordPrinter rec_printer(sel_cols.size());
-    rec_printer.print_separator(context);
-    rec_printer.print_record(captions, context);
-    rec_printer.print_separator(context);
-    // print header into file
-    std::fstream outfile;
-    if (enable_output_file.load()) {
-        outfile.open("output.txt", std::ios::out | std::ios::app);
-        outfile << "|";
-        for(int i = 0; i < captions.size(); ++i) {
-            outfile << " " << captions[i] << " |";
+    const auto &columns = executorTreeRoot->cols();
+    std::vector<rmdb::execution::OutputColumn> schema;
+    schema.reserve(columns.size());
+    for (size_t index = 0; index < columns.size(); ++index) {
+        std::string name = columns[index].name;
+        if (index < sel_cols.size() && !sel_cols[index].col_name.empty()) {
+            name = sel_cols[index].col_name;
         }
-        outfile << "\n";
+        rmdb::wire::SqlType type;
+        switch (columns[index].type) {
+            case TYPE_INT:
+                type = rmdb::wire::SqlType::INT32;
+                break;
+            case TYPE_FLOAT:
+                type = rmdb::wire::SqlType::FLOAT32;
+                break;
+            case TYPE_STRING:
+                type = rmdb::wire::SqlType::CHAR;
+                break;
+            default:
+                throw InternalError("Unexpected result column type");
+        }
+        schema.push_back({std::move(name), type});
     }
+    context->result_sink_->begin_query(schema);
 
-    // Print records
-    size_t num_rec = 0;
-    // 执行query_plan
+    uint64_t num_rec = 0;
     for (executorTreeRoot->beginTuple(); !executorTreeRoot->is_end(); executorTreeRoot->nextTuple()) {
-        auto Tuple = executorTreeRoot->Next();
-        std::vector<std::string> columns;
-        for (auto &col : executorTreeRoot->cols()) {
-            std::string col_str = format_col_value(col, Tuple->data + col.offset, agg_float_fixed);
-            columns.push_back(col_str);
-        }
-        // print record into buffer
-        rec_printer.print_record(columns, context);
-        // print record into file
-        if (outfile.is_open()) {
-            outfile << "|";
-            for(int i = 0; i < columns.size(); ++i) {
-                outfile << " " << columns[i] << " |";
+        auto tuple = executorTreeRoot->Next();
+        std::vector<rmdb::execution::TypedValue> row;
+        row.reserve(columns.size());
+        for (const auto &column : columns) {
+            const char *data = tuple->data + column.offset;
+            switch (column.type) {
+                case TYPE_INT: {
+                    int32_t value = 0;
+                    memcpy(&value, data, sizeof(value));
+                    row.push_back(
+                        rmdb::execution::TypedValue::Int32(value));
+                    break;
+                }
+                case TYPE_FLOAT: {
+                    float value = 0.0F;
+                    memcpy(&value, data, sizeof(value));
+                    row.push_back(
+                        rmdb::execution::TypedValue::Float(value));
+                    break;
+                }
+                case TYPE_STRING:
+                    row.push_back(rmdb::execution::TypedValue::Char(
+                        rmdb::execution::logical_char_bytes(
+                            data, static_cast<size_t>(column.len))));
+                    break;
+                default:
+                    throw InternalError("Unexpected result column type");
             }
-            outfile << "\n";
         }
+        context->result_sink_->push_row(row);
         num_rec++;
     }
-    if (outfile.is_open()) {
-        outfile.close();
-    }
-    // Print footer into buffer
-    rec_printer.print_separator(context);
-    // Print record count into buffer
-    RecordPrinter::print_record_count(num_rec, context);
+    context->result_sink_->end_query(num_rec);
 }
 
 static void reset_plan_rows(std::shared_ptr<Plan> plan) {
@@ -426,7 +444,11 @@ static std::string format_select_items(const std::vector<SelectItem> &items) {
             if (item.agg.is_star) {
                 vals.push_back(name + "(*)");
             } else {
-                vals.push_back(name + "(" + item.agg.col.tab_name + "." + item.agg.col.col_name + ")");
+                vals.push_back(
+                    name + "(" +
+                    (item.agg.is_distinct ? "DISTINCT " : "") +
+                    item.agg.col.tab_name + "." +
+                    item.agg.col.col_name + ")");
             }
         } else {
             vals.push_back(item.col.tab_name + "." + item.col.col_name);
@@ -550,15 +572,14 @@ void QlManager::explain_analyze(std::unique_ptr<AbstractExecutor> executorTreeRo
     append_plan_tree(oss, root_plan, 0, dml->table_to_alias_);
     std::string output = oss.str();
 
-    memcpy(context->data_send_ + *(context->offset_), output.c_str(), output.size());
-    *(context->offset_) += output.size();
-
-    if (enable_output_file.load()) {
-        std::fstream outfile;
-        outfile.open("output.txt", std::ios::out | std::ios::app);
-        outfile << output;
-        outfile.close();
+    if (context->result_sink_ == nullptr) {
+        throw InternalError("Missing typed result sink");
     }
+    context->result_sink_->begin_query(
+        {{"plan", rmdb::wire::SqlType::CHAR}});
+    context->result_sink_->push_row(
+        {rmdb::execution::TypedValue::Char(output)});
+    context->result_sink_->end_query(1);
 }
 
 

@@ -13,6 +13,8 @@ namespace {
 
 int failures = 0;
 
+class TestExecutable final : public rmdb::wire::PreparedExecutable {};
+
 void expect_true(bool condition, const std::string &message) {
     if (!condition) {
         std::cerr << "FAIL: " << message << '\n';
@@ -22,9 +24,9 @@ void expect_true(bool condition, const std::string &message) {
 
 class FakeExecutionService final : public rmdb::wire::ExecutionService {
  public:
-    std::vector<rmdb::execution::OutputColumn> prepare(
+    rmdb::wire::PreparedArtifact prepare(
         const rmdb::wire::PrepareEntry &) override {
-        return {};
+        return {{}, std::make_shared<TestExecutable>()};
     }
 
     void execute_stream(

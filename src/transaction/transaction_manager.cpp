@@ -71,7 +71,10 @@ bool perf_diag_enabled() {
 
 size_t si_max_active() {
     static size_t limit = [] {
-        constexpr size_t kDefaultLimit = 1;
+        // 0 表示不施加人为并发上限。决赛排名固定 32 客户端，默认串行化
+        // SI 会把正确的并发负载退化为单连接吞吐；仅在诊断热点冲突时才
+        // 通过 RMDB_SI_MAX_ACTIVE 显式启用 admission control。
+        constexpr size_t kDefaultLimit = 0;
         const char *value = std::getenv("RMDB_SI_MAX_ACTIVE");
         if (value == nullptr || value[0] == '\0') {
             return kDefaultLimit;
@@ -431,7 +434,7 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         commit_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&commit_log);
         txn->set_prev_lsn(lsn);
-        log_manager->flush_log_to_disk();
+        log_manager->force_flush_up_to(lsn);
     }
 
     auto lock_set = *txn->get_lock_set();
@@ -700,6 +703,23 @@ bool TransactionManager::add_rw_dependency(txn_id_t reader, txn_id_t writer) {
     bool inserted = reader_it->second.outgoing_rw.insert(writer).second;
     writer_it->second.incoming_rw.insert(reader);
     return inserted;
+}
+
+void TransactionManager::check_new_rw_dependency_or_abort(
+    Transaction *current_txn, txn_id_t reader, txn_id_t writer) {
+    if (!add_rw_dependency(reader, writer) ||
+        !dependency_forms_dangerous_structure(reader, writer)) {
+        return;
+    }
+
+    // 决赛 SSI 规范固定选择“当前语句所属事务”为 victim。这里不能改为
+    // 中止 pivot、最年轻事务或尚未提交的其他事务，也不能把判定推迟到
+    // COMMIT。调用方持有 mvcc_latch_，先标记再抛出；网络服务层捕获后会
+    // 同步完成完整回滚，随后才能发送 TRANSACTION_ABORT。
+    txn_id_t victim = current_txn->get_transaction_id();
+    mark_mvcc_txn_aborted(victim);
+    throw TransactionAbortException(victim,
+                                    AbortReason::SERIALIZATION_FAILURE);
 }
 
 bool TransactionManager::dependency_forms_dangerous_structure(
@@ -991,13 +1011,7 @@ void TransactionManager::register_table_read(
             if (predicate_affected(predicate, version)) {
                 txn_id_t reader = txn->get_transaction_id();
                 txn_id_t writer = version.owner;
-                if (add_rw_dependency(reader, writer) &&
-                    dependency_forms_dangerous_structure(reader, writer)) {
-                    mark_mvcc_txn_aborted(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(),
-                        AbortReason::SERIALIZATION_FAILURE);
-                }
+                check_new_rw_dependency_or_abort(txn, reader, writer);
             }
         }
     }
@@ -1010,9 +1024,34 @@ void TransactionManager::register_record_read(
         return;
     }
     auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
-    auto it = mvcc_txns_.find(txn->get_transaction_id());
-    if (it != mvcc_txns_.end()) {
-        it->second.read_records.insert(RecordKey{file_id, rid});
+    txn_id_t reader = txn->get_transaction_id();
+    auto state_it = mvcc_txns_.find(reader);
+    if (state_it == mvcc_txns_.end()) {
+        return;
+    }
+
+    RecordKey key{file_id, rid};
+    state_it->second.read_records.insert(key);
+
+    // 点读也必须识别“本快照之后已经提交”以及“仍在执行”的写者。仅仅
+    // 记录 read_records 会漏掉先写后读的历史，导致同一组并发事务因
+    // 语句调度顺序不同而得到不同的 SSI 结果。
+    auto history_it = record_versions_.find(key);
+    if (history_it == record_versions_.end()) {
+        return;
+    }
+    std::unordered_set<txn_id_t> checked_writers;
+    for (const auto &version : history_it->second) {
+        txn_id_t writer = version.owner;
+        if (writer == INVALID_TXN_ID || writer == reader ||
+            !checked_writers.insert(writer).second) {
+            continue;
+        }
+        if (version.commit_ts != INVALID_TS &&
+            version.commit_ts <= txn->get_start_ts()) {
+            continue;
+        }
+        check_new_rw_dependency_or_abort(txn, reader, writer);
     }
 }
 
@@ -1262,33 +1301,28 @@ void TransactionManager::prepare_write(
         check_physical_before(txn, table_name, rid, old_record);
     }
 
+    // 先在栈上构造本次写入将产生的版本，用它进行 SSI 谓词/记录冲突
+    // 判断。危险结构检查必须早于 pending version 的安装或修改。
+    MvccVersion prospective;
     if (own_pending == nullptr) {
-        MvccVersion pending;
-        pending.owner = txn->get_transaction_id();
-        pending.before_deleted = old_record == nullptr;
-        pending.before = copy_record(old_record);
-        pending.deleted = deleted;
-        pending.data = copy_record(new_record);
-        pending.table_name = table_name;
-        history.push_back(std::move(pending));
-        own_pending = &history.back();
+        prospective.owner = txn->get_transaction_id();
+        prospective.before_deleted = old_record == nullptr;
+        prospective.before = copy_record(old_record);
+        prospective.deleted = deleted;
+        prospective.data = copy_record(new_record);
+        prospective.table_name = table_name;
     } else {
-        if (own_pending->before_deleted && own_pending->before.empty() &&
-            !own_pending->deleted && old_record != nullptr) {
-            own_pending->before = own_pending->data;
+        prospective = *own_pending;
+        if (prospective.before_deleted && prospective.before.empty() &&
+            !prospective.deleted && old_record != nullptr) {
+            prospective.before = prospective.data;
         }
-        own_pending->deleted = deleted;
-        own_pending->data = copy_record(new_record);
+        prospective.deleted = deleted;
+        prospective.data = copy_record(new_record);
         if (!table_name.empty()) {
-            own_pending->table_name = table_name;
+            prospective.table_name = table_name;
         }
     }
-
-    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-    if (state_it != mvcc_txns_.end()) {
-        state_it->second.write_records.insert(key);
-    }
-    mvcc_unique_conflict_keys_by_file_[file_id].insert(key);
 
     if (txn->get_isolation_level() == IsolationLevel::SERIALIZABLE) {
         for (auto &[reader_id, reader] : mvcc_txns_) {
@@ -1303,7 +1337,7 @@ void TransactionManager::prepare_write(
             if (!affected) {
                 for (const auto &predicate : reader.predicates) {
                     if (predicate.file_id == file_id &&
-                        predicate_affected(predicate, *own_pending)) {
+                        predicate_affected(predicate, prospective)) {
                         affected = true;
                         break;
                     }
@@ -1311,17 +1345,23 @@ void TransactionManager::prepare_write(
             }
             if (affected) {
                 txn_id_t writer_id = txn->get_transaction_id();
-                if (add_rw_dependency(reader_id, writer_id) &&
-                    dependency_forms_dangerous_structure(
-                        reader_id, writer_id)) {
-                    mark_mvcc_txn_aborted(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(),
-                        AbortReason::SERIALIZATION_FAILURE);
-                }
+                check_new_rw_dependency_or_abort(txn, reader_id, writer_id);
             }
         }
     }
+
+    if (own_pending == nullptr) {
+        history.push_back(std::move(prospective));
+        own_pending = &history.back();
+    } else {
+        *own_pending = std::move(prospective);
+    }
+
+    auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+    if (state_it != mvcc_txns_.end()) {
+        state_it->second.write_records.insert(key);
+    }
+    mvcc_unique_conflict_keys_by_file_[file_id].insert(key);
 }
 
 void TransactionManager::check_commit_conflict_under_latch(Transaction *txn) {

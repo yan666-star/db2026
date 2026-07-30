@@ -9,8 +9,32 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include "log_manager.h"
+
+namespace {
+
+std::chrono::microseconds group_commit_delay() {
+    static const auto delay = [] {
+        constexpr unsigned long long kDefaultMicros = 200;
+        constexpr unsigned long long kMaxMicros = 5000;
+        const char *raw = std::getenv("RMDB_GROUP_COMMIT_US");
+        if (raw == nullptr || raw[0] == '\0') {
+            return std::chrono::microseconds(kDefaultMicros);
+        }
+        char *end = nullptr;
+        unsigned long long value = std::strtoull(raw, &end, 10);
+        if (end == raw || *end != '\0' || value > kMaxMicros) {
+            return std::chrono::microseconds(kDefaultMicros);
+        }
+        return std::chrono::microseconds(value);
+    }();
+    return delay;
+}
+
+}  // namespace
 
 /**
  * @description: 添加日志记录到日志缓冲区中，并返回日志记录号
@@ -40,24 +64,66 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */
 void LogManager::flush_log_to_disk(bool force_sync) {
-    std::lock_guard<std::mutex> lock(latch_);
+    std::unique_lock<std::mutex> lock(latch_);
     flush_log_to_disk_locked(force_sync);
+    if (force_sync) {
+        durable_cv_.notify_all();
+    }
 }
 
 void LogManager::flush_log_to_disk_locked(bool force_sync) {
-    if (log_buffer_.offset_ == 0) {
-        if (force_sync) {
-            disk_manager_->sync_log();
-        }
-        return;
+    if (log_buffer_.offset_ != 0) {
+        disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+        written_lsn_ = global_lsn_.load() - 1;
+        log_buffer_.offset_ = 0;
     }
 
-    disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
     if (force_sync) {
         disk_manager_->sync_log();
+        durable_lsn_ = written_lsn_;
     }
-    persist_lsn_ = global_lsn_.load() - 1;
-    log_buffer_.offset_ = 0;
+}
+
+void LogManager::force_flush_up_to(lsn_t target_lsn) {
+    if (target_lsn == INVALID_LSN) {
+        throw InternalError("Cannot force an invalid WAL LSN");
+    }
+
+    std::unique_lock<std::mutex> lock(latch_);
+    while (durable_lsn_ < target_lsn) {
+        if (group_flush_in_progress_) {
+            durable_cv_.wait(lock, [&] {
+                return durable_lsn_ >= target_lsn ||
+                       !group_flush_in_progress_;
+            });
+            continue;
+        }
+
+        // 首个到达者成为本轮 group commit leader。短暂释放 latch，让其他
+        // 已完成逻辑提交的线程把 commit record 追加到同一 WAL buffer。
+        group_flush_in_progress_ = true;
+        try {
+            durable_cv_.wait_for(lock, group_commit_delay(), [&] {
+                return durable_lsn_ >= target_lsn;
+            });
+            if (durable_lsn_ < target_lsn) {
+                // 同一 ACK 窗口内先产生 WAL 正字节写入，再 fsync 同一 fd；
+                // 返回后 durable_lsn_ 覆盖本事务的 commit record。
+                flush_log_to_disk_locked(true);
+            }
+            group_flush_in_progress_ = false;
+            durable_cv_.notify_all();
+        } catch (...) {
+            group_flush_in_progress_ = false;
+            durable_cv_.notify_all();
+            throw;
+        }
+    }
+}
+
+lsn_t LogManager::durable_lsn() {
+    std::lock_guard<std::mutex> lock(latch_);
+    return durable_lsn_;
 }
 
 void LogManager::initialize_from_disk() {
@@ -66,7 +132,8 @@ void LogManager::initialize_from_disk() {
     int file_size = disk_manager_->get_file_size(LOG_FILE_NAME);
     if (file_size <= 0) {
         global_lsn_.store(0);
-        persist_lsn_ = INVALID_LSN;
+        written_lsn_ = INVALID_LSN;
+        durable_lsn_ = INVALID_LSN;
         return;
     }
 
@@ -135,7 +202,8 @@ void LogManager::initialize_from_disk() {
         disk_manager_->truncate_log(valid_end);
     }
 
-    persist_lsn_ = max_lsn;
+    written_lsn_ = max_lsn;
+    durable_lsn_ = max_lsn;
     global_lsn_.store(max_lsn == INVALID_LSN ? 0 : max_lsn + 1);
 }
 

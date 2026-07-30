@@ -1,13 +1,16 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "system/sm_meta.h"
 #include "execution_defs.h"
 #include "execution_eval.h"
 #include "executor_abstract.h"
@@ -22,6 +25,7 @@ class AggregationExecutor : public AbstractExecutor {
         double sum = 0.0;
         std::string min_bin;
         std::string max_bin;
+        std::unordered_set<std::string> distinct_values;
     };
 
     struct GroupState {
@@ -39,7 +43,9 @@ class AggregationExecutor : public AbstractExecutor {
 
    private:
     static std::string agg_key(const AggExpr &agg) {
-        return std::to_string(static_cast<int>(agg.type)) + "|" + std::to_string(agg.is_star ? 1 : 0) + "|" +
+        return std::to_string(static_cast<int>(agg.type)) + "|" +
+               std::to_string(agg.is_star ? 1 : 0) + "|" +
+               std::to_string(agg.is_distinct ? 1 : 0) + "|" +
                agg.col.tab_name + "." + agg.col.col_name;
     }
 
@@ -161,10 +167,16 @@ class AggregationExecutor : public AbstractExecutor {
                     return {TYPE_INT, std::string(reinterpret_cast<const char *>(&x), sizeof(int))};
                 }
                 float x = static_cast<float>(st.sum);
+                if (!std::isfinite(x)) {
+                    throw RMDBError("SUM(FLOAT) result must be finite");
+                }
                 return {TYPE_FLOAT, std::string(reinterpret_cast<const char *>(&x), sizeof(float))};
             }
             case AGG_AVG: {
                 float x = (st.count == 0) ? 0.0f : static_cast<float>(st.sum / st.count);
+                if (!std::isfinite(x)) {
+                    throw RMDBError("AVG result must be finite");
+                }
                 return {TYPE_FLOAT, std::string(reinterpret_cast<const char *>(&x), sizeof(float))};
             }
             case AGG_MAX:
@@ -194,6 +206,29 @@ class AggregationExecutor : public AbstractExecutor {
 
     void update_agg(const AggExpr &agg, AggState &st, const RmRecord &rec) const {
         if (agg.type == AGG_COUNT) {
+            if (agg.is_distinct) {
+                auto value = read_col_bin(rec, agg.col);
+                std::string key(1, static_cast<char>(value.first));
+                if (value.first == TYPE_FLOAT) {
+                    float numeric = 0.0F;
+                    std::memcpy(&numeric, value.second.data(),
+                                sizeof(numeric));
+                    if (!std::isfinite(numeric)) {
+                        throw RMDBError(
+                            "COUNT(DISTINCT FLOAT) input must be finite");
+                    }
+                    if (numeric == 0.0F) {
+                        numeric = 0.0F;
+                        value.second.assign(
+                            reinterpret_cast<const char *>(&numeric),
+                            sizeof(numeric));
+                    }
+                }
+                key.append(value.second);
+                if (!st.distinct_values.insert(std::move(key)).second) {
+                    return;
+                }
+            }
             st.count++;
             st.has_value = true;
             return;
@@ -205,7 +240,15 @@ class AggregationExecutor : public AbstractExecutor {
         if (v.first == TYPE_INT) {
             st.sum += static_cast<double>(*(int *)v.second.data());
         } else if (v.first == TYPE_FLOAT) {
-            st.sum += static_cast<double>(*(float *)v.second.data());
+            float input = 0.0F;
+            std::memcpy(&input, v.second.data(), sizeof(input));
+            if (!std::isfinite(input)) {
+                throw RMDBError("SUM(FLOAT) input must be finite");
+            }
+            st.sum += static_cast<double>(input);
+            if (!std::isfinite(st.sum)) {
+                throw RMDBError("SUM(FLOAT) accumulator must be finite");
+            }
         }
         if (st.min_bin.empty() || cmp_bin(v.first, v.second, v.first, st.min_bin) < 0) {
             st.min_bin = v.second;
