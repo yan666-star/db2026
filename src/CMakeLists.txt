@@ -32,3 +32,7 @@ add_test(NAME test_wire_codec COMMAND test_wire_codec)
 add_executable(test_socket_io test/socket_io_test.cpp)
 target_link_libraries(test_socket_io network)
 add_test(NAME test_socket_io COMMAND test_socket_io)
+
+add_executable(test_execution_result test/execution_result_test.cpp)
+target_link_libraries(test_execution_result network)
+add_test(NAME test_execution_result COMMAND test_execution_result)
