@@ -9,6 +9,7 @@ add_subdirectory(parser)
 add_subdirectory(optimizer)
 add_subdirectory(storage)
 add_subdirectory(common)
+add_subdirectory(network)
 add_subdirectory(replacer)
 add_subdirectory(transaction)
 add_subdirectory(recovery)
@@ -23,3 +24,7 @@ target_link_libraries(rmdb parser execution recovery readline pthread planner an
 # unit_test
 add_executable(unit_test unit_test.cpp)
 target_link_libraries(unit_test storage lru_replacer record gtest_main)  # add gtest
+
+add_executable(test_wire_codec test/wire_codec_test.cpp)
+target_link_libraries(test_wire_codec network)
+add_test(NAME test_wire_codec COMMAND test_wire_codec)
