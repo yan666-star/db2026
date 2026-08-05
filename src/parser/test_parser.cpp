@@ -33,7 +33,8 @@ int main() {
         "update tb set a = 1, b = 2.2, c = 'xyz' where x = 2 and y < 1.1 and z > 'abc';",
         "update tb set a = a where a = 1;",
         "update tb set a = a + 1, b = b - 2.2 where a = 1;",
-        "update tb set a = a - 1 + 91 where a = 1;",
+        "update tb set a=a-1+91, b=b+1, c=c+2, d=d+3 "
+        "where x=1 and y=2 and z<3;",
         "update tb set a=a*2, b=b/2.0 where a=1;",
         "select * from tb;",
         "select * from tb where x = $1 and y = $2;",
@@ -74,19 +75,21 @@ int main() {
     yy_delete_buffer(self_assignment_buf);
 
     YY_BUFFER_STATE chained_arithmetic_buf =
-        yy_scan_string("update tb set a = a - 1 + 91 where a = 1;");
+        yy_scan_string(
+            "update tb set a=a-1+91, b=b+1, c=c+2, d=d+3 "
+            "where x=1 and y=2 and z<3;");
     assert(yyparse() == 0);
     update = std::dynamic_pointer_cast<ast::UpdateStmt>(ast::parse_tree);
     assert(update != nullptr);
-    assert(update->set_clauses.size() == 1);
+    assert(update->set_clauses.size() == 4);
     assert(update->set_clauses[0]->arithmetic_terms.size() == 2);
-    assert(update->set_clauses[0]->arithmetic_terms[0].op == '-');
+    assert(update->set_clauses[0]->arithmetic_terms[0].op == '+');
     assert(update->set_clauses[0]->arithmetic_terms[1].op == '+');
     auto first_operand = std::dynamic_pointer_cast<ast::IntLit>(
         update->set_clauses[0]->arithmetic_terms[0].val);
     auto second_operand = std::dynamic_pointer_cast<ast::IntLit>(
         update->set_clauses[0]->arithmetic_terms[1].val);
-    assert(first_operand != nullptr && first_operand->val == 1);
+    assert(first_operand != nullptr && first_operand->val == -1);
     assert(second_operand != nullptr && second_operand->val == 91);
     yy_delete_buffer(chained_arithmetic_buf);
 

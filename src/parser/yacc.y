@@ -397,10 +397,6 @@ setClause:
     {
         $$ = std::make_shared<SetClause>($1, $3);
     }
-    |   colName '=' colName value
-    {
-        $$ = std::make_shared<SetClause>($1, $3, '+', $4);
-    }
     |   colName '=' colName arithmeticTerms
     {
         $$ = std::make_shared<SetClause>($1, $3, std::move($4));
@@ -416,7 +412,14 @@ setClause:
     ;
 
 arithmeticTerms:
-        '+' value
+        value
+    {
+        // The lexer keeps a directly attached sign as part of a numeric
+        // literal (for example, a-1 is IDENTIFIER VALUE_INT(-1)). Applying
+        // that signed value with '+' preserves the intended arithmetic.
+        $$ = std::vector<ArithmeticTerm>{{'+', $1}};
+    }
+    |   '+' value
     {
         $$ = std::vector<ArithmeticTerm>{{'+', $2}};
     }
@@ -433,6 +436,13 @@ arithmeticTerms:
     {
         $$ = std::move($1);
         $$.push_back({'-', $3});
+    }
+    |   arithmeticTerms value
+    {
+        // Handles compact chains such as a-1+91, tokenized as two signed
+        // values rather than separate '+'/'-' tokens.
+        $$ = std::move($1);
+        $$.push_back({'+', $2});
     }
     ;
 
