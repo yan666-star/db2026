@@ -6,6 +6,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
 #include "analyze/analyze.h"
@@ -191,13 +192,57 @@ Value csv_value(const std::string &field, const ColMeta &column) {
     Value value;
     const std::string text = trim_copy(field);
     if (column.type == TYPE_INT) {
-        value.set_int(std::stoi(text));
+        size_t consumed = 0;
+        const int parsed = std::stoi(text, &consumed);
+        if (consumed != text.size()) {
+            throw RMDBError("Invalid INT value in LOAD input");
+        }
+        value.set_int(parsed);
     } else if (column.type == TYPE_FLOAT) {
-        value.set_float(std::stof(text));
+        size_t consumed = 0;
+        const float parsed = std::stof(text, &consumed);
+        if (consumed != text.size()) {
+            throw RMDBError("Invalid FLOAT value in LOAD input");
+        }
+        value.set_float(parsed);
     } else {
         value.set_str(text);
     }
     return value;
+}
+
+std::vector<size_t> build_csv_column_mapping(
+    std::vector<std::string> header_fields,
+    const TabMeta &table) {
+    if (!header_fields.empty() && header_fields[0].size() >= 3U &&
+        static_cast<unsigned char>(header_fields[0][0]) == 0xEFU &&
+        static_cast<unsigned char>(header_fields[0][1]) == 0xBBU &&
+        static_cast<unsigned char>(header_fields[0][2]) == 0xBFU) {
+        header_fields[0].erase(0, 3);
+    }
+    if (header_fields.size() != table.cols.size()) {
+        throw InvalidValueCountError();
+    }
+
+    std::unordered_map<std::string, size_t> header_indexes;
+    header_indexes.reserve(header_fields.size());
+    for (size_t index = 0; index < header_fields.size(); ++index) {
+        const std::string name = trim_copy(header_fields[index]);
+        if (name.empty() || !header_indexes.emplace(name, index).second) {
+            throw RMDBError("Invalid or duplicate column in LOAD header");
+        }
+    }
+
+    std::vector<size_t> mapping;
+    mapping.reserve(table.cols.size());
+    for (const auto &column : table.cols) {
+        const auto found = header_indexes.find(column.name);
+        if (found == header_indexes.end()) {
+            throw RMDBError("LOAD header does not match table schema");
+        }
+        mapping.push_back(found->second);
+    }
+    return mapping;
 }
 
 }  // namespace
@@ -532,14 +577,18 @@ void SqlExecutionService::execute_load(
         }
         const auto &table = sm_manager_->db_.get_table(table_name);
         std::string line;
-        bool header = true;
+        if (!std::getline(input, line)) {
+            throw RMDBError("LOAD input is missing its header");
+        }
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        const auto csv_column_mapping =
+            build_csv_column_mapping(parse_csv_line(line), table);
+
         while (std::getline(input, line)) {
             if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
-            }
-            if (header) {
-                header = false;
-                continue;
             }
             if (trim_copy(line).empty()) {
                 continue;
@@ -549,9 +598,10 @@ void SqlExecutionService::execute_load(
                 throw InvalidValueCountError();
             }
             std::vector<Value> values;
-            values.reserve(fields.size());
-            for (size_t index = 0; index < fields.size(); ++index) {
-                values.push_back(csv_value(fields[index], table.cols[index]));
+            values.reserve(table.cols.size());
+            for (size_t index = 0; index < table.cols.size(); ++index) {
+                values.push_back(csv_value(
+                    fields[csv_column_mapping[index]], table.cols[index]));
             }
             InsertExecutor executor(
                 sm_manager_, table_name, std::move(values), &context);
