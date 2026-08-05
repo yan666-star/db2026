@@ -31,6 +31,7 @@ int main() {
         "delete from tb where a = 1;",
         "delete from tb where a = $1;",
         "update tb set a = 1, b = 2.2, c = 'xyz' where x = 2 and y < 1.1 and z > 'abc';",
+        "update tb set a = a where a = 1;",
         "update tb set a = a + 1, b = b - 2.2 where a = 1;",
         "update tb set a=a*2, b=b/2.0 where a=1;",
         "select * from tb;",
@@ -58,6 +59,19 @@ int main() {
             std::cout << "exit/EOF" << std::endl;
         }
     }
+
+    YY_BUFFER_STATE self_assignment_buf =
+        yy_scan_string("update tb set a = a where a = 1;");
+    assert(yyparse() == 0);
+    auto update = std::dynamic_pointer_cast<ast::UpdateStmt>(ast::parse_tree);
+    assert(update != nullptr);
+    assert(update->set_clauses.size() == 1);
+    assert(update->set_clauses[0]->col_name == "a");
+    assert(update->set_clauses[0]->rhs_col_name == "a");
+    assert(update->set_clauses[0]->arithmetic_op == '\0');
+    assert(update->set_clauses[0]->val == nullptr);
+    yy_delete_buffer(self_assignment_buf);
+
     ast::parse_tree.reset();
     return 0;
 }

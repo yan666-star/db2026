@@ -518,12 +518,19 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
             query->limit_num);
     } else {
         auto sel_cols = query->cols;
+        std::vector<std::string> output_names;
+        output_names.reserve(query->select_items.size());
+        for (const auto &item : query->select_items) {
+            output_names.push_back(
+                item.alias.empty() ? item.col.col_name : item.alias);
+        }
         plannerRoot = std::make_shared<ProjectionPlan>(
             T_Projection,
             std::move(plannerRoot),
             std::move(sel_cols),
             query->is_select_all,
-            query->limit_num
+            query->limit_num,
+            std::move(output_names)
         );
     }
 

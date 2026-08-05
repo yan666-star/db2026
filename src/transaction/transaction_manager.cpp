@@ -1132,6 +1132,49 @@ void TransactionManager::check_write_conflict(
     }
 }
 
+bool TransactionManager::has_stale_write_target(
+    Transaction *txn, uint64_t file_id,
+    const std::function<bool(const RmRecord &)> &matches) {
+    if (!uses_mvcc(txn)) {
+        return false;
+    }
+
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+    for (const auto &[key, history] : record_versions_) {
+        if (key.file_id != file_id) {
+            continue;
+        }
+
+        timestamp_t latest_commit = 0;
+        const MvccVersion *snapshot_visible = nullptr;
+        for (const auto &version : history) {
+            if (version.commit_ts == INVALID_TS) {
+                continue;
+            }
+            latest_commit = std::max(latest_commit, version.commit_ts);
+            if (version.commit_ts <= txn->get_start_ts() &&
+                (snapshot_visible == nullptr ||
+                 version.commit_ts > snapshot_visible->commit_ts)) {
+                snapshot_visible = &version;
+            }
+        }
+
+        if (latest_commit <= txn->get_start_ts() ||
+            snapshot_visible == nullptr || snapshot_visible->deleted ||
+            snapshot_visible->data.empty()) {
+            continue;
+        }
+
+        RmRecord record(static_cast<int>(snapshot_visible->data.size()));
+        memcpy(record.data, snapshot_visible->data.data(),
+               snapshot_visible->data.size());
+        if (matches(record)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void TransactionManager::check_unique_key_conflict(
     Transaction *txn, uint64_t file_id, const Rid &target_rid,
     const RmRecord &new_record, const std::vector<ColMeta> &index_cols) {

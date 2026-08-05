@@ -124,8 +124,15 @@ class UpdateExecutor : public AbstractExecutor {
             for (auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
                 if (!set_clause.is_arithmetic) {
-                    memcpy(rec_new->data + col->offset,
-                           set_clause.rhs.raw->data, col->len);
+                    if (set_clause.rhs_is_col) {
+                        auto rhs_col =
+                            tab_.get_col(set_clause.rhs_col.col_name);
+                        memcpy(rec_new->data + col->offset,
+                               rec->data + rhs_col->offset, col->len);
+                    } else {
+                        memcpy(rec_new->data + col->offset,
+                               set_clause.rhs.raw->data, col->len);
+                    }
                     continue;
                 }
 

@@ -11,7 +11,10 @@ FlameGraph/
 docx_*/
 # Local test database directories
 BufferPoolManagerTest_db/
-
+src/test/performance_test/table_data/tpcc_full/
+src/test/performance_test/table_data/tpcc_medium/
+src/test/performance_test/table_data/tpcc_small/
+work/
 # Local RMDB database/test output directories
 testdb/
 *_test_db/

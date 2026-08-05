@@ -392,6 +392,10 @@ setClause:
     {
         $$ = std::make_shared<SetClause>($1, $3);
     }
+    |   colName '=' colName
+    {
+        $$ = std::make_shared<SetClause>($1, $3);
+    }
     |   colName '=' colName value
     {
         $$ = std::make_shared<SetClause>($1, $3, '+', $4);

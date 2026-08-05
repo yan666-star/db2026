@@ -66,10 +66,21 @@ class DeleteExecutor : public AbstractExecutor {
         }
         done_ = true;
         lock_write_records();
+        const bool uses_mvcc =
+            context_->txn_mgr_ != nullptr &&
+            context_->txn_mgr_->uses_mvcc(context_->txn_);
+        if (uses_mvcc && rids_.empty() &&
+            context_->txn_mgr_->has_stale_write_target(
+                context_->txn_, fh_->GetMvccFileId(),
+                [&](const RmRecord &record) {
+                    return conds_.empty() ||
+                           eval_conditions(record, conds_, tab_.cols);
+                })) {
+            throw TransactionAbortException(
+                context_->txn_->get_transaction_id(),
+                AbortReason::WRITE_CONFLICT);
+        }
         for (auto &rid : rids_) {
-            bool uses_mvcc =
-                context_->txn_mgr_ != nullptr &&
-                context_->txn_mgr_->uses_mvcc(context_->txn_);
             std::unique_lock<std::mutex> delete_guard;
             if (!uses_mvcc) {
                 delete_guard = fh_->acquire_logical_update_latch();

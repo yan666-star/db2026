@@ -129,6 +129,10 @@ public:
     void check_write_conflict(Transaction *txn, uint64_t file_id,
                               const Rid &rid);
 
+    bool has_stale_write_target(
+        Transaction *txn, uint64_t file_id,
+        const std::function<bool(const RmRecord &)> &matches);
+
     void check_unique_key_conflict(
         Transaction *txn, uint64_t file_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);

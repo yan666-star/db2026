@@ -97,6 +97,13 @@ python3 SQL测试/performance_test/run_performance_smoke.py \
 
 该入口自动创建或重建测试库、启动 Wire v3服务、执行SQL和并发探针，最后关闭服务。
 
+在进入并发探针前，Smoke 会先执行决赛功能契约预检：
+
+- `UPDATE ... SET col = col WHERE ...` 必须返回 `COMMAND_OK`；
+- `SELECT col AS alias ...` 返回的 Wire META 必须保留精确 alias 和类型。
+
+这两项失败时会立即停止，不再继续运行耗时的并发探针。
+
 ### 3. Snapshot Isolation ACID
 
 ```bash
@@ -107,6 +114,10 @@ python3 SQL测试/performance_test/run_acid_tests.py \
   --server-log build/acid_snapshot_server.log \
   --isolation snapshot
 ```
+
+SI 测试同时覆盖：UPDATE 自赋值事务语义、SELECT AS 的精确 Wire META、
+stale-snapshot DELETE 的语句级 `TRANSACTION_ABORT`，以及真正无匹配
+DELETE 仍返回成功，避免把所有 0 行写操作错误地判成冲突。
 
 ### 4. Serializable ACID
 
@@ -211,4 +222,3 @@ ps -ef | grep '[b]uild/bin/rmdb'
 - ACID report是否生成；
 - Benchmark JSON是否生成；
 - 测试结束后8765端口是否仍由本轮RMDB占用。
-

@@ -536,29 +536,37 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         for (auto &sv_set : x->set_clauses) {
             SetClause set_clause;
             set_clause.lhs = {.tab_name = x->tab_name, .col_name = sv_set->col_name};
+            set_clause.rhs_is_col = sv_set->rhs_is_col;
             set_clause.is_arithmetic = sv_set->arithmetic_op != '\0';
-            if (set_clause.is_arithmetic) {
+            if (set_clause.rhs_is_col) {
                 set_clause.rhs_col = {
                     .tab_name = x->tab_name,
                     .col_name = sv_set->rhs_col_name};
             }
-            set_clause.rhs = convert_sv_value(sv_set->val);
             auto col = tab.get_col(sv_set->col_name);
-            if (set_clause.is_arithmetic) {
+            if (set_clause.rhs_is_col) {
                 auto rhs_col = tab.get_col(sv_set->rhs_col_name);
-                if ((col->type != TYPE_INT && col->type != TYPE_FLOAT) ||
-                    rhs_col->type != col->type) {
+                if (rhs_col->type != col->type || rhs_col->len != col->len) {
                     throw IncompatibleTypeError(
                         coltype2str(col->type),
                         coltype2str(rhs_col->type));
                 }
+            }
+            if (set_clause.is_arithmetic) {
+                if (col->type != TYPE_INT && col->type != TYPE_FLOAT) {
+                    throw IncompatibleTypeError(
+                        coltype2str(col->type), "numeric");
+                }
                 set_clause.arithmetic_op = sv_set->arithmetic_op;
             }
-            cast_val_to_col(set_clause.rhs, col->type);
-            if (col->type != set_clause.rhs.type) {
-                throw IncompatibleTypeError(coltype2str(col->type), coltype2str(set_clause.rhs.type));
+            if (sv_set->val != nullptr) {
+                set_clause.rhs = convert_sv_value(sv_set->val);
+                cast_val_to_col(set_clause.rhs, col->type);
+                if (col->type != set_clause.rhs.type) {
+                    throw IncompatibleTypeError(coltype2str(col->type), coltype2str(set_clause.rhs.type));
+                }
+                set_clause.rhs.init_raw(col->len);
             }
-            set_clause.rhs.init_raw(col->len);
             query->set_clauses.push_back(set_clause);
         }
         get_clause(x->conds, query->conds);

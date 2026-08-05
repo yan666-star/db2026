@@ -40,7 +40,7 @@ from run_performance_smoke import (  # noqa: E402
     select_scalar_int,
 )
 from server_manager import RMDBServerManager, add_server_arguments  # noqa: E402
-from wire_client import WireClient  # noqa: E402
+from wire_client import SQL_FLOAT32, WireClient  # noqa: E402
 
 
 # ── Isolation configuration ─────────────────────────────────────────────────
@@ -315,6 +315,90 @@ def test_si_write_visibility(args, table):
         execute_ok(client, "ROLLBACK;")
     finally:
         client.close()
+
+
+def test_update_self_assignment(args, table):
+    """UPDATE col=col must execute as a real transactional write."""
+    client = connect(args, args.isolation)
+    try:
+        before = scalar(client, f"SELECT amount FROM {table} WHERE k = 1;")
+        execute_ok(client, "BEGIN;")
+        execute_ok(client, f"UPDATE {table} SET amount = amount WHERE k = 1;")
+        during = scalar(client, f"SELECT amount FROM {table} WHERE k = 1;")
+        execute_ok(client, "COMMIT;")
+        after = scalar(client, f"SELECT amount FROM {table} WHERE k = 1;")
+        if (before, during, after) != (10, 10, 10):
+            raise AssertionError(
+                "self-assignment changed the stored value: "
+                f"before={before}, during={during}, after={after}")
+    finally:
+        client.close()
+
+
+def test_select_alias_metadata(args, table):
+    """EXEC_STREAM META must expose the SELECT AS alias exactly."""
+    client = WireClient(args.host, args.port, args.timeout)
+    client.connect()
+    try:
+        result = client.execute_stream(
+            f"SELECT amount AS amount_alias FROM {table} WHERE k = 1;")
+        if not result.is_query or result.query is None:
+            raise AssertionError(f"alias query failed: {result!r}")
+        columns = result.query.columns
+        if len(columns) != 1:
+            raise AssertionError(
+                f"alias query expected one column, got {len(columns)}")
+        actual = (columns[0].name, columns[0].sql_type)
+        expected = ("amount_alias", SQL_FLOAT32)
+        if actual != expected:
+            raise AssertionError(
+                f"alias META mismatch: expected={expected}, actual={actual}")
+    finally:
+        client.close()
+
+
+def test_stale_snapshot_delete_conflict(args, table):
+    """A stale-snapshot DELETE must abort, while a true no-op must succeed."""
+    setup = connect(args)
+    stale = None
+    writer = None
+    try:
+        execute_ok(setup, f"INSERT INTO {table} VALUES "
+                   "(60, 6, 60.0, 'stale-delete');")
+        stale = connect(args, args.isolation)
+        writer = connect(args, args.isolation)
+
+        execute_ok(stale, "BEGIN;")
+        scalar(stale, f"SELECT amount FROM {table} WHERE k = 60;")
+
+        execute_ok(writer, "BEGIN;")
+        execute_ok(writer, f"UPDATE {table} SET amount = 61.0 WHERE k = 60;")
+        execute_ok(writer, "COMMIT;")
+
+        delete_response = stale.execute(
+            f"DELETE FROM {table} WHERE k = 60;")
+        if not delete_response.startswith("abort"):
+            raise AssertionError(
+                "stale-snapshot DELETE must return TRANSACTION_ABORT, "
+                f"got {delete_response!r}")
+
+        no_match = connect(args, args.isolation)
+        try:
+            execute_ok(no_match, "BEGIN;")
+            execute_ok(no_match,
+                       f"DELETE FROM {table} WHERE k = 999999;")
+            execute_ok(no_match, "COMMIT;")
+        finally:
+            no_match.close()
+    finally:
+        if stale is not None:
+            stale.close()
+        if writer is not None:
+            writer.close()
+        try:
+            execute_ok(setup, f"DELETE FROM {table} WHERE k = 60;")
+        finally:
+            setup.close()
 
 
 def test_si_write_conflict(args, table):
@@ -702,10 +786,14 @@ TEST_GROUPS = {
     ],
     "si": [
         ("rollback_atomicity", test_rollback_atomicity),
+        ("update_self_assignment", test_update_self_assignment),
+        ("select_alias_metadata", test_select_alias_metadata),
         ("no_dirty_read", test_no_dirty_read),
         ("unique_write_conflict", test_unique_write_conflict),
         ("si_write_visibility", test_si_write_visibility),
         ("si_write_conflict", test_si_write_conflict),
+        ("stale_snapshot_delete_conflict",
+         test_stale_snapshot_delete_conflict),
     ],
     "ser": [
         ("record_write_skew", test_record_write_skew),

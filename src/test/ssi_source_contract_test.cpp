@@ -43,6 +43,8 @@ int main(int argc, char **argv) {
     const std::string manager = read_file(
         root / "src" / "transaction" / "transaction_manager.cpp");
     const std::string portal = read_file(root / "src" / "portal.h");
+    const std::string delete_executor = read_file(
+        root / "src" / "execution" / "executor_delete.h");
 
     const size_t prepare_begin =
         manager.find("void TransactionManager::prepare_write(");
@@ -96,6 +98,10 @@ int main(int argc, char **argv) {
                 std::string::npos,
             "Snapshot isolation must not serialize 32 ranking clients by "
             "default");
+    require(delete_executor.find(
+                "context_->txn_mgr_->has_stale_write_target(") !=
+                std::string::npos,
+            "MVCC DELETE must abort when a stale snapshot yields no writable RID");
 
     std::cout << "ssi source contract tests passed\n";
     return 0;

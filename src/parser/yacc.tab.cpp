@@ -564,7 +564,7 @@ union yyalloc
 /* YYNNTS -- Number of nonterminals.  */
 #define YYNNTS  42
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  119
+#define YYNRULES  120
 /* YYNSTATES -- Number of states.  */
 #define YYNSTATES  231
 
@@ -628,11 +628,12 @@ static const yytype_int16 yyrline[] =
      259,   266,   270,   274,   278,   282,   289,   296,   297,   304,
      308,   316,   320,   338,   342,   346,   350,   354,   358,   365,
      369,   373,   380,   384,   391,   395,   399,   403,   407,   411,
-     418,   422,   426,   430,   437,   441,   445,   449,   456,   457,
-     458,   460,   462,   463,   464,   465,   469,   478,   482,   508,
-     512,   516,   520,   528,   539,   544,   549,   554,   563,   564,
-     568,   569,   573,   574,   578,   579,   583,   587,   591,   595,
-     599,   607,   608,   609,   613,   614,   618,   619,   622,   624
+     415,   422,   426,   430,   434,   441,   445,   449,   453,   460,
+     461,   462,   464,   466,   467,   468,   469,   473,   482,   486,
+     512,   516,   520,   524,   532,   543,   548,   553,   558,   567,
+     568,   572,   573,   577,   578,   582,   583,   587,   591,   595,
+     599,   603,   611,   612,   613,   617,   618,   622,   623,   626,
+     628
 };
 #endif
 
@@ -681,7 +682,7 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
 
-#define YYTABLE_NINF (-119)
+#define YYTABLE_NINF (-120)
 
 #define yytable_value_is_error(Yyn) \
   0
@@ -723,28 +724,28 @@ static const yytype_int8 yydefact[] =
 {
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        4,     3,    11,    12,    13,    14,     0,    19,    20,     5,
-       0,     0,     9,     6,    10,     7,     8,    87,   108,    15,
-       0,     0,    16,     0,     0,     0,   118,    23,     0,     0,
-       0,   116,   117,     0,     0,     0,     0,     0,     0,   119,
-      70,    74,     0,    71,    72,    76,     0,    52,     0,     1,
-       2,     0,     0,   114,     0,     0,     0,    22,     0,     0,
+       0,     0,     9,     6,    10,     7,     8,    88,   109,    15,
+       0,     0,    16,     0,     0,     0,   119,    23,     0,     0,
+       0,   117,   118,     0,     0,     0,     0,     0,     0,   120,
+      71,    75,     0,    72,    73,    77,     0,    52,     0,     1,
+       2,     0,     0,   115,     0,     0,     0,    22,     0,     0,
       47,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,   108,     0,    88,     0,    29,    17,     0,
-       0,     0,     0,     0,    27,   119,    47,    62,     0,    18,
-       0,     0,     0,     0,     0,     0,     0,    75,     0,    94,
-      47,    89,    73,    77,    51,   114,   113,   107,   115,     0,
+       0,     0,     0,   109,     0,    89,     0,    29,    17,     0,
+       0,     0,     0,     0,    27,   120,    47,    62,     0,    18,
+       0,     0,     0,     0,     0,     0,     0,    76,     0,    95,
+      47,    90,    74,    78,    51,   115,   114,   108,   116,     0,
       31,     0,     0,    33,     0,     0,    43,    41,    45,    42,
       44,    59,    49,    48,    60,     0,    61,     0,    28,     0,
-       0,     0,    78,    79,    82,    83,    84,    85,     0,     0,
-       0,    98,     0,    90,    30,   112,   111,   109,     0,    21,
+       0,     0,    79,    80,    83,    84,    85,    86,     0,     0,
+       0,    99,     0,    91,    30,   113,   112,   110,     0,    21,
        0,    36,     0,    38,    35,    24,     0,    25,     0,    39,
        0,    57,    56,    58,    53,    54,    55,     0,    63,    64,
-       0,     0,    80,     0,    96,    95,     0,   102,    91,   113,
+      65,     0,    81,     0,    97,    96,     0,   103,    92,   114,
       32,     0,    34,    26,     0,    50,    46,     0,     0,     0,
-       0,    65,     0,     0,    93,     0,     0,     0,    86,   110,
-       0,    40,    66,    67,    68,    69,    81,    92,    97,   100,
-      99,     0,   103,   104,    37,     0,     0,     0,   101,   106,
-     105
+       0,    66,     0,     0,    94,     0,     0,     0,    87,   111,
+       0,    40,    67,    68,    69,    70,    82,    93,    98,   101,
+     100,     0,   104,   105,    37,     0,     0,     0,   102,   107,
+     106
 };
 
 /* YYPGOTO[NTERM-NUM].  */
@@ -783,7 +784,7 @@ static const yytype_int16 yytable[] =
       64,   211,    71,   116,   212,   213,   214,   215,    44,    72,
       45,    46,    47,    48,    98,    73,   180,   159,   160,   141,
       74,    49,   126,   127,   128,   129,   130,   165,   166,   153,
-    -118,   167,   166,   229,   193,   194,    75,   121,   171,   172,
+    -119,   167,   166,   229,   193,   194,    75,   121,   171,   172,
      173,   184,   185,   192,    76,    77,     1,    78,     2,   174,
       79,     3,     4,     5,   175,   176,     6,    81,    80,   181,
       82,     9,     7,     8,     9,    84,    86,   111,   111,    89,
@@ -868,11 +869,12 @@ static const yytype_int8 yyr1[] =
       87,    88,    88,    88,    88,    88,    89,    90,    90,    91,
       91,    92,    92,    93,    93,    93,    93,    93,    93,    94,
       94,    94,    95,    95,    96,    96,    96,    96,    96,    96,
-      97,    97,    98,    98,    99,    99,    99,    99,   100,   100,
-     100,   100,   100,   100,   100,   100,   101,   102,   102,   103,
-     103,   103,   103,   103,   104,   104,   104,   104,   105,   105,
-     106,   106,   107,   107,   108,   108,   109,   110,   110,   111,
-     111,   112,   112,   112,   113,   113,   114,   114,   115,   116
+      96,    97,    97,    98,    98,    99,    99,    99,    99,   100,
+     100,   100,   100,   100,   100,   100,   100,   101,   102,   102,
+     103,   103,   103,   103,   103,   104,   104,   104,   104,   105,
+     105,   106,   106,   107,   107,   108,   108,   109,   110,   110,
+     111,   111,   112,   112,   112,   113,   113,   114,   114,   115,
+     116
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
@@ -884,12 +886,13 @@ static const yytype_int8 yyr2[] =
        5,     1,     3,     1,     3,     2,     1,     4,     1,     1,
        3,     1,     1,     1,     1,     1,     3,     0,     2,     1,
        3,     3,     1,     1,     1,     1,     1,     1,     1,     1,
-       1,     1,     1,     3,     3,     4,     5,     5,     5,     5,
-       1,     1,     1,     3,     1,     3,     1,     3,     4,     4,
-       5,     7,     4,     4,     4,     4,     7,     1,     3,     1,
-       2,     3,     5,     4,     1,     3,     3,     5,     0,     3,
-       1,     3,     0,     2,     1,     3,     3,     3,     0,     2,
-       4,     1,     1,     0,     0,     2,     1,     1,     1,     1
+       1,     1,     1,     3,     3,     3,     4,     5,     5,     5,
+       5,     1,     1,     1,     3,     1,     3,     1,     3,     4,
+       4,     5,     7,     4,     4,     4,     4,     7,     1,     3,
+       1,     2,     3,     5,     4,     1,     3,     3,     5,     0,
+       3,     1,     3,     0,     2,     1,     3,     3,     3,     0,
+       2,     4,     1,     1,     0,     0,     2,     1,     1,     1,
+       1
 };
 
 
@@ -1750,7 +1753,7 @@ yyreduce:
         parse_tree = (yyvsp[-1].sv_node);
         YYACCEPT;
     }
-#line 1754 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1757 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 3: /* start: HELP  */
@@ -1759,7 +1762,7 @@ yyreduce:
         parse_tree = std::make_shared<Help>();
         YYACCEPT;
     }
-#line 1763 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1766 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 4: /* start: EXIT  */
@@ -1768,7 +1771,7 @@ yyreduce:
         parse_tree = nullptr;
         YYACCEPT;
     }
-#line 1772 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1775 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 5: /* start: T_EOF  */
@@ -1777,7 +1780,7 @@ yyreduce:
         parse_tree = nullptr;
         YYACCEPT;
     }
-#line 1781 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1784 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 11: /* txnStmt: TXN_BEGIN  */
@@ -1785,7 +1788,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<TxnBegin>();
     }
-#line 1789 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1792 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 12: /* txnStmt: TXN_COMMIT  */
@@ -1793,7 +1796,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<TxnCommit>();
     }
-#line 1797 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1800 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 13: /* txnStmt: TXN_ABORT  */
@@ -1801,7 +1804,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<TxnAbort>();
     }
-#line 1805 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1808 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 14: /* txnStmt: TXN_ROLLBACK  */
@@ -1809,7 +1812,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<TxnRollback>();
     }
-#line 1813 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1816 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 15: /* dbStmt: SHOW TABLES  */
@@ -1817,7 +1820,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<ShowTables>();
     }
-#line 1821 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1824 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 16: /* dbStmt: CREATE STATIC_CHECKPOINT  */
@@ -1825,7 +1828,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<StaticCheckpoint>();
     }
-#line 1829 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1832 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 17: /* dbStmt: SHOW INDEX FROM tbName  */
@@ -1833,7 +1836,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<ShowIndex>((yyvsp[0].sv_str));
     }
-#line 1837 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1840 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 18: /* setStmt: SET set_knob_type '=' VALUE_BOOL  */
@@ -1841,7 +1844,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<SetStmt>((yyvsp[-2].sv_setKnobType), (yyvsp[0].sv_bool));
     }
-#line 1845 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1848 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 19: /* setStmt: SET_TXN_SNAPSHOT  */
@@ -1849,7 +1852,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<SetTransactionIsolation>(SnapshotIsolation);
     }
-#line 1853 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1856 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 20: /* setStmt: SET_TXN_SERIALIZABLE  */
@@ -1857,7 +1860,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<SetTransactionIsolation>(Serializable);
     }
-#line 1861 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1864 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 21: /* ddl: CREATE TABLE tbName '(' fieldList ')'  */
@@ -1865,7 +1868,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<CreateTable>((yyvsp[-3].sv_str), (yyvsp[-1].sv_fields));
     }
-#line 1869 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1872 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 22: /* ddl: DROP TABLE tbName  */
@@ -1873,7 +1876,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<DropTable>((yyvsp[0].sv_str));
     }
-#line 1877 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1880 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 23: /* ddl: DESC tbName  */
@@ -1881,7 +1884,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<DescTable>((yyvsp[0].sv_str));
     }
-#line 1885 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1888 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 24: /* ddl: CREATE INDEX tbName '(' colNameList ')'  */
@@ -1889,7 +1892,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<CreateIndex>((yyvsp[-3].sv_str), (yyvsp[-1].sv_strs));
     }
-#line 1893 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1896 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 25: /* ddl: DROP INDEX tbName '(' colNameList ')'  */
@@ -1897,7 +1900,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<DropIndex>((yyvsp[-3].sv_str), (yyvsp[-1].sv_strs));
     }
-#line 1901 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1904 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 26: /* dml: INSERT INTO tbName VALUES '(' valueList ')'  */
@@ -1905,7 +1908,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<InsertStmt>((yyvsp[-4].sv_str), (yyvsp[-1].sv_vals));
     }
-#line 1909 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1912 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 27: /* dml: DELETE FROM tbName optWhereClause  */
@@ -1913,7 +1916,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<DeleteStmt>((yyvsp[-1].sv_str), (yyvsp[0].sv_conds));
     }
-#line 1917 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1920 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 28: /* dml: UPDATE tbName SET setClauses optWhereClause  */
@@ -1921,7 +1924,7 @@ yyreduce:
     {
         (yyval.sv_node) = std::make_shared<UpdateStmt>((yyvsp[-3].sv_str), (yyvsp[-1].sv_set_clauses), (yyvsp[0].sv_conds));
     }
-#line 1925 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1928 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 29: /* dml: select_stmt opt_order_clause opt_limit_clause  */
@@ -1935,7 +1938,7 @@ yyreduce:
         stmt->has_limit = (yyvsp[0].sv_int) >= 0;
         (yyval.sv_node) = stmt;
     }
-#line 1939 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1942 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 30: /* dml: EXPLAIN ANALYZE select_stmt opt_order_clause opt_limit_clause  */
@@ -1950,7 +1953,7 @@ yyreduce:
         stmt->has_limit = (yyvsp[0].sv_int) >= 0;
         (yyval.sv_node) = stmt;
     }
-#line 1954 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1957 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 31: /* fieldList: field  */
@@ -1958,7 +1961,7 @@ yyreduce:
     {
         (yyval.sv_fields) = std::vector<std::shared_ptr<Field>>{(yyvsp[0].sv_field)};
     }
-#line 1962 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1965 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 32: /* fieldList: fieldList ',' field  */
@@ -1966,7 +1969,7 @@ yyreduce:
     {
         (yyval.sv_fields).push_back((yyvsp[0].sv_field));
     }
-#line 1970 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1973 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 33: /* colNameList: colName  */
@@ -1974,7 +1977,7 @@ yyreduce:
     {
         (yyval.sv_strs) = std::vector<std::string>{(yyvsp[0].sv_str)};
     }
-#line 1978 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1981 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 34: /* colNameList: colNameList ',' colName  */
@@ -1982,7 +1985,7 @@ yyreduce:
     {
         (yyval.sv_strs).push_back((yyvsp[0].sv_str));
     }
-#line 1986 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1989 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 35: /* field: colName type  */
@@ -1990,7 +1993,7 @@ yyreduce:
     {
         (yyval.sv_field) = std::make_shared<ColDef>((yyvsp[-1].sv_str), (yyvsp[0].sv_type_len));
     }
-#line 1994 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 1997 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 36: /* type: INT  */
@@ -1998,7 +2001,7 @@ yyreduce:
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_INT, sizeof(int));
     }
-#line 2002 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2005 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 37: /* type: CHAR '(' VALUE_INT ')'  */
@@ -2006,7 +2009,7 @@ yyreduce:
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_STRING, (yyvsp[-1].sv_int));
     }
-#line 2010 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2013 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 38: /* type: FLOAT  */
@@ -2014,7 +2017,7 @@ yyreduce:
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_FLOAT, sizeof(float));
     }
-#line 2018 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2021 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 39: /* valueList: value  */
@@ -2022,7 +2025,7 @@ yyreduce:
     {
         (yyval.sv_vals) = std::vector<std::shared_ptr<Value>>{(yyvsp[0].sv_val)};
     }
-#line 2026 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2029 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 40: /* valueList: valueList ',' value  */
@@ -2030,7 +2033,7 @@ yyreduce:
     {
         (yyval.sv_vals).push_back((yyvsp[0].sv_val));
     }
-#line 2034 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2037 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 41: /* value: VALUE_INT  */
@@ -2038,7 +2041,7 @@ yyreduce:
     {
         (yyval.sv_val) = std::make_shared<IntLit>((yyvsp[0].sv_int));
     }
-#line 2042 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2045 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 42: /* value: VALUE_FLOAT  */
@@ -2046,7 +2049,7 @@ yyreduce:
     {
         (yyval.sv_val) = std::make_shared<FloatLit>((yyvsp[0].sv_float));
     }
-#line 2050 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2053 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 43: /* value: VALUE_STRING  */
@@ -2054,7 +2057,7 @@ yyreduce:
     {
         (yyval.sv_val) = std::make_shared<StringLit>((yyvsp[0].sv_str));
     }
-#line 2058 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2061 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 44: /* value: VALUE_BOOL  */
@@ -2062,7 +2065,7 @@ yyreduce:
     {
         (yyval.sv_val) = std::make_shared<BoolLit>((yyvsp[0].sv_bool));
     }
-#line 2066 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2069 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 45: /* value: PARAMETER  */
@@ -2070,7 +2073,7 @@ yyreduce:
     {
         (yyval.sv_val) = std::make_shared<ParamRef>(static_cast<uint16_t>((yyvsp[0].sv_int)));
     }
-#line 2074 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2077 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 46: /* condition: expr op expr  */
@@ -2078,13 +2081,13 @@ yyreduce:
     {
         (yyval.sv_cond) = std::make_shared<BinaryExpr>((yyvsp[-2].sv_expr), (yyvsp[-1].sv_comp_op), (yyvsp[0].sv_expr));
     }
-#line 2082 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2085 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 47: /* optWhereClause: %empty  */
 #line 296 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                       { /* ignore*/ }
-#line 2088 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2091 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 48: /* optWhereClause: WHERE whereClause  */
@@ -2092,7 +2095,7 @@ yyreduce:
     {
         (yyval.sv_conds) = (yyvsp[0].sv_conds);
     }
-#line 2096 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2099 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 49: /* whereClause: condition  */
@@ -2100,7 +2103,7 @@ yyreduce:
     {
         (yyval.sv_conds) = std::vector<std::shared_ptr<BinaryExpr>>{(yyvsp[0].sv_cond)};
     }
-#line 2104 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2107 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 50: /* whereClause: whereClause AND condition  */
@@ -2109,7 +2112,7 @@ yyreduce:
         (yyval.sv_conds) = (yyvsp[-2].sv_conds);
         (yyval.sv_conds).push_back((yyvsp[0].sv_cond));
     }
-#line 2113 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2116 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 51: /* col: tbName '.' colName  */
@@ -2117,7 +2120,7 @@ yyreduce:
     {
         (yyval.sv_col) = std::make_shared<Col>((yyvsp[-2].sv_str), (yyvsp[0].sv_str));
     }
-#line 2121 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2124 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 52: /* col: colName  */
@@ -2125,7 +2128,7 @@ yyreduce:
     {
         (yyval.sv_col) = std::make_shared<Col>("", (yyvsp[0].sv_str));
     }
-#line 2129 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2132 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 53: /* op: '='  */
@@ -2133,7 +2136,7 @@ yyreduce:
     {
         (yyval.sv_comp_op) = SV_OP_EQ;
     }
-#line 2137 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2140 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 54: /* op: '<'  */
@@ -2141,7 +2144,7 @@ yyreduce:
     {
         (yyval.sv_comp_op) = SV_OP_LT;
     }
-#line 2145 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2148 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 55: /* op: '>'  */
@@ -2149,7 +2152,7 @@ yyreduce:
     {
         (yyval.sv_comp_op) = SV_OP_GT;
     }
-#line 2153 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2156 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 56: /* op: NEQ  */
@@ -2157,7 +2160,7 @@ yyreduce:
     {
         (yyval.sv_comp_op) = SV_OP_NE;
     }
-#line 2161 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2164 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 57: /* op: LEQ  */
@@ -2165,7 +2168,7 @@ yyreduce:
     {
         (yyval.sv_comp_op) = SV_OP_LE;
     }
-#line 2169 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2172 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 58: /* op: GEQ  */
@@ -2173,7 +2176,7 @@ yyreduce:
     {
         (yyval.sv_comp_op) = SV_OP_GE;
     }
-#line 2177 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2180 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 59: /* expr: value  */
@@ -2181,7 +2184,7 @@ yyreduce:
     {
         (yyval.sv_expr) = std::static_pointer_cast<Expr>((yyvsp[0].sv_val));
     }
-#line 2185 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2188 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 60: /* expr: col  */
@@ -2189,7 +2192,7 @@ yyreduce:
     {
         (yyval.sv_expr) = std::static_pointer_cast<Expr>((yyvsp[0].sv_col));
     }
-#line 2193 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2196 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 61: /* expr: agg_func  */
@@ -2197,7 +2200,7 @@ yyreduce:
     {
         (yyval.sv_expr) = std::static_pointer_cast<Expr>((yyvsp[0].sv_agg_func));
     }
-#line 2201 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2204 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 62: /* setClauses: setClause  */
@@ -2205,7 +2208,7 @@ yyreduce:
     {
         (yyval.sv_set_clauses) = std::vector<std::shared_ptr<SetClause>>{(yyvsp[0].sv_set_clause)};
     }
-#line 2209 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2212 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 63: /* setClauses: setClauses ',' setClause  */
@@ -2213,7 +2216,7 @@ yyreduce:
     {
         (yyval.sv_set_clauses).push_back((yyvsp[0].sv_set_clause));
     }
-#line 2217 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2220 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 64: /* setClause: colName '=' value  */
@@ -2221,173 +2224,181 @@ yyreduce:
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-2].sv_str), (yyvsp[0].sv_val));
     }
-#line 2225 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2228 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 65: /* setClause: colName '=' colName value  */
+  case 65: /* setClause: colName '=' colName  */
 #line 396 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+    {
+        (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-2].sv_str), (yyvsp[0].sv_str));
+    }
+#line 2236 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 66: /* setClause: colName '=' colName value  */
+#line 400 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-3].sv_str), (yyvsp[-1].sv_str), '+', (yyvsp[0].sv_val));
     }
-#line 2233 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2244 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 66: /* setClause: colName '=' colName '+' value  */
-#line 400 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 67: /* setClause: colName '=' colName '+' value  */
+#line 404 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '+', (yyvsp[0].sv_val));
     }
-#line 2241 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2252 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 67: /* setClause: colName '=' colName '-' value  */
-#line 404 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 68: /* setClause: colName '=' colName '-' value  */
+#line 408 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '-', (yyvsp[0].sv_val));
     }
-#line 2249 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2260 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 68: /* setClause: colName '=' colName '*' value  */
-#line 408 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 69: /* setClause: colName '=' colName '*' value  */
+#line 412 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '*', (yyvsp[0].sv_val));
     }
-#line 2257 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2268 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 69: /* setClause: colName '=' colName '/' value  */
-#line 412 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 70: /* setClause: colName '=' colName '/' value  */
+#line 416 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '/', (yyvsp[0].sv_val));
     }
-#line 2265 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2276 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 70: /* selector: '*'  */
-#line 419 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 71: /* selector: '*'  */
+#line 423 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_items) = {};
     }
-#line 2273 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2284 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 72: /* select_list: select_item  */
-#line 427 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 73: /* select_list: select_item  */
+#line 431 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_items) = std::vector<std::shared_ptr<SelectItem>>{(yyvsp[0].sv_select_item)};
     }
-#line 2281 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2292 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 73: /* select_list: select_list ',' select_item  */
-#line 431 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 74: /* select_list: select_list ',' select_item  */
+#line 435 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_items).push_back((yyvsp[0].sv_select_item));
     }
-#line 2289 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2300 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 74: /* select_item: col  */
-#line 438 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 75: /* select_item: col  */
+#line 442 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[0].sv_col), "");
     }
-#line 2297 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2308 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 75: /* select_item: col AS colName  */
-#line 442 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 76: /* select_item: col AS colName  */
+#line 446 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[-2].sv_col), (yyvsp[0].sv_str));
     }
-#line 2305 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2316 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 76: /* select_item: agg_func  */
-#line 446 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 77: /* select_item: agg_func  */
+#line 450 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[0].sv_agg_func), "");
     }
-#line 2313 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2324 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 77: /* select_item: agg_func AS colName  */
-#line 450 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 78: /* select_item: agg_func AS colName  */
+#line 454 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[-2].sv_agg_func), (yyvsp[0].sv_str));
     }
-#line 2321 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2332 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 78: /* agg_func: COUNT '(' '*' ')'  */
-#line 456 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 79: /* agg_func: COUNT '(' '*' ')'  */
+#line 460 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, true, nullptr); }
-#line 2327 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2338 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 79: /* agg_func: COUNT '(' col ')'  */
-#line 457 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-1].sv_col)); }
-#line 2333 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 80: /* agg_func: COUNT '(' DISTINCT col ')'  */
-#line 459 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-1].sv_col), true); }
-#line 2339 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 81: /* agg_func: COUNT '(' DISTINCT '(' col ')' ')'  */
+  case 80: /* agg_func: COUNT '(' col ')'  */
 #line 461 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-2].sv_col), true); }
-#line 2345 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-1].sv_col)); }
+#line 2344 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 82: /* agg_func: MAX '(' col ')'  */
-#line 462 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_MAX, false, (yyvsp[-1].sv_col)); }
-#line 2351 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 83: /* agg_func: MIN '(' col ')'  */
+  case 81: /* agg_func: COUNT '(' DISTINCT col ')'  */
 #line 463 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_MIN, false, (yyvsp[-1].sv_col)); }
-#line 2357 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-1].sv_col), true); }
+#line 2350 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 84: /* agg_func: SUM '(' col ')'  */
-#line 464 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_SUM, false, (yyvsp[-1].sv_col)); }
-#line 2363 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 85: /* agg_func: AVG '(' col ')'  */
+  case 82: /* agg_func: COUNT '(' DISTINCT '(' col ')' ')'  */
 #line 465 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_AVG, false, (yyvsp[-1].sv_col)); }
-#line 2369 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-2].sv_col), true); }
+#line 2356 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 86: /* select_branch: SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause  */
-#line 470 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 83: /* agg_func: MAX '(' col ')'  */
+#line 466 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_MAX, false, (yyvsp[-1].sv_col)); }
+#line 2362 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 84: /* agg_func: MIN '(' col ')'  */
+#line 467 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_MIN, false, (yyvsp[-1].sv_col)); }
+#line 2368 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 85: /* agg_func: SUM '(' col ')'  */
+#line 468 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_SUM, false, (yyvsp[-1].sv_col)); }
+#line 2374 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 86: /* agg_func: AVG '(' col ')'  */
+#line 469 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                               { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_AVG, false, (yyvsp[-1].sv_col)); }
+#line 2380 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 87: /* select_branch: SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause  */
+#line 474 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         auto conds = (yyvsp[-3].sv_from_clause).conds;
         conds.insert(conds.end(), (yyvsp[-2].sv_conds).begin(), (yyvsp[-2].sv_conds).end());
         (yyval.sv_node) = std::make_shared<SelectStmt>((yyvsp[-5].sv_select_items), (yyvsp[-3].sv_from_clause).tables, conds, (yyvsp[-1].sv_cols), (yyvsp[0].sv_having_exprs), nullptr, -1);
     }
-#line 2379 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2390 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 87: /* select_stmt: select_branch  */
-#line 479 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 88: /* select_stmt: select_branch  */
+#line 483 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = (yyvsp[0].sv_node);
     }
-#line 2387 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2398 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 88: /* select_stmt: select_stmt UNION select_branch  */
-#line 483 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 89: /* select_stmt: select_stmt UNION select_branch  */
+#line 487 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         std::vector<std::shared_ptr<SelectStmt>> branches;
         auto left = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-2].sv_node));
@@ -2410,35 +2421,35 @@ yyreduce:
         u->union_branches = std::move(branches);
         (yyval.sv_node) = u;
     }
-#line 2414 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2425 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 89: /* tableRef: tbName  */
-#line 509 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 90: /* tableRef: tbName  */
+#line 513 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_table_ref) = TableRef((yyvsp[0].sv_str), "");
     }
-#line 2422 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2433 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 90: /* tableRef: tbName tbName  */
-#line 513 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 91: /* tableRef: tbName tbName  */
+#line 517 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_table_ref) = TableRef((yyvsp[-1].sv_str), (yyvsp[0].sv_str));
     }
-#line 2430 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2441 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 91: /* tableRef: tbName AS tbName  */
-#line 517 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 92: /* tableRef: tbName AS tbName  */
+#line 521 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_table_ref) = TableRef((yyvsp[-2].sv_str), (yyvsp[0].sv_str));
     }
-#line 2438 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2449 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 92: /* tableRef: '(' select_stmt ')' AS tbName  */
-#line 521 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 93: /* tableRef: '(' select_stmt ')' AS tbName  */
+#line 525 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         TableRef ref;
         ref.is_subquery = true;
@@ -2446,11 +2457,11 @@ yyreduce:
         ref.subquery = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-3].sv_node));
         (yyval.sv_table_ref) = ref;
     }
-#line 2450 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2461 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 93: /* tableRef: '(' select_stmt ')' tbName  */
-#line 529 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 94: /* tableRef: '(' select_stmt ')' tbName  */
+#line 533 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         TableRef ref;
         ref.is_subquery = true;
@@ -2458,175 +2469,175 @@ yyreduce:
         ref.subquery = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-2].sv_node));
         (yyval.sv_table_ref) = ref;
     }
-#line 2462 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2473 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 94: /* tableList: tableRef  */
-#line 540 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 95: /* tableList: tableRef  */
+#line 544 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_from_clause).tables = {(yyvsp[0].sv_table_ref)};
         (yyval.sv_from_clause).conds = {};
     }
-#line 2471 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2482 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 95: /* tableList: tableList ',' tableRef  */
-#line 545 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 96: /* tableList: tableList ',' tableRef  */
+#line 549 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-2].sv_from_clause).tables.push_back((yyvsp[0].sv_table_ref));
         (yyval.sv_from_clause) = (yyvsp[-2].sv_from_clause);
     }
-#line 2480 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2491 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 96: /* tableList: tableList JOIN tableRef  */
-#line 550 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 97: /* tableList: tableList JOIN tableRef  */
+#line 554 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-2].sv_from_clause).tables.push_back((yyvsp[0].sv_table_ref));
         (yyval.sv_from_clause) = (yyvsp[-2].sv_from_clause);
     }
-#line 2489 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2500 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 97: /* tableList: tableList JOIN tableRef ON whereClause  */
-#line 555 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 98: /* tableList: tableList JOIN tableRef ON whereClause  */
+#line 559 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-4].sv_from_clause).tables.push_back((yyvsp[-2].sv_table_ref));
         (yyvsp[-4].sv_from_clause).conds.insert((yyvsp[-4].sv_from_clause).conds.end(), (yyvsp[0].sv_conds).begin(), (yyvsp[0].sv_conds).end());
         (yyval.sv_from_clause) = (yyvsp[-4].sv_from_clause);
     }
-#line 2499 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2510 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 98: /* opt_group_by_clause: %empty  */
-#line 563 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 99: /* opt_group_by_clause: %empty  */
+#line 567 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_cols) = {}; }
-#line 2505 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2516 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 99: /* opt_group_by_clause: GROUP BY group_by_clause  */
-#line 564 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                               { (yyval.sv_cols) = (yyvsp[0].sv_cols); }
-#line 2511 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 100: /* group_by_clause: col  */
+  case 100: /* opt_group_by_clause: GROUP BY group_by_clause  */
 #line 568 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                               { (yyval.sv_cols) = (yyvsp[0].sv_cols); }
+#line 2522 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 101: /* group_by_clause: col  */
+#line 572 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
           { (yyval.sv_cols) = std::vector<std::shared_ptr<Col>>{(yyvsp[0].sv_col)}; }
-#line 2517 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2528 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 101: /* group_by_clause: group_by_clause ',' col  */
-#line 569 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                              { (yyval.sv_cols).push_back((yyvsp[0].sv_col)); }
-#line 2523 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 102: /* opt_having_clause: %empty  */
+  case 102: /* group_by_clause: group_by_clause ',' col  */
 #line 573 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                              { (yyval.sv_cols).push_back((yyvsp[0].sv_col)); }
+#line 2534 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 103: /* opt_having_clause: %empty  */
+#line 577 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_having_exprs) = {}; }
-#line 2529 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2540 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 103: /* opt_having_clause: HAVING having_clause  */
-#line 574 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                           { (yyval.sv_having_exprs) = (yyvsp[0].sv_having_exprs); }
-#line 2535 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 104: /* having_clause: having_condition  */
+  case 104: /* opt_having_clause: HAVING having_clause  */
 #line 578 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                           { (yyval.sv_having_exprs) = (yyvsp[0].sv_having_exprs); }
+#line 2546 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 105: /* having_clause: having_condition  */
+#line 582 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                        { (yyval.sv_having_exprs) = std::vector<std::shared_ptr<HavingExpr>>{(yyvsp[0].sv_having_expr)}; }
-#line 2541 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2552 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 105: /* having_clause: having_clause AND having_condition  */
-#line 579 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                                         { (yyval.sv_having_exprs).push_back((yyvsp[0].sv_having_expr)); }
-#line 2547 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 106: /* having_condition: agg_func op value  */
+  case 106: /* having_clause: having_clause AND having_condition  */
 #line 583 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                        { (yyval.sv_having_expr) = std::make_shared<HavingExpr>((yyvsp[-2].sv_agg_func), (yyvsp[-1].sv_comp_op), (yyvsp[0].sv_val)); }
-#line 2553 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+                                         { (yyval.sv_having_exprs).push_back((yyvsp[0].sv_having_expr)); }
+#line 2558 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 107: /* opt_order_clause: ORDER BY order_clause  */
-#line 588 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 107: /* having_condition: agg_func op value  */
+#line 587 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                        { (yyval.sv_having_expr) = std::make_shared<HavingExpr>((yyvsp[-2].sv_agg_func), (yyvsp[-1].sv_comp_op), (yyvsp[0].sv_val)); }
+#line 2564 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 108: /* opt_order_clause: ORDER BY order_clause  */
+#line 592 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_orderbys) = (yyvsp[0].sv_orderbys);
     }
-#line 2561 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2572 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 108: /* opt_order_clause: %empty  */
-#line 591 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 109: /* opt_order_clause: %empty  */
+#line 595 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                       { (yyval.sv_orderbys) = {}; }
-#line 2567 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2578 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 109: /* order_clause: col opt_asc_desc  */
-#line 596 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 110: /* order_clause: col opt_asc_desc  */
+#line 600 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_orderbys) = {std::make_shared<OrderBy>((yyvsp[-1].sv_col), (yyvsp[0].sv_orderby_dir))};
     }
-#line 2575 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2586 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 110: /* order_clause: order_clause ',' col opt_asc_desc  */
-#line 600 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 111: /* order_clause: order_clause ',' col opt_asc_desc  */
+#line 604 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-3].sv_orderbys).push_back(std::make_shared<OrderBy>((yyvsp[-1].sv_col), (yyvsp[0].sv_orderby_dir)));
         (yyval.sv_orderbys) = (yyvsp[-3].sv_orderbys);
     }
-#line 2584 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2595 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 111: /* opt_asc_desc: ASC  */
-#line 607 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 112: /* opt_asc_desc: ASC  */
+#line 611 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                  { (yyval.sv_orderby_dir) = OrderBy_ASC;     }
-#line 2590 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2601 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 112: /* opt_asc_desc: DESC  */
-#line 608 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 113: /* opt_asc_desc: DESC  */
+#line 612 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                  { (yyval.sv_orderby_dir) = OrderBy_DESC;    }
-#line 2596 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2607 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 113: /* opt_asc_desc: %empty  */
-#line 609 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-            { (yyval.sv_orderby_dir) = OrderBy_DEFAULT; }
-#line 2602 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 114: /* opt_limit_clause: %empty  */
+  case 114: /* opt_asc_desc: %empty  */
 #line 613 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+            { (yyval.sv_orderby_dir) = OrderBy_DEFAULT; }
+#line 2613 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 115: /* opt_limit_clause: %empty  */
+#line 617 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_int) = -1; }
-#line 2608 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2619 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 115: /* opt_limit_clause: LIMIT VALUE_INT  */
-#line 614 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
-                      { (yyval.sv_int) = (yyvsp[0].sv_int); }
-#line 2614 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
-    break;
-
-  case 116: /* set_knob_type: ENABLE_NESTLOOP  */
+  case 116: /* opt_limit_clause: LIMIT VALUE_INT  */
 #line 618 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                      { (yyval.sv_int) = (yyvsp[0].sv_int); }
+#line 2625 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 117: /* set_knob_type: ENABLE_NESTLOOP  */
+#line 622 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_setKnobType) = EnableNestLoop; }
-#line 2620 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2631 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 117: /* set_knob_type: ENABLE_SORTMERGE  */
-#line 619 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+  case 118: /* set_knob_type: ENABLE_SORTMERGE  */
+#line 623 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                          { (yyval.sv_setKnobType) = EnableSortMerge; }
-#line 2626 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2637 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
 
-#line 2630 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+#line 2641 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
 
       default: break;
     }
@@ -2855,5 +2866,5 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 625 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+#line 629 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
 

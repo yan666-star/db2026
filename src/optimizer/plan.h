@@ -128,17 +128,20 @@ public:
                    std::shared_ptr<Plan> subplan,
                    std::vector<TabCol> sel_cols,
                    bool display_all = false,
-                   int limit_num = -1)
+                   int limit_num = -1,
+                   std::vector<std::string> output_names = {})
     {
         Plan::tag = tag;
         subplan_ = std::move(subplan);
         sel_cols_ = std::move(sel_cols);
         display_all_ = display_all;
         limit_num_ = limit_num;
+        output_names_ = std::move(output_names);
     }
 
     std::shared_ptr<Plan> subplan_;
     std::vector<TabCol> sel_cols_;
+    std::vector<std::string> output_names_;
     bool display_all_ = false;
     int limit_num_ = -1;
 };

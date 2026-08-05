@@ -30,6 +30,7 @@ DEFAULT_SQL_FILES = [
 # ── Wire v3 client import ──────────────────────────────────────────────────
 
 from wire_client import (
+    SQL_INT32,
     WireClient,
     WireSqlClient,
     response_failed,
@@ -97,6 +98,45 @@ def select_scalar_int(client: WireSqlClient, statement: str):
         raise AssertionError(
             f"no integer value returned for: {statement}\n{response}")
     return int(values[0])
+
+
+def assert_single_column_schema(result, expected_name, expected_type):
+    """Validate the exact META boundary for a one-column query."""
+    if not result.is_query or result.query is None:
+        raise AssertionError(
+            f"expected query result, got {result!r}")
+    columns = result.query.columns
+    if len(columns) != 1:
+        raise AssertionError(
+            f"expected one result column, got {len(columns)}")
+    actual = (columns[0].name, columns[0].sql_type)
+    expected = (expected_name, expected_type)
+    if actual != expected:
+        raise AssertionError(
+            f"result schema mismatch: expected={expected}, actual={actual}")
+
+
+def run_functional_contract_probe(args):
+    """Check finals SQL forms before running expensive smoke probes."""
+    client = WireClient(args.host, args.port, args.timeout)
+    client.connect()
+    try:
+        update = client.execute_stream(
+            "UPDATE district SET d_next_o_id = d_next_o_id "
+            "WHERE d_w_id = 1 AND d_id = 1;")
+        if not update.is_command_ok:
+            raise AssertionError(
+                "UPDATE self-assignment did not return COMMAND_OK: "
+                f"{update!r}")
+
+        alias = client.execute_stream(
+            "SELECT d_next_o_id AS next_order_id_alias FROM district "
+            "WHERE d_w_id = 1 AND d_id = 1;")
+        assert_single_column_schema(
+            alias, "next_order_id_alias", SQL_INT32)
+    finally:
+        client.close()
+    print("functional SQL contract probe passed")
 
 
 def execute_explicit_txn(statements, host, port, timeout,
@@ -610,6 +650,7 @@ def main():
             server.start()
             args.db_dir = server.db_dir
         run_files(args)
+        run_functional_contract_probe(args)
         run_concurrent_consistency_probe(args)
         run_illegal_item_rollback_probe(args)
         print("performance smoke suite passed")

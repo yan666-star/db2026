@@ -56,7 +56,13 @@ class Portal
 
     static std::vector<TabCol> collect_output_cols(const std::shared_ptr<Plan> &plan) {
         if (auto p = std::dynamic_pointer_cast<ProjectionPlan>(plan)) {
-            return p->sel_cols_;
+            auto output_cols = p->sel_cols_;
+            if (p->output_names_.size() == output_cols.size()) {
+                for (size_t i = 0; i < output_cols.size(); ++i) {
+                    output_cols[i].col_name = p->output_names_[i];
+                }
+            }
+            return output_cols;
         }
         if (auto a = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
             std::vector<TabCol> out_cols;
