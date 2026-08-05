@@ -74,6 +74,7 @@ class SqlExecutionService final : public wire::ExecutionService {
 
     txn_id_t transaction_id_{INVALID_TXN_ID};
     IsolationLevel isolation_level_;
+    bool explicit_txn_failed_{false};
 };
 
 }  // namespace rmdb::execution

@@ -35,8 +35,8 @@
    especially those whose name start with YY_ or yy_.  They are
    private implementation details that can be changed or removed.  */
 
-#ifndef YY_YY_HOME_OSBOXES_DESKTOP_VMWARE_DB2026_GITEE_SRC_PARSER_YACC_TAB_H_INCLUDED
-# define YY_YY_HOME_OSBOXES_DESKTOP_VMWARE_DB2026_GITEE_SRC_PARSER_YACC_TAB_H_INCLUDED
+#ifndef YY_YY_MNT_HGFS_DB2026_WORKTREES_FINALS_WIRE_SSI_SRC_PARSER_YACC_TAB_H_INCLUDED
+# define YY_YY_MNT_HGFS_DB2026_WORKTREES_FINALS_WIRE_SSI_SRC_PARSER_YACC_TAB_H_INCLUDED
 /* Debug traces.  */
 #ifndef YYDEBUG
 # define YYDEBUG 0
@@ -96,22 +96,24 @@ extern int yydebug;
     HAVING = 297,                  /* HAVING  */
     LIMIT = 298,                   /* LIMIT  */
     COUNT = 299,                   /* COUNT  */
-    MAX = 300,                     /* MAX  */
-    MIN = 301,                     /* MIN  */
-    SUM = 302,                     /* SUM  */
-    AVG = 303,                     /* AVG  */
-    UNION = 304,                   /* UNION  */
-    SET_TXN_SNAPSHOT = 305,        /* SET_TXN_SNAPSHOT  */
-    SET_TXN_SERIALIZABLE = 306,    /* SET_TXN_SERIALIZABLE  */
-    LEQ = 307,                     /* LEQ  */
-    NEQ = 308,                     /* NEQ  */
-    GEQ = 309,                     /* GEQ  */
-    T_EOF = 310,                   /* T_EOF  */
-    IDENTIFIER = 311,              /* IDENTIFIER  */
-    VALUE_STRING = 312,            /* VALUE_STRING  */
-    VALUE_INT = 313,               /* VALUE_INT  */
-    VALUE_FLOAT = 314,             /* VALUE_FLOAT  */
-    VALUE_BOOL = 315               /* VALUE_BOOL  */
+    DISTINCT = 300,                /* DISTINCT  */
+    MAX = 301,                     /* MAX  */
+    MIN = 302,                     /* MIN  */
+    SUM = 303,                     /* SUM  */
+    AVG = 304,                     /* AVG  */
+    UNION = 305,                   /* UNION  */
+    SET_TXN_SNAPSHOT = 306,        /* SET_TXN_SNAPSHOT  */
+    SET_TXN_SERIALIZABLE = 307,    /* SET_TXN_SERIALIZABLE  */
+    LEQ = 308,                     /* LEQ  */
+    NEQ = 309,                     /* NEQ  */
+    GEQ = 310,                     /* GEQ  */
+    T_EOF = 311,                   /* T_EOF  */
+    IDENTIFIER = 312,              /* IDENTIFIER  */
+    VALUE_STRING = 313,            /* VALUE_STRING  */
+    VALUE_INT = 314,               /* VALUE_INT  */
+    PARAMETER = 315,               /* PARAMETER  */
+    VALUE_FLOAT = 316,             /* VALUE_FLOAT  */
+    VALUE_BOOL = 317               /* VALUE_BOOL  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -138,4 +140,4 @@ struct YYLTYPE
 int yyparse (void);
 
 
-#endif /* !YY_YY_HOME_OSBOXES_DESKTOP_VMWARE_DB2026_GITEE_SRC_PARSER_YACC_TAB_H_INCLUDED  */
+#endif /* !YY_YY_MNT_HGFS_DB2026_WORKTREES_FINALS_WIRE_SSI_SRC_PARSER_YACC_TAB_H_INCLUDED  */

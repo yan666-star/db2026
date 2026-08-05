@@ -344,6 +344,61 @@ void SqlExecutionService::execute_stream(
         execute_load(file_name, table_name, sink);
         return;
     }
+
+    // Normalize alternative transaction boundary syntax so the parser
+    // only needs to handle the canonical "BEGIN"/"COMMIT"/etc. forms.
+    // This matches what the old rmdb.cpp's parse_txn_boundary() did.
+    std::string normalized = trim_copy(sql);
+    if (!normalized.empty() && normalized.back() == ';') {
+        normalized.pop_back();
+        normalized = trim_copy(normalized);
+    }
+
+    std::string lower = lower_copy(normalized);
+    std::istringstream iss(normalized);
+    std::vector<std::string> words;
+    std::string word;
+    while (iss >> word) {
+        words.push_back(lower_copy(word));
+    }
+
+    if (words.size() >= 1 && words.size() <= 3) {
+        std::string w0 = words[0];
+        std::string w1 = words.size() >= 2 ? words[1] : "";
+        std::string w2 = words.size() >= 3 ? words[2] : "";
+
+        bool is_begin =
+            (w0 == "start" && w1 == "transaction") ||
+            (w0 == "begin" &&
+             (w1.empty() || w1 == "work" || w1 == "transaction"));
+        bool is_commit =
+            (w0 == "commit" &&
+             (w1.empty() || w1 == "work" || w1 == "transaction"));
+        bool is_rollback =
+            (w0 == "rollback" &&
+             (w1.empty() || w1 == "work" || w1 == "transaction"));
+        bool is_abort =
+            (w0 == "abort" &&
+             (w1.empty() || w1 == "work" || w1 == "transaction"));
+
+        if (is_begin) {
+            execute_plan(build_plan("BEGIN;", nullptr), sink);
+            return;
+        }
+        if (is_commit) {
+            execute_plan(build_plan("COMMIT;", nullptr), sink);
+            return;
+        }
+        if (is_rollback) {
+            execute_plan(build_plan("ROLLBACK;", nullptr), sink);
+            return;
+        }
+        if (is_abort) {
+            execute_plan(build_plan("ABORT;", nullptr), sink);
+            return;
+        }
+    }
+
     execute_plan(build_plan(sql, nullptr), sink);
 }
 
@@ -379,6 +434,25 @@ void SqlExecutionService::ensure_transaction(
 
 void SqlExecutionService::execute_plan(
     const std::shared_ptr<Plan> &plan, ResultSink &sink) {
+    // If a previous statement in an explicit transaction failed, route
+    // to the same behaviour as the old rmdb.cpp explicit_txn_failed guard:
+    //   COMMIT   → clear flag, return "failure"
+    //   ABORT/ROLLBACK → clear flag, allow execution to clean up
+    //   BEGIN    → clear flag, allow execution (starts fresh)
+    //   other    → keep flag, return "failure"
+    if (explicit_txn_failed_ && plan != nullptr) {
+        if (plan->tag == T_Transaction_rollback ||
+            plan->tag == T_Transaction_abort ||
+            plan->tag == T_Transaction_begin) {
+            explicit_txn_failed_ = false;
+        } else if (plan->tag == T_Transaction_commit) {
+            explicit_txn_failed_ = false;
+            throw RMDBError("failure");
+        } else {
+            throw RMDBError("failure");
+        }
+    }
+
     TrackingResultSink tracking_sink(sink);
     Context context(
         lock_manager_, log_manager_, nullptr, transaction_manager_,
@@ -413,11 +487,23 @@ void SqlExecutionService::execute_plan(
         }
     } catch (TransactionAbortException &error) {
         abort_active_transaction();
+        explicit_txn_failed_ = false;
         if (statement_entered) {
             transaction_manager_->leave_statement();
         }
         throw wire::TransactionAbortError(error.GetInfo());
     } catch (...) {
+        // Old rmdb.cpp behaviour for explicit transactions: abort the
+        // pending writes, flag the txn as failed, and let the client
+        // clean up with ROLLBACK / ABORT / BEGIN.
+        if (context.txn_ != nullptr && context.txn_->get_txn_mode()) {
+            abort_active_transaction();
+            explicit_txn_failed_ = true;
+            if (statement_entered) {
+                transaction_manager_->leave_statement();
+            }
+            throw RMDBError("failure");
+        }
         abort_active_transaction();
         if (statement_entered) {
             transaction_manager_->leave_statement();

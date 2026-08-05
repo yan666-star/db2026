@@ -18,7 +18,10 @@ namespace {
 
 std::chrono::microseconds group_commit_delay() {
     static const auto delay = [] {
-        constexpr unsigned long long kDefaultMicros = 200;
+        // Give concurrent committers a short opportunity to append their
+        // commit records before the leader performs the audited write+fsync.
+        // Every waiter still blocks until durable_lsn_ covers its own LSN.
+        constexpr unsigned long long kDefaultMicros = 1000;
         constexpr unsigned long long kMaxMicros = 5000;
         const char *raw = std::getenv("RMDB_GROUP_COMMIT_US");
         if (raw == nullptr || raw[0] == '\0') {

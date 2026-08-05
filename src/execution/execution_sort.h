@@ -89,6 +89,10 @@ class SortExecutor : public AbstractExecutor {
     void beginTuple() override {
         tuples_.clear();
         cursor_ = 0;
+        if (plan_ != nullptr && plan_->limit_num_ == 0) {
+            plan_->rows_ = 0;
+            return;
+        }
         prev_->beginTuple();
         for (; !prev_->is_end(); prev_->nextTuple()) {
             auto rec = prev_->Next();
@@ -96,9 +100,17 @@ class SortExecutor : public AbstractExecutor {
                 tuples_.push_back(std::move(rec));
             }
         }
-        std::stable_sort(tuples_.begin(), tuples_.end(), [&](const std::unique_ptr<RmRecord> &a, const std::unique_ptr<RmRecord> &b) {
+        auto less = [&](const std::unique_ptr<RmRecord> &a,
+                        const std::unique_ptr<RmRecord> &b) {
             return compare_records(*a, *b) < 0;
-        });
+        };
+        if (plan_ != nullptr && plan_->limit_num_ > 0 &&
+            tuples_.size() > static_cast<size_t>(plan_->limit_num_)) {
+            auto keep_end = tuples_.begin() + plan_->limit_num_;
+            std::nth_element(tuples_.begin(), keep_end, tuples_.end(), less);
+            tuples_.resize(static_cast<size_t>(plan_->limit_num_));
+        }
+        std::stable_sort(tuples_.begin(), tuples_.end(), less);
         if (plan_ != nullptr) {
             plan_->rows_ = tuples_.size();
         }

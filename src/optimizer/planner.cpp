@@ -489,7 +489,8 @@ std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, 
         sort_cols.push_back(ob.col);
         is_desc.push_back(ob.is_desc);
     }
-    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sort_cols, is_desc);
+    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sort_cols,
+                                      is_desc, query->limit_num);
 }
 
 

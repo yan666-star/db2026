@@ -67,7 +67,7 @@
 
 
 /* First part of user prologue.  */
-#line 1 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 1 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
 
 #include "ast.h"
 #include "yacc.tab.h"
@@ -82,7 +82,7 @@ void yyerror(YYLTYPE *locp, const char* s) {
 
 using namespace ast;
 
-#line 86 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 86 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -155,76 +155,78 @@ enum yysymbol_kind_t
   YYSYMBOL_HAVING = 42,                    /* HAVING  */
   YYSYMBOL_LIMIT = 43,                     /* LIMIT  */
   YYSYMBOL_COUNT = 44,                     /* COUNT  */
-  YYSYMBOL_MAX = 45,                       /* MAX  */
-  YYSYMBOL_MIN = 46,                       /* MIN  */
-  YYSYMBOL_SUM = 47,                       /* SUM  */
-  YYSYMBOL_AVG = 48,                       /* AVG  */
-  YYSYMBOL_UNION = 49,                     /* UNION  */
-  YYSYMBOL_SET_TXN_SNAPSHOT = 50,          /* SET_TXN_SNAPSHOT  */
-  YYSYMBOL_SET_TXN_SERIALIZABLE = 51,      /* SET_TXN_SERIALIZABLE  */
-  YYSYMBOL_LEQ = 52,                       /* LEQ  */
-  YYSYMBOL_NEQ = 53,                       /* NEQ  */
-  YYSYMBOL_GEQ = 54,                       /* GEQ  */
-  YYSYMBOL_T_EOF = 55,                     /* T_EOF  */
-  YYSYMBOL_IDENTIFIER = 56,                /* IDENTIFIER  */
-  YYSYMBOL_VALUE_STRING = 57,              /* VALUE_STRING  */
-  YYSYMBOL_VALUE_INT = 58,                 /* VALUE_INT  */
-  YYSYMBOL_VALUE_FLOAT = 59,               /* VALUE_FLOAT  */
-  YYSYMBOL_VALUE_BOOL = 60,                /* VALUE_BOOL  */
-  YYSYMBOL_61_ = 61,                       /* ';'  */
-  YYSYMBOL_62_ = 62,                       /* '='  */
-  YYSYMBOL_63_ = 63,                       /* '('  */
-  YYSYMBOL_64_ = 64,                       /* ')'  */
-  YYSYMBOL_65_ = 65,                       /* ','  */
-  YYSYMBOL_66_ = 66,                       /* '.'  */
-  YYSYMBOL_67_ = 67,                       /* '<'  */
-  YYSYMBOL_68_ = 68,                       /* '>'  */
-  YYSYMBOL_69_ = 69,                       /* '+'  */
-  YYSYMBOL_70_ = 70,                       /* '-'  */
-  YYSYMBOL_71_ = 71,                       /* '*'  */
-  YYSYMBOL_72_ = 72,                       /* '/'  */
-  YYSYMBOL_YYACCEPT = 73,                  /* $accept  */
-  YYSYMBOL_start = 74,                     /* start  */
-  YYSYMBOL_stmt = 75,                      /* stmt  */
-  YYSYMBOL_txnStmt = 76,                   /* txnStmt  */
-  YYSYMBOL_dbStmt = 77,                    /* dbStmt  */
-  YYSYMBOL_setStmt = 78,                   /* setStmt  */
-  YYSYMBOL_ddl = 79,                       /* ddl  */
-  YYSYMBOL_dml = 80,                       /* dml  */
-  YYSYMBOL_fieldList = 81,                 /* fieldList  */
-  YYSYMBOL_colNameList = 82,               /* colNameList  */
-  YYSYMBOL_field = 83,                     /* field  */
-  YYSYMBOL_type = 84,                      /* type  */
-  YYSYMBOL_valueList = 85,                 /* valueList  */
-  YYSYMBOL_value = 86,                     /* value  */
-  YYSYMBOL_condition = 87,                 /* condition  */
-  YYSYMBOL_optWhereClause = 88,            /* optWhereClause  */
-  YYSYMBOL_whereClause = 89,               /* whereClause  */
-  YYSYMBOL_col = 90,                       /* col  */
-  YYSYMBOL_op = 91,                        /* op  */
-  YYSYMBOL_expr = 92,                      /* expr  */
-  YYSYMBOL_setClauses = 93,                /* setClauses  */
-  YYSYMBOL_setClause = 94,                 /* setClause  */
-  YYSYMBOL_selector = 95,                  /* selector  */
-  YYSYMBOL_select_list = 96,               /* select_list  */
-  YYSYMBOL_select_item = 97,               /* select_item  */
-  YYSYMBOL_agg_func = 98,                  /* agg_func  */
-  YYSYMBOL_select_branch = 99,             /* select_branch  */
-  YYSYMBOL_select_stmt = 100,              /* select_stmt  */
-  YYSYMBOL_tableRef = 101,                 /* tableRef  */
-  YYSYMBOL_tableList = 102,                /* tableList  */
-  YYSYMBOL_opt_group_by_clause = 103,      /* opt_group_by_clause  */
-  YYSYMBOL_group_by_clause = 104,          /* group_by_clause  */
-  YYSYMBOL_opt_having_clause = 105,        /* opt_having_clause  */
-  YYSYMBOL_having_clause = 106,            /* having_clause  */
-  YYSYMBOL_having_condition = 107,         /* having_condition  */
-  YYSYMBOL_opt_order_clause = 108,         /* opt_order_clause  */
-  YYSYMBOL_order_clause = 109,             /* order_clause  */
-  YYSYMBOL_opt_asc_desc = 110,             /* opt_asc_desc  */
-  YYSYMBOL_opt_limit_clause = 111,         /* opt_limit_clause  */
-  YYSYMBOL_set_knob_type = 112,            /* set_knob_type  */
-  YYSYMBOL_tbName = 113,                   /* tbName  */
-  YYSYMBOL_colName = 114                   /* colName  */
+  YYSYMBOL_DISTINCT = 45,                  /* DISTINCT  */
+  YYSYMBOL_MAX = 46,                       /* MAX  */
+  YYSYMBOL_MIN = 47,                       /* MIN  */
+  YYSYMBOL_SUM = 48,                       /* SUM  */
+  YYSYMBOL_AVG = 49,                       /* AVG  */
+  YYSYMBOL_UNION = 50,                     /* UNION  */
+  YYSYMBOL_SET_TXN_SNAPSHOT = 51,          /* SET_TXN_SNAPSHOT  */
+  YYSYMBOL_SET_TXN_SERIALIZABLE = 52,      /* SET_TXN_SERIALIZABLE  */
+  YYSYMBOL_LEQ = 53,                       /* LEQ  */
+  YYSYMBOL_NEQ = 54,                       /* NEQ  */
+  YYSYMBOL_GEQ = 55,                       /* GEQ  */
+  YYSYMBOL_T_EOF = 56,                     /* T_EOF  */
+  YYSYMBOL_IDENTIFIER = 57,                /* IDENTIFIER  */
+  YYSYMBOL_VALUE_STRING = 58,              /* VALUE_STRING  */
+  YYSYMBOL_VALUE_INT = 59,                 /* VALUE_INT  */
+  YYSYMBOL_PARAMETER = 60,                 /* PARAMETER  */
+  YYSYMBOL_VALUE_FLOAT = 61,               /* VALUE_FLOAT  */
+  YYSYMBOL_VALUE_BOOL = 62,                /* VALUE_BOOL  */
+  YYSYMBOL_63_ = 63,                       /* ';'  */
+  YYSYMBOL_64_ = 64,                       /* '='  */
+  YYSYMBOL_65_ = 65,                       /* '('  */
+  YYSYMBOL_66_ = 66,                       /* ')'  */
+  YYSYMBOL_67_ = 67,                       /* ','  */
+  YYSYMBOL_68_ = 68,                       /* '.'  */
+  YYSYMBOL_69_ = 69,                       /* '<'  */
+  YYSYMBOL_70_ = 70,                       /* '>'  */
+  YYSYMBOL_71_ = 71,                       /* '+'  */
+  YYSYMBOL_72_ = 72,                       /* '-'  */
+  YYSYMBOL_73_ = 73,                       /* '*'  */
+  YYSYMBOL_74_ = 74,                       /* '/'  */
+  YYSYMBOL_YYACCEPT = 75,                  /* $accept  */
+  YYSYMBOL_start = 76,                     /* start  */
+  YYSYMBOL_stmt = 77,                      /* stmt  */
+  YYSYMBOL_txnStmt = 78,                   /* txnStmt  */
+  YYSYMBOL_dbStmt = 79,                    /* dbStmt  */
+  YYSYMBOL_setStmt = 80,                   /* setStmt  */
+  YYSYMBOL_ddl = 81,                       /* ddl  */
+  YYSYMBOL_dml = 82,                       /* dml  */
+  YYSYMBOL_fieldList = 83,                 /* fieldList  */
+  YYSYMBOL_colNameList = 84,               /* colNameList  */
+  YYSYMBOL_field = 85,                     /* field  */
+  YYSYMBOL_type = 86,                      /* type  */
+  YYSYMBOL_valueList = 87,                 /* valueList  */
+  YYSYMBOL_value = 88,                     /* value  */
+  YYSYMBOL_condition = 89,                 /* condition  */
+  YYSYMBOL_optWhereClause = 90,            /* optWhereClause  */
+  YYSYMBOL_whereClause = 91,               /* whereClause  */
+  YYSYMBOL_col = 92,                       /* col  */
+  YYSYMBOL_op = 93,                        /* op  */
+  YYSYMBOL_expr = 94,                      /* expr  */
+  YYSYMBOL_setClauses = 95,                /* setClauses  */
+  YYSYMBOL_setClause = 96,                 /* setClause  */
+  YYSYMBOL_selector = 97,                  /* selector  */
+  YYSYMBOL_select_list = 98,               /* select_list  */
+  YYSYMBOL_select_item = 99,               /* select_item  */
+  YYSYMBOL_agg_func = 100,                 /* agg_func  */
+  YYSYMBOL_select_branch = 101,            /* select_branch  */
+  YYSYMBOL_select_stmt = 102,              /* select_stmt  */
+  YYSYMBOL_tableRef = 103,                 /* tableRef  */
+  YYSYMBOL_tableList = 104,                /* tableList  */
+  YYSYMBOL_opt_group_by_clause = 105,      /* opt_group_by_clause  */
+  YYSYMBOL_group_by_clause = 106,          /* group_by_clause  */
+  YYSYMBOL_opt_having_clause = 107,        /* opt_having_clause  */
+  YYSYMBOL_having_clause = 108,            /* having_clause  */
+  YYSYMBOL_having_condition = 109,         /* having_condition  */
+  YYSYMBOL_opt_order_clause = 110,         /* opt_order_clause  */
+  YYSYMBOL_order_clause = 111,             /* order_clause  */
+  YYSYMBOL_opt_asc_desc = 112,             /* opt_asc_desc  */
+  YYSYMBOL_opt_limit_clause = 113,         /* opt_limit_clause  */
+  YYSYMBOL_set_knob_type = 114,            /* set_knob_type  */
+  YYSYMBOL_tbName = 115,                   /* tbName  */
+  YYSYMBOL_colName = 116                   /* colName  */
 };
 typedef enum yysymbol_kind_t yysymbol_kind_t;
 
@@ -555,19 +557,19 @@ union yyalloc
 /* YYFINAL -- State number of the termination state.  */
 #define YYFINAL  59
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   230
+#define YYLAST   241
 
 /* YYNTOKENS -- Number of terminals.  */
-#define YYNTOKENS  73
+#define YYNTOKENS  75
 /* YYNNTS -- Number of nonterminals.  */
 #define YYNNTS  42
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  116
+#define YYNRULES  119
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  223
+#define YYNSTATES  231
 
 /* YYMAXUTOK -- Last valid token kind.  */
-#define YYMAXUTOK   315
+#define YYMAXUTOK   317
 
 
 /* YYTRANSLATE(TOKEN-NUM) -- Symbol number corresponding to TOKEN-NUM
@@ -585,9 +587,9 @@ static const yytype_int8 yytranslate[] =
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
-      63,    64,    71,    69,    65,    70,    66,    72,     2,     2,
-       2,     2,     2,     2,     2,     2,     2,     2,     2,    61,
-      67,    62,    68,     2,     2,     2,     2,     2,     2,     2,
+      65,    66,    73,    71,    67,    72,    68,    74,     2,     2,
+       2,     2,     2,     2,     2,     2,     2,     2,     2,    63,
+      69,    64,    70,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
        2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
@@ -612,7 +614,7 @@ static const yytype_int8 yytranslate[] =
       25,    26,    27,    28,    29,    30,    31,    32,    33,    34,
       35,    36,    37,    38,    39,    40,    41,    42,    43,    44,
       45,    46,    47,    48,    49,    50,    51,    52,    53,    54,
-      55,    56,    57,    58,    59,    60
+      55,    56,    57,    58,    59,    60,    61,    62
 };
 
 #if YYDEBUG
@@ -623,14 +625,14 @@ static const yytype_int16 yyrline[] =
       99,   103,   107,   111,   115,   122,   126,   130,   137,   141,
      145,   152,   156,   160,   164,   168,   175,   179,   183,   187,
      197,   211,   215,   222,   226,   233,   240,   244,   248,   255,
-     259,   266,   270,   274,   278,   285,   292,   293,   300,   304,
-     312,   316,   334,   338,   342,   346,   350,   354,   361,   365,
-     369,   376,   380,   387,   391,   395,   399,   403,   407,   414,
-     418,   422,   426,   433,   437,   441,   445,   452,   453,   454,
-     455,   456,   457,   461,   470,   474,   500,   504,   508,   512,
-     520,   531,   536,   541,   546,   555,   556,   560,   561,   565,
-     566,   570,   571,   575,   579,   583,   587,   591,   599,   600,
-     601,   605,   606,   610,   611,   614,   616
+     259,   266,   270,   274,   278,   282,   289,   296,   297,   304,
+     308,   316,   320,   338,   342,   346,   350,   354,   358,   365,
+     369,   373,   380,   384,   391,   395,   399,   403,   407,   411,
+     418,   422,   426,   430,   437,   441,   445,   449,   456,   457,
+     458,   460,   462,   463,   464,   465,   469,   478,   482,   508,
+     512,   516,   520,   528,   539,   544,   549,   554,   563,   564,
+     568,   569,   573,   574,   578,   579,   583,   587,   591,   595,
+     599,   607,   608,   609,   613,   614,   618,   619,   622,   624
 };
 #endif
 
@@ -652,19 +654,19 @@ static const char *const yytname[] =
   "SET", "SELECT", "INT", "CHAR", "FLOAT", "INDEX", "AND", "JOIN", "EXIT",
   "HELP", "TXN_BEGIN", "TXN_COMMIT", "TXN_ABORT", "TXN_ROLLBACK",
   "ORDER_BY", "ENABLE_NESTLOOP", "ENABLE_SORTMERGE", "EXPLAIN", "ANALYZE",
-  "ON", "AS", "GROUP", "HAVING", "LIMIT", "COUNT", "MAX", "MIN", "SUM",
-  "AVG", "UNION", "SET_TXN_SNAPSHOT", "SET_TXN_SERIALIZABLE", "LEQ", "NEQ",
-  "GEQ", "T_EOF", "IDENTIFIER", "VALUE_STRING", "VALUE_INT", "VALUE_FLOAT",
-  "VALUE_BOOL", "';'", "'='", "'('", "')'", "','", "'.'", "'<'", "'>'",
-  "'+'", "'-'", "'*'", "'/'", "$accept", "start", "stmt", "txnStmt",
-  "dbStmt", "setStmt", "ddl", "dml", "fieldList", "colNameList", "field",
-  "type", "valueList", "value", "condition", "optWhereClause",
-  "whereClause", "col", "op", "expr", "setClauses", "setClause",
-  "selector", "select_list", "select_item", "agg_func", "select_branch",
-  "select_stmt", "tableRef", "tableList", "opt_group_by_clause",
-  "group_by_clause", "opt_having_clause", "having_clause",
-  "having_condition", "opt_order_clause", "order_clause", "opt_asc_desc",
-  "opt_limit_clause", "set_knob_type", "tbName", "colName", YY_NULLPTR
+  "ON", "AS", "GROUP", "HAVING", "LIMIT", "COUNT", "DISTINCT", "MAX",
+  "MIN", "SUM", "AVG", "UNION", "SET_TXN_SNAPSHOT", "SET_TXN_SERIALIZABLE",
+  "LEQ", "NEQ", "GEQ", "T_EOF", "IDENTIFIER", "VALUE_STRING", "VALUE_INT",
+  "PARAMETER", "VALUE_FLOAT", "VALUE_BOOL", "';'", "'='", "'('", "')'",
+  "','", "'.'", "'<'", "'>'", "'+'", "'-'", "'*'", "'/'", "$accept",
+  "start", "stmt", "txnStmt", "dbStmt", "setStmt", "ddl", "dml",
+  "fieldList", "colNameList", "field", "type", "valueList", "value",
+  "condition", "optWhereClause", "whereClause", "col", "op", "expr",
+  "setClauses", "setClause", "selector", "select_list", "select_item",
+  "agg_func", "select_branch", "select_stmt", "tableRef", "tableList",
+  "opt_group_by_clause", "group_by_clause", "opt_having_clause",
+  "having_clause", "having_condition", "opt_order_clause", "order_clause",
+  "opt_asc_desc", "opt_limit_clause", "set_knob_type", "tbName", "colName", YY_NULLPTR
 };
 
 static const char *
@@ -674,12 +676,12 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 }
 #endif
 
-#define YYPACT_NINF (-108)
+#define YYPACT_NINF (-114)
 
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
 
-#define YYTABLE_NINF (-116)
+#define YYTABLE_NINF (-119)
 
 #define yytable_value_is_error(Yyn) \
   0
@@ -688,29 +690,30 @@ yysymbol_name (yysymbol_kind_t yysymbol)
    STATE-NUM.  */
 static const yytype_int16 yypact[] =
 {
-      97,     9,    13,    15,   -31,    16,    35,   -31,     8,    11,
-    -108,  -108,  -108,  -108,  -108,  -108,    23,  -108,  -108,  -108,
-      78,    19,  -108,  -108,  -108,  -108,  -108,  -108,    -7,  -108,
-      85,   -31,  -108,   -31,   -31,   -31,  -108,  -108,   -31,   -31,
-      68,  -108,  -108,    47,    38,    61,    70,    72,    82,    66,
-    -108,   109,   137,    98,  -108,   124,    99,  -108,   160,  -108,
-    -108,   165,   160,   140,   -31,   121,   122,  -108,   123,   175,
-     170,   133,   130,   -53,   136,   136,   136,   136,   133,   -17,
-      94,   133,   133,    -7,   136,  -108,   135,  -108,  -108,   133,
-     133,   133,   134,   110,  -108,  -108,   -12,  -108,   138,  -108,
-     131,   139,   141,   142,   143,   144,  -108,   160,  -108,   -11,
-     -30,  -108,  -108,  -108,   140,    32,   146,  -108,   -13,  -108,
-      74,    39,  -108,    48,     6,  -108,  -108,  -108,  -108,  -108,
-    -108,   173,  -108,    69,  -108,   133,  -108,    34,  -108,  -108,
-    -108,  -108,  -108,  -108,    -4,   -17,   -17,   155,   -31,  -108,
-    -108,  -108,  -108,  -108,   136,  -108,   133,  -108,   149,  -108,
-    -108,  -108,   133,  -108,    50,  -108,   110,  -108,  -108,  -108,
-    -108,  -108,  -108,   110,  -108,  -108,   102,   -28,   162,  -108,
-     185,   167,  -108,    32,  -108,   156,  -108,  -108,     6,  -108,
-    -108,     6,     6,     6,     6,  -108,   -31,  -108,   110,   136,
-     132,  -108,  -108,   151,  -108,  -108,  -108,  -108,  -108,  -108,
-     173,  -108,   148,    69,   178,  -108,  -108,   136,     6,   132,
-    -108,  -108,  -108
+     123,     5,    17,    19,   -42,    53,     6,   -42,   -25,   -30,
+    -114,  -114,  -114,  -114,  -114,  -114,    21,  -114,  -114,  -114,
+      70,    15,  -114,  -114,  -114,  -114,  -114,  -114,   -10,  -114,
+      66,   -42,  -114,   -42,   -42,   -42,  -114,  -114,   -42,   -42,
+      62,  -114,  -114,    25,    30,    35,    51,    59,    60,    42,
+    -114,    87,   116,    71,  -114,    97,    72,  -114,   120,  -114,
+    -114,   128,   120,   103,   -42,    84,    93,  -114,    94,   150,
+     143,   107,   115,   -23,   121,   121,   121,   121,   107,     0,
+     119,   107,   107,   -10,   121,  -114,   134,  -114,  -114,   107,
+     107,   107,   135,    44,  -114,  -114,   -15,  -114,   138,  -114,
+       3,   114,   133,   137,   140,   146,   147,  -114,   120,  -114,
+     -14,     1,  -114,  -114,  -114,   103,    54,   152,  -114,    31,
+    -114,    32,    41,  -114,    45,   149,  -114,  -114,  -114,  -114,
+    -114,  -114,  -114,   178,  -114,    65,  -114,   107,  -114,   129,
+     121,   151,  -114,  -114,  -114,  -114,  -114,  -114,    -5,     0,
+       0,   173,   -42,  -114,  -114,  -114,  -114,  -114,   121,  -114,
+     107,  -114,   155,  -114,  -114,  -114,   107,  -114,    48,  -114,
+      44,  -114,  -114,  -114,  -114,  -114,  -114,    44,  -114,  -114,
+     111,   156,  -114,     9,   176,  -114,   199,   179,  -114,    54,
+    -114,   164,  -114,  -114,   149,  -114,  -114,   149,   149,   149,
+     149,  -114,   159,   -42,  -114,    44,   121,   148,  -114,  -114,
+     160,  -114,  -114,  -114,  -114,  -114,  -114,  -114,   178,  -114,
+     161,    65,   201,  -114,  -114,   121,   149,   148,  -114,  -114,
+    -114
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -720,46 +723,47 @@ static const yytype_int8 yydefact[] =
 {
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        4,     3,    11,    12,    13,    14,     0,    19,    20,     5,
-       0,     0,     9,     6,    10,     7,     8,    84,   105,    15,
-       0,     0,    16,     0,     0,     0,   115,    23,     0,     0,
-       0,   113,   114,     0,     0,     0,     0,     0,     0,   116,
-      69,    73,     0,    70,    71,    75,     0,    51,     0,     1,
-       2,     0,     0,   111,     0,     0,     0,    22,     0,     0,
-      46,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,   105,     0,    85,     0,    29,    17,     0,
-       0,     0,     0,     0,    27,   116,    46,    61,     0,    18,
-       0,     0,     0,     0,     0,     0,    74,     0,    91,    46,
-      86,    72,    76,    50,   111,   110,   104,   112,     0,    31,
-       0,     0,    33,     0,     0,    43,    41,    42,    44,    58,
-      48,    47,    59,     0,    60,     0,    28,     0,    77,    78,
-      79,    80,    81,    82,     0,     0,     0,    95,     0,    87,
-      30,   109,   108,   106,     0,    21,     0,    36,     0,    38,
-      35,    24,     0,    25,     0,    39,     0,    56,    55,    57,
-      52,    53,    54,     0,    62,    63,     0,     0,    93,    92,
-       0,    99,    88,   110,    32,     0,    34,    26,     0,    49,
-      45,     0,     0,     0,     0,    64,     0,    90,     0,     0,
-       0,    83,   107,     0,    40,    65,    66,    67,    68,    89,
-      94,    97,    96,     0,   100,   101,    37,     0,     0,     0,
-      98,   103,   102
+       0,     0,     9,     6,    10,     7,     8,    87,   108,    15,
+       0,     0,    16,     0,     0,     0,   118,    23,     0,     0,
+       0,   116,   117,     0,     0,     0,     0,     0,     0,   119,
+      70,    74,     0,    71,    72,    76,     0,    52,     0,     1,
+       2,     0,     0,   114,     0,     0,     0,    22,     0,     0,
+      47,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,   108,     0,    88,     0,    29,    17,     0,
+       0,     0,     0,     0,    27,   119,    47,    62,     0,    18,
+       0,     0,     0,     0,     0,     0,     0,    75,     0,    94,
+      47,    89,    73,    77,    51,   114,   113,   107,   115,     0,
+      31,     0,     0,    33,     0,     0,    43,    41,    45,    42,
+      44,    59,    49,    48,    60,     0,    61,     0,    28,     0,
+       0,     0,    78,    79,    82,    83,    84,    85,     0,     0,
+       0,    98,     0,    90,    30,   112,   111,   109,     0,    21,
+       0,    36,     0,    38,    35,    24,     0,    25,     0,    39,
+       0,    57,    56,    58,    53,    54,    55,     0,    63,    64,
+       0,     0,    80,     0,    96,    95,     0,   102,    91,   113,
+      32,     0,    34,    26,     0,    50,    46,     0,     0,     0,
+       0,    65,     0,     0,    93,     0,     0,     0,    86,   110,
+       0,    40,    66,    67,    68,    69,    81,    92,    97,   100,
+      99,     0,   103,   104,    37,     0,     0,     0,   101,   106,
+     105
 };
 
 /* YYPGOTO[NTERM-NUM].  */
 static const yytype_int16 yypgoto[] =
 {
-    -108,  -108,  -108,  -108,  -108,  -108,  -108,  -108,  -108,   126,
-      62,  -108,  -108,  -107,    53,   -61,    22,    -1,    10,    49,
-    -108,    86,  -108,  -108,   145,    -9,   164,   -57,   -26,  -108,
-    -108,  -108,  -108,  -108,     5,   147,  -108,    44,   114,  -108,
-      -2,   -67
+    -114,  -114,  -114,  -114,  -114,  -114,  -114,  -114,  -114,   139,
+      69,  -114,  -114,  -113,    61,   -89,    27,    -1,    12,    57,
+    -114,    98,  -114,  -114,   157,    -9,   174,   -57,   -28,  -114,
+    -114,  -114,  -114,  -114,    11,   158,  -114,    50,   125,  -114,
+      -2,   -43
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
 static const yytype_uint8 yydefgoto[] =
 {
-       0,    20,    21,    22,    23,    24,    25,    26,   118,   121,
-     119,   160,   164,   129,   130,    94,   131,   132,   173,   133,
-      96,    97,    52,    53,    54,   134,    27,    28,   108,   109,
-     181,   212,   201,   214,   215,    63,   116,   153,    87,    43,
+       0,    20,    21,    22,    23,    24,    25,    26,   119,   122,
+     120,   164,   168,   131,   132,    94,   133,   134,   177,   135,
+      96,    97,    52,    53,    54,   136,    27,    28,   109,   110,
+     187,   220,   208,   222,   223,    63,   117,   157,    87,    43,
       56,    57
 };
 
@@ -768,58 +772,60 @@ static const yytype_uint8 yydefgoto[] =
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
 static const yytype_int16 yytable[] =
 {
-      55,    83,    37,    49,    98,    40,    93,    93,    51,    61,
-     148,   106,   196,    29,   112,   113,   145,   165,   100,    31,
-      32,    34,   120,   122,   122,    36,    36,    38,    36,    65,
-     175,    66,    67,    68,    30,   136,    69,    70,    33,    36,
-      35,   151,    62,    41,    42,    62,   107,   152,   147,    39,
-     144,   155,   156,   135,   146,    44,    45,    46,    47,    48,
-     177,    58,    88,   125,   126,   127,   128,    49,    98,   195,
-     176,    55,   101,   102,   103,   104,   105,   110,    59,    51,
-      60,   204,    50,   115,   205,   206,   207,   208,    71,   120,
-      95,   125,   126,   127,   128,   186,   157,   158,   159,    64,
-       1,    73,     2,   161,   162,     3,     4,     5,   149,    72,
-       6,   221,   163,   162,   187,   188,     7,     8,     9,   178,
-     179,   167,   168,   169,    74,    10,    11,    12,    13,    14,
-      15,   170,  -115,    75,    16,    76,   171,   172,    44,    45,
-      46,    47,    48,   110,   110,    77,   182,    17,    18,    78,
-      49,    79,    19,   183,    44,    45,    46,    47,    48,   125,
-     126,   127,   128,    80,    81,    82,    49,   125,   126,   127,
-     128,   191,   192,   193,   194,   197,    44,    45,    46,    47,
-      48,     9,    84,    86,    89,    90,    91,    92,    93,    95,
-      99,   213,    49,   117,   209,   138,   180,   124,   211,   166,
-     137,   198,   199,   139,   219,   140,   141,   142,   143,   200,
-     213,   154,   185,   217,   203,   216,   220,   123,   184,   189,
-     210,   174,   190,   218,   222,   111,    85,   202,   150,     0,
-     114
+      55,    83,    37,    93,    93,    40,    61,   138,    51,    29,
+      41,    42,   169,   149,    44,    36,    45,    46,    47,    48,
+      39,   151,   100,    31,    32,    34,   179,    49,    98,    65,
+      30,    66,    67,    68,    49,   107,    69,    70,   113,   114,
+      62,   152,    33,    50,    35,    62,   121,   123,   123,   203,
+     101,   148,   137,   150,   161,   162,   163,    36,    36,    58,
+      49,   183,    88,   155,    38,   108,    36,   201,   140,   156,
+      59,    55,   102,   103,   104,   105,   106,   111,    60,    51,
+      64,   211,    71,   116,   212,   213,   214,   215,    44,    72,
+      45,    46,    47,    48,    98,    73,   180,   159,   160,   141,
+      74,    49,   126,   127,   128,   129,   130,   165,   166,   153,
+    -118,   167,   166,   229,   193,   194,    75,   121,   171,   172,
+     173,   184,   185,   192,    76,    77,     1,    78,     2,   174,
+      79,     3,     4,     5,   175,   176,     6,    81,    80,   181,
+      82,     9,     7,     8,     9,    84,    86,   111,   111,    89,
+     188,    10,    11,    12,    13,    14,    15,   189,    90,    91,
+      16,    93,    92,    44,    95,    45,    46,    47,    48,   126,
+     127,   128,   129,   130,    17,    18,    49,    99,    49,    19,
+     142,   204,   197,   198,   199,   200,    95,   126,   127,   128,
+     129,   130,    44,   118,    45,    46,    47,    48,   221,   143,
+     125,   217,   139,   144,   170,   219,   145,   126,   127,   128,
+     129,   130,   146,   147,   186,   205,   206,   182,   221,   158,
+     191,   207,   202,   210,   228,   216,   224,   227,   225,   190,
+     124,   195,   218,   226,   196,   178,    85,   112,   230,   209,
+     154,   115
 };
 
-static const yytype_int16 yycheck[] =
+static const yytype_uint8 yycheck[] =
 {
-       9,    58,     4,    56,    71,     7,    18,    18,     9,    16,
-      40,    78,    40,     4,    81,    82,    27,   124,    71,     6,
-       7,     6,    89,    90,    91,    56,    56,    11,    56,    31,
-     137,    33,    34,    35,    25,    96,    38,    39,    25,    56,
-      25,     9,    49,    35,    36,    49,    63,    15,   109,    14,
-     107,    64,    65,    65,    65,    44,    45,    46,    47,    48,
-      64,    38,    64,    57,    58,    59,    60,    56,   135,   176,
-     137,    80,    73,    74,    75,    76,    77,    79,     0,    80,
-      61,   188,    71,    84,   191,   192,   193,   194,    20,   156,
-      56,    57,    58,    59,    60,   162,    22,    23,    24,    14,
-       3,    63,     5,    64,    65,     8,     9,    10,   110,    62,
-      13,   218,    64,    65,    64,    65,    19,    20,    21,   145,
-     146,    52,    53,    54,    63,    28,    29,    30,    31,    32,
-      33,    62,    66,    63,    37,    63,    67,    68,    44,    45,
-      46,    47,    48,   145,   146,    63,   148,    50,    51,    40,
-      56,    14,    55,   154,    44,    45,    46,    47,    48,    57,
-      58,    59,    60,    65,    40,    66,    56,    57,    58,    59,
-      60,    69,    70,    71,    72,   177,    44,    45,    46,    47,
-      48,    21,    17,    43,    63,    63,    63,    12,    18,    56,
-      60,   200,    56,    58,   196,    64,    41,    63,   199,    26,
-      62,    39,    17,    64,    26,    64,    64,    64,    64,    42,
-     219,    65,    63,    65,    58,    64,   217,    91,   156,   166,
-     198,   135,   173,   213,   219,    80,    62,   183,   114,    -1,
-      83
+       9,    58,     4,    18,    18,     7,    16,    96,     9,     4,
+      35,    36,   125,    27,    44,    57,    46,    47,    48,    49,
+      14,   110,    45,     6,     7,     6,   139,    57,    71,    31,
+      25,    33,    34,    35,    57,    78,    38,    39,    81,    82,
+      50,    40,    25,    73,    25,    50,    89,    90,    91,    40,
+      73,   108,    67,    67,    22,    23,    24,    57,    57,    38,
+      57,    66,    64,     9,    11,    65,    57,   180,    65,    15,
+       0,    80,    73,    74,    75,    76,    77,    79,    63,    80,
+      14,   194,    20,    84,   197,   198,   199,   200,    44,    64,
+      46,    47,    48,    49,   137,    65,   139,    66,    67,   100,
+      65,    57,    58,    59,    60,    61,    62,    66,    67,   111,
+      68,    66,    67,   226,    66,    67,    65,   160,    53,    54,
+      55,   149,   150,   166,    65,    65,     3,    40,     5,    64,
+      14,     8,     9,    10,    69,    70,    13,    40,    67,   140,
+      68,    21,    19,    20,    21,    17,    43,   149,   150,    65,
+     152,    28,    29,    30,    31,    32,    33,   158,    65,    65,
+      37,    18,    12,    44,    57,    46,    47,    48,    49,    58,
+      59,    60,    61,    62,    51,    52,    57,    62,    57,    56,
+      66,   183,    71,    72,    73,    74,    57,    58,    59,    60,
+      61,    62,    44,    59,    46,    47,    48,    49,   207,    66,
+      65,   203,    64,    66,    26,   206,    66,    58,    59,    60,
+      61,    62,    66,    66,    41,    39,    17,    66,   227,    67,
+      65,    42,    66,    59,   225,    66,    66,    26,    67,   160,
+      91,   170,   205,   221,   177,   137,    62,    80,   227,   189,
+     115,    83
 };
 
 /* YYSTOS[STATE-NUM] -- The symbol kind of the accessing symbol of
@@ -827,45 +833,46 @@ static const yytype_int16 yycheck[] =
 static const yytype_int8 yystos[] =
 {
        0,     3,     5,     8,     9,    10,    13,    19,    20,    21,
-      28,    29,    30,    31,    32,    33,    37,    50,    51,    55,
-      74,    75,    76,    77,    78,    79,    80,    99,   100,     4,
-      25,     6,     7,    25,     6,    25,    56,   113,    11,    14,
-     113,    35,    36,   112,    44,    45,    46,    47,    48,    56,
-      71,    90,    95,    96,    97,    98,   113,   114,    38,     0,
-      61,    16,    49,   108,    14,   113,   113,   113,   113,   113,
-     113,    20,    62,    63,    63,    63,    63,    63,    40,    14,
-      65,    40,    66,   100,    17,    99,    43,   111,   113,    63,
-      63,    63,    12,    18,    88,    56,    93,    94,   114,    60,
-      71,    90,    90,    90,    90,    90,   114,    63,   101,   102,
-     113,    97,   114,   114,   108,    90,   109,    58,    81,    83,
-     114,    82,   114,    82,    63,    57,    58,    59,    60,    86,
-      87,    89,    90,    92,    98,    65,    88,    62,    64,    64,
-      64,    64,    64,    64,   100,    27,    65,    88,    40,   113,
-     111,     9,    15,   110,    65,    64,    65,    22,    23,    24,
-      84,    64,    65,    64,    85,    86,    26,    52,    53,    54,
-      62,    67,    68,    91,    94,    86,   114,    64,   101,   101,
-      41,   103,   113,    90,    83,    63,   114,    64,    65,    87,
-      92,    69,    70,    71,    72,    86,    40,   113,    39,    17,
-      42,   105,   110,    58,    86,    86,    86,    86,    86,   113,
-      89,    90,   104,    98,   106,   107,    64,    65,    91,    26,
-      90,    86,   107
+      28,    29,    30,    31,    32,    33,    37,    51,    52,    56,
+      76,    77,    78,    79,    80,    81,    82,   101,   102,     4,
+      25,     6,     7,    25,     6,    25,    57,   115,    11,    14,
+     115,    35,    36,   114,    44,    46,    47,    48,    49,    57,
+      73,    92,    97,    98,    99,   100,   115,   116,    38,     0,
+      63,    16,    50,   110,    14,   115,   115,   115,   115,   115,
+     115,    20,    64,    65,    65,    65,    65,    65,    40,    14,
+      67,    40,    68,   102,    17,   101,    43,   113,   115,    65,
+      65,    65,    12,    18,    90,    57,    95,    96,   116,    62,
+      45,    73,    92,    92,    92,    92,    92,   116,    65,   103,
+     104,   115,    99,   116,   116,   110,    92,   111,    59,    83,
+      85,   116,    84,   116,    84,    65,    58,    59,    60,    61,
+      62,    88,    89,    91,    92,    94,   100,    67,    90,    64,
+      65,    92,    66,    66,    66,    66,    66,    66,   102,    27,
+      67,    90,    40,   115,   113,     9,    15,   112,    67,    66,
+      67,    22,    23,    24,    86,    66,    67,    66,    87,    88,
+      26,    53,    54,    55,    64,    69,    70,    93,    96,    88,
+     116,    92,    66,    66,   103,   103,    41,   105,   115,    92,
+      85,    65,   116,    66,    67,    89,    94,    71,    72,    73,
+      74,    88,    66,    40,   115,    39,    17,    42,   107,   112,
+      59,    88,    88,    88,    88,    88,    66,   115,    91,    92,
+     106,   100,   108,   109,    66,    67,    93,    26,    92,    88,
+     109
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr1[] =
 {
-       0,    73,    74,    74,    74,    74,    75,    75,    75,    75,
-      75,    76,    76,    76,    76,    77,    77,    77,    78,    78,
-      78,    79,    79,    79,    79,    79,    80,    80,    80,    80,
-      80,    81,    81,    82,    82,    83,    84,    84,    84,    85,
-      85,    86,    86,    86,    86,    87,    88,    88,    89,    89,
-      90,    90,    91,    91,    91,    91,    91,    91,    92,    92,
-      92,    93,    93,    94,    94,    94,    94,    94,    94,    95,
-      95,    96,    96,    97,    97,    97,    97,    98,    98,    98,
-      98,    98,    98,    99,   100,   100,   101,   101,   101,   101,
-     101,   102,   102,   102,   102,   103,   103,   104,   104,   105,
-     105,   106,   106,   107,   108,   108,   109,   109,   110,   110,
-     110,   111,   111,   112,   112,   113,   114
+       0,    75,    76,    76,    76,    76,    77,    77,    77,    77,
+      77,    78,    78,    78,    78,    79,    79,    79,    80,    80,
+      80,    81,    81,    81,    81,    81,    82,    82,    82,    82,
+      82,    83,    83,    84,    84,    85,    86,    86,    86,    87,
+      87,    88,    88,    88,    88,    88,    89,    90,    90,    91,
+      91,    92,    92,    93,    93,    93,    93,    93,    93,    94,
+      94,    94,    95,    95,    96,    96,    96,    96,    96,    96,
+      97,    97,    98,    98,    99,    99,    99,    99,   100,   100,
+     100,   100,   100,   100,   100,   100,   101,   102,   102,   103,
+     103,   103,   103,   103,   104,   104,   104,   104,   105,   105,
+     106,   106,   107,   107,   108,   108,   109,   110,   110,   111,
+     111,   112,   112,   112,   113,   113,   114,   114,   115,   116
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
@@ -875,14 +882,14 @@ static const yytype_int8 yyr2[] =
        1,     1,     1,     1,     1,     2,     2,     4,     4,     1,
        1,     6,     3,     2,     6,     6,     7,     4,     5,     3,
        5,     1,     3,     1,     3,     2,     1,     4,     1,     1,
-       3,     1,     1,     1,     1,     3,     0,     2,     1,     3,
-       3,     1,     1,     1,     1,     1,     1,     1,     1,     1,
-       1,     1,     3,     3,     4,     5,     5,     5,     5,     1,
-       1,     1,     3,     1,     3,     1,     3,     4,     4,     4,
-       4,     4,     4,     7,     1,     3,     1,     2,     3,     5,
-       4,     1,     3,     3,     5,     0,     3,     1,     3,     0,
-       2,     1,     3,     3,     3,     0,     2,     4,     1,     1,
-       0,     0,     2,     1,     1,     1,     1
+       3,     1,     1,     1,     1,     1,     3,     0,     2,     1,
+       3,     3,     1,     1,     1,     1,     1,     1,     1,     1,
+       1,     1,     1,     3,     3,     4,     5,     5,     5,     5,
+       1,     1,     1,     3,     1,     3,     1,     3,     4,     4,
+       5,     7,     4,     4,     4,     4,     7,     1,     3,     1,
+       2,     3,     5,     4,     1,     3,     3,     5,     0,     3,
+       1,     3,     0,     2,     1,     3,     3,     3,     0,     2,
+       4,     1,     1,     0,     0,     2,     1,     1,     1,     1
 };
 
 
@@ -1738,187 +1745,187 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* start: stmt ';'  */
-#line 73 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 73 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         parse_tree = (yyvsp[-1].sv_node);
         YYACCEPT;
     }
-#line 1747 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1754 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 3: /* start: HELP  */
-#line 78 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 78 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         parse_tree = std::make_shared<Help>();
         YYACCEPT;
     }
-#line 1756 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1763 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 4: /* start: EXIT  */
-#line 83 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 83 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         parse_tree = nullptr;
         YYACCEPT;
     }
-#line 1765 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1772 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 5: /* start: T_EOF  */
-#line 88 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 88 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         parse_tree = nullptr;
         YYACCEPT;
     }
-#line 1774 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1781 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 11: /* txnStmt: TXN_BEGIN  */
-#line 104 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 104 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnBegin>();
     }
-#line 1782 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1789 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 12: /* txnStmt: TXN_COMMIT  */
-#line 108 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 108 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnCommit>();
     }
-#line 1790 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1797 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 13: /* txnStmt: TXN_ABORT  */
-#line 112 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 112 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnAbort>();
     }
-#line 1798 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1805 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 14: /* txnStmt: TXN_ROLLBACK  */
-#line 116 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 116 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<TxnRollback>();
     }
-#line 1806 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1813 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 15: /* dbStmt: SHOW TABLES  */
-#line 123 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 123 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<ShowTables>();
     }
-#line 1814 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1821 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 16: /* dbStmt: CREATE STATIC_CHECKPOINT  */
-#line 127 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 127 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<StaticCheckpoint>();
     }
-#line 1822 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1829 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 17: /* dbStmt: SHOW INDEX FROM tbName  */
-#line 131 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 131 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<ShowIndex>((yyvsp[0].sv_str));
     }
-#line 1830 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1837 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 18: /* setStmt: SET set_knob_type '=' VALUE_BOOL  */
-#line 138 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 138 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<SetStmt>((yyvsp[-2].sv_setKnobType), (yyvsp[0].sv_bool));
     }
-#line 1838 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1845 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 19: /* setStmt: SET_TXN_SNAPSHOT  */
-#line 142 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 142 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<SetTransactionIsolation>(SnapshotIsolation);
     }
-#line 1846 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1853 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 20: /* setStmt: SET_TXN_SERIALIZABLE  */
-#line 146 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 146 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<SetTransactionIsolation>(Serializable);
     }
-#line 1854 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1861 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 21: /* ddl: CREATE TABLE tbName '(' fieldList ')'  */
-#line 153 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 153 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<CreateTable>((yyvsp[-3].sv_str), (yyvsp[-1].sv_fields));
     }
-#line 1862 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1869 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 22: /* ddl: DROP TABLE tbName  */
-#line 157 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 157 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DropTable>((yyvsp[0].sv_str));
     }
-#line 1870 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1877 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 23: /* ddl: DESC tbName  */
-#line 161 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 161 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DescTable>((yyvsp[0].sv_str));
     }
-#line 1878 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1885 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 24: /* ddl: CREATE INDEX tbName '(' colNameList ')'  */
-#line 165 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 165 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<CreateIndex>((yyvsp[-3].sv_str), (yyvsp[-1].sv_strs));
     }
-#line 1886 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1893 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 25: /* ddl: DROP INDEX tbName '(' colNameList ')'  */
-#line 169 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 169 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DropIndex>((yyvsp[-3].sv_str), (yyvsp[-1].sv_strs));
     }
-#line 1894 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1901 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 26: /* dml: INSERT INTO tbName VALUES '(' valueList ')'  */
-#line 176 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 176 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<InsertStmt>((yyvsp[-4].sv_str), (yyvsp[-1].sv_vals));
     }
-#line 1902 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1909 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 27: /* dml: DELETE FROM tbName optWhereClause  */
-#line 180 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 180 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<DeleteStmt>((yyvsp[-1].sv_str), (yyvsp[0].sv_conds));
     }
-#line 1910 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1917 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 28: /* dml: UPDATE tbName SET setClauses optWhereClause  */
-#line 184 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 184 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = std::make_shared<UpdateStmt>((yyvsp[-3].sv_str), (yyvsp[-1].sv_set_clauses), (yyvsp[0].sv_conds));
     }
-#line 1918 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1925 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 29: /* dml: select_stmt opt_order_clause opt_limit_clause  */
-#line 188 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 188 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         auto stmt = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-2].sv_node));
         stmt->orders = std::move((yyvsp[-1].sv_orderbys));
@@ -1928,11 +1935,11 @@ yyreduce:
         stmt->has_limit = (yyvsp[0].sv_int) >= 0;
         (yyval.sv_node) = stmt;
     }
-#line 1932 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1939 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 30: /* dml: EXPLAIN ANALYZE select_stmt opt_order_clause opt_limit_clause  */
-#line 198 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 198 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         auto stmt = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-2].sv_node));
         stmt->is_explain_analyze = true;
@@ -1943,424 +1950,444 @@ yyreduce:
         stmt->has_limit = (yyvsp[0].sv_int) >= 0;
         (yyval.sv_node) = stmt;
     }
-#line 1947 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1954 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 31: /* fieldList: field  */
-#line 212 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 212 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_fields) = std::vector<std::shared_ptr<Field>>{(yyvsp[0].sv_field)};
     }
-#line 1955 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1962 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 32: /* fieldList: fieldList ',' field  */
-#line 216 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 216 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_fields).push_back((yyvsp[0].sv_field));
     }
-#line 1963 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1970 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 33: /* colNameList: colName  */
-#line 223 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 223 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_strs) = std::vector<std::string>{(yyvsp[0].sv_str)};
     }
-#line 1971 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1978 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 34: /* colNameList: colNameList ',' colName  */
-#line 227 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 227 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_strs).push_back((yyvsp[0].sv_str));
     }
-#line 1979 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1986 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 35: /* field: colName type  */
-#line 234 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 234 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_field) = std::make_shared<ColDef>((yyvsp[-1].sv_str), (yyvsp[0].sv_type_len));
     }
-#line 1987 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 1994 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 36: /* type: INT  */
-#line 241 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 241 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_INT, sizeof(int));
     }
-#line 1995 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2002 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 37: /* type: CHAR '(' VALUE_INT ')'  */
-#line 245 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 245 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_STRING, (yyvsp[-1].sv_int));
     }
-#line 2003 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2010 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 38: /* type: FLOAT  */
-#line 249 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 249 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_type_len) = std::make_shared<TypeLen>(SV_TYPE_FLOAT, sizeof(float));
     }
-#line 2011 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2018 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 39: /* valueList: value  */
-#line 256 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 256 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_vals) = std::vector<std::shared_ptr<Value>>{(yyvsp[0].sv_val)};
     }
-#line 2019 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2026 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 40: /* valueList: valueList ',' value  */
-#line 260 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 260 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_vals).push_back((yyvsp[0].sv_val));
     }
-#line 2027 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2034 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 41: /* value: VALUE_INT  */
-#line 267 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 267 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_val) = std::make_shared<IntLit>((yyvsp[0].sv_int));
     }
-#line 2035 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2042 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 42: /* value: VALUE_FLOAT  */
-#line 271 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 271 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_val) = std::make_shared<FloatLit>((yyvsp[0].sv_float));
     }
-#line 2043 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2050 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 43: /* value: VALUE_STRING  */
-#line 275 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 275 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_val) = std::make_shared<StringLit>((yyvsp[0].sv_str));
     }
-#line 2051 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2058 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
   case 44: /* value: VALUE_BOOL  */
-#line 279 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 279 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_val) = std::make_shared<BoolLit>((yyvsp[0].sv_bool));
     }
-#line 2059 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2066 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 45: /* condition: expr op expr  */
-#line 286 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 45: /* value: PARAMETER  */
+#line 283 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+    {
+        (yyval.sv_val) = std::make_shared<ParamRef>(static_cast<uint16_t>((yyvsp[0].sv_int)));
+    }
+#line 2074 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 46: /* condition: expr op expr  */
+#line 290 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_cond) = std::make_shared<BinaryExpr>((yyvsp[-2].sv_expr), (yyvsp[-1].sv_comp_op), (yyvsp[0].sv_expr));
     }
-#line 2067 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2082 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 46: /* optWhereClause: %empty  */
-#line 292 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 47: /* optWhereClause: %empty  */
+#line 296 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                       { /* ignore*/ }
-#line 2073 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2088 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 47: /* optWhereClause: WHERE whereClause  */
-#line 294 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 48: /* optWhereClause: WHERE whereClause  */
+#line 298 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_conds) = (yyvsp[0].sv_conds);
     }
-#line 2081 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2096 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 48: /* whereClause: condition  */
-#line 301 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 49: /* whereClause: condition  */
+#line 305 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_conds) = std::vector<std::shared_ptr<BinaryExpr>>{(yyvsp[0].sv_cond)};
     }
-#line 2089 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2104 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 49: /* whereClause: whereClause AND condition  */
-#line 305 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 50: /* whereClause: whereClause AND condition  */
+#line 309 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_conds) = (yyvsp[-2].sv_conds);
         (yyval.sv_conds).push_back((yyvsp[0].sv_cond));
     }
-#line 2098 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2113 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 50: /* col: tbName '.' colName  */
-#line 313 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 51: /* col: tbName '.' colName  */
+#line 317 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_col) = std::make_shared<Col>((yyvsp[-2].sv_str), (yyvsp[0].sv_str));
     }
-#line 2106 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2121 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 51: /* col: colName  */
-#line 317 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 52: /* col: colName  */
+#line 321 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_col) = std::make_shared<Col>("", (yyvsp[0].sv_str));
     }
-#line 2114 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2129 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 52: /* op: '='  */
-#line 335 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 53: /* op: '='  */
+#line 339 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_comp_op) = SV_OP_EQ;
     }
-#line 2122 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2137 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 53: /* op: '<'  */
-#line 339 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 54: /* op: '<'  */
+#line 343 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_comp_op) = SV_OP_LT;
     }
-#line 2130 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2145 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 54: /* op: '>'  */
-#line 343 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 55: /* op: '>'  */
+#line 347 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_comp_op) = SV_OP_GT;
     }
-#line 2138 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2153 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 55: /* op: NEQ  */
-#line 347 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 56: /* op: NEQ  */
+#line 351 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_comp_op) = SV_OP_NE;
     }
-#line 2146 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2161 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 56: /* op: LEQ  */
-#line 351 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 57: /* op: LEQ  */
+#line 355 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_comp_op) = SV_OP_LE;
     }
-#line 2154 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2169 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 57: /* op: GEQ  */
-#line 355 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 58: /* op: GEQ  */
+#line 359 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_comp_op) = SV_OP_GE;
     }
-#line 2162 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2177 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 58: /* expr: value  */
-#line 362 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 59: /* expr: value  */
+#line 366 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_expr) = std::static_pointer_cast<Expr>((yyvsp[0].sv_val));
     }
-#line 2170 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2185 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 59: /* expr: col  */
-#line 366 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 60: /* expr: col  */
+#line 370 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_expr) = std::static_pointer_cast<Expr>((yyvsp[0].sv_col));
     }
-#line 2178 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2193 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 60: /* expr: agg_func  */
-#line 370 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 61: /* expr: agg_func  */
+#line 374 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_expr) = std::static_pointer_cast<Expr>((yyvsp[0].sv_agg_func));
     }
-#line 2186 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2201 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 61: /* setClauses: setClause  */
-#line 377 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 62: /* setClauses: setClause  */
+#line 381 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clauses) = std::vector<std::shared_ptr<SetClause>>{(yyvsp[0].sv_set_clause)};
     }
-#line 2194 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2209 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 62: /* setClauses: setClauses ',' setClause  */
-#line 381 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 63: /* setClauses: setClauses ',' setClause  */
+#line 385 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clauses).push_back((yyvsp[0].sv_set_clause));
     }
-#line 2202 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2217 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 63: /* setClause: colName '=' value  */
-#line 388 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 64: /* setClause: colName '=' value  */
+#line 392 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-2].sv_str), (yyvsp[0].sv_val));
     }
-#line 2210 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2225 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 64: /* setClause: colName '=' colName value  */
-#line 392 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 65: /* setClause: colName '=' colName value  */
+#line 396 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-3].sv_str), (yyvsp[-1].sv_str), '+', (yyvsp[0].sv_val));
     }
-#line 2218 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2233 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 65: /* setClause: colName '=' colName '+' value  */
-#line 396 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 66: /* setClause: colName '=' colName '+' value  */
+#line 400 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '+', (yyvsp[0].sv_val));
     }
-#line 2226 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2241 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 66: /* setClause: colName '=' colName '-' value  */
-#line 400 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 67: /* setClause: colName '=' colName '-' value  */
+#line 404 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '-', (yyvsp[0].sv_val));
     }
-#line 2234 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2249 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 67: /* setClause: colName '=' colName '*' value  */
-#line 404 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 68: /* setClause: colName '=' colName '*' value  */
+#line 408 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '*', (yyvsp[0].sv_val));
     }
-#line 2242 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2257 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 68: /* setClause: colName '=' colName '/' value  */
-#line 408 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 69: /* setClause: colName '=' colName '/' value  */
+#line 412 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_set_clause) = std::make_shared<SetClause>((yyvsp[-4].sv_str), (yyvsp[-2].sv_str), '/', (yyvsp[0].sv_val));
     }
-#line 2250 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2265 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 69: /* selector: '*'  */
-#line 415 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 70: /* selector: '*'  */
+#line 419 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_items) = {};
     }
-#line 2258 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2273 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 71: /* select_list: select_item  */
-#line 423 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 72: /* select_list: select_item  */
+#line 427 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_items) = std::vector<std::shared_ptr<SelectItem>>{(yyvsp[0].sv_select_item)};
     }
-#line 2266 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2281 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 72: /* select_list: select_list ',' select_item  */
-#line 427 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 73: /* select_list: select_list ',' select_item  */
+#line 431 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_items).push_back((yyvsp[0].sv_select_item));
     }
-#line 2274 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2289 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 73: /* select_item: col  */
-#line 434 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 74: /* select_item: col  */
+#line 438 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[0].sv_col), "");
     }
-#line 2282 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2297 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 74: /* select_item: col AS colName  */
-#line 438 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 75: /* select_item: col AS colName  */
+#line 442 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[-2].sv_col), (yyvsp[0].sv_str));
     }
-#line 2290 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2305 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 75: /* select_item: agg_func  */
-#line 442 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 76: /* select_item: agg_func  */
+#line 446 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[0].sv_agg_func), "");
     }
-#line 2298 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2313 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 76: /* select_item: agg_func AS colName  */
-#line 446 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 77: /* select_item: agg_func AS colName  */
+#line 450 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_select_item) = std::make_shared<SelectItem>((yyvsp[-2].sv_agg_func), (yyvsp[0].sv_str));
     }
-#line 2306 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2321 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 77: /* agg_func: COUNT '(' '*' ')'  */
-#line 452 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 78: /* agg_func: COUNT '(' '*' ')'  */
+#line 456 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, true, nullptr); }
-#line 2312 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2327 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 78: /* agg_func: COUNT '(' col ')'  */
-#line 453 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 79: /* agg_func: COUNT '(' col ')'  */
+#line 457 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-1].sv_col)); }
-#line 2318 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2333 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 79: /* agg_func: MAX '(' col ')'  */
-#line 454 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 80: /* agg_func: COUNT '(' DISTINCT col ')'  */
+#line 459 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-1].sv_col), true); }
+#line 2339 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 81: /* agg_func: COUNT '(' DISTINCT '(' col ')' ')'  */
+#line 461 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
+                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_COUNT, false, (yyvsp[-2].sv_col), true); }
+#line 2345 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
+    break;
+
+  case 82: /* agg_func: MAX '(' col ')'  */
+#line 462 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_MAX, false, (yyvsp[-1].sv_col)); }
-#line 2324 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2351 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 80: /* agg_func: MIN '(' col ')'  */
-#line 455 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 83: /* agg_func: MIN '(' col ')'  */
+#line 463 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_MIN, false, (yyvsp[-1].sv_col)); }
-#line 2330 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2357 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 81: /* agg_func: SUM '(' col ')'  */
-#line 456 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 84: /* agg_func: SUM '(' col ')'  */
+#line 464 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_SUM, false, (yyvsp[-1].sv_col)); }
-#line 2336 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2363 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 82: /* agg_func: AVG '(' col ')'  */
-#line 457 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 85: /* agg_func: AVG '(' col ')'  */
+#line 465 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_agg_func) = std::make_shared<AggFunc>(AGG_AVG, false, (yyvsp[-1].sv_col)); }
-#line 2342 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2369 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 83: /* select_branch: SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause  */
-#line 462 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 86: /* select_branch: SELECT selector FROM tableList optWhereClause opt_group_by_clause opt_having_clause  */
+#line 470 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         auto conds = (yyvsp[-3].sv_from_clause).conds;
         conds.insert(conds.end(), (yyvsp[-2].sv_conds).begin(), (yyvsp[-2].sv_conds).end());
         (yyval.sv_node) = std::make_shared<SelectStmt>((yyvsp[-5].sv_select_items), (yyvsp[-3].sv_from_clause).tables, conds, (yyvsp[-1].sv_cols), (yyvsp[0].sv_having_exprs), nullptr, -1);
     }
-#line 2352 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2379 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 84: /* select_stmt: select_branch  */
-#line 471 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 87: /* select_stmt: select_branch  */
+#line 479 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_node) = (yyvsp[0].sv_node);
     }
-#line 2360 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2387 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 85: /* select_stmt: select_stmt UNION select_branch  */
-#line 475 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 88: /* select_stmt: select_stmt UNION select_branch  */
+#line 483 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         std::vector<std::shared_ptr<SelectStmt>> branches;
         auto left = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-2].sv_node));
@@ -2383,35 +2410,35 @@ yyreduce:
         u->union_branches = std::move(branches);
         (yyval.sv_node) = u;
     }
-#line 2387 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2414 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 86: /* tableRef: tbName  */
-#line 501 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 89: /* tableRef: tbName  */
+#line 509 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_table_ref) = TableRef((yyvsp[0].sv_str), "");
     }
-#line 2395 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2422 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 87: /* tableRef: tbName tbName  */
-#line 505 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 90: /* tableRef: tbName tbName  */
+#line 513 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_table_ref) = TableRef((yyvsp[-1].sv_str), (yyvsp[0].sv_str));
     }
-#line 2403 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2430 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 88: /* tableRef: tbName AS tbName  */
-#line 509 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 91: /* tableRef: tbName AS tbName  */
+#line 517 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_table_ref) = TableRef((yyvsp[-2].sv_str), (yyvsp[0].sv_str));
     }
-#line 2411 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2438 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 89: /* tableRef: '(' select_stmt ')' AS tbName  */
-#line 513 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 92: /* tableRef: '(' select_stmt ')' AS tbName  */
+#line 521 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         TableRef ref;
         ref.is_subquery = true;
@@ -2419,11 +2446,11 @@ yyreduce:
         ref.subquery = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-3].sv_node));
         (yyval.sv_table_ref) = ref;
     }
-#line 2423 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2450 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 90: /* tableRef: '(' select_stmt ')' tbName  */
-#line 521 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 93: /* tableRef: '(' select_stmt ')' tbName  */
+#line 529 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         TableRef ref;
         ref.is_subquery = true;
@@ -2431,175 +2458,175 @@ yyreduce:
         ref.subquery = std::dynamic_pointer_cast<SelectStmt>((yyvsp[-2].sv_node));
         (yyval.sv_table_ref) = ref;
     }
-#line 2435 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2462 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 91: /* tableList: tableRef  */
-#line 532 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 94: /* tableList: tableRef  */
+#line 540 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_from_clause).tables = {(yyvsp[0].sv_table_ref)};
         (yyval.sv_from_clause).conds = {};
     }
-#line 2444 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2471 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 92: /* tableList: tableList ',' tableRef  */
-#line 537 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 95: /* tableList: tableList ',' tableRef  */
+#line 545 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-2].sv_from_clause).tables.push_back((yyvsp[0].sv_table_ref));
         (yyval.sv_from_clause) = (yyvsp[-2].sv_from_clause);
     }
-#line 2453 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2480 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 93: /* tableList: tableList JOIN tableRef  */
-#line 542 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 96: /* tableList: tableList JOIN tableRef  */
+#line 550 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-2].sv_from_clause).tables.push_back((yyvsp[0].sv_table_ref));
         (yyval.sv_from_clause) = (yyvsp[-2].sv_from_clause);
     }
-#line 2462 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2489 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 94: /* tableList: tableList JOIN tableRef ON whereClause  */
-#line 547 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 97: /* tableList: tableList JOIN tableRef ON whereClause  */
+#line 555 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-4].sv_from_clause).tables.push_back((yyvsp[-2].sv_table_ref));
         (yyvsp[-4].sv_from_clause).conds.insert((yyvsp[-4].sv_from_clause).conds.end(), (yyvsp[0].sv_conds).begin(), (yyvsp[0].sv_conds).end());
         (yyval.sv_from_clause) = (yyvsp[-4].sv_from_clause);
     }
-#line 2472 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2499 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 95: /* opt_group_by_clause: %empty  */
-#line 555 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 98: /* opt_group_by_clause: %empty  */
+#line 563 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_cols) = {}; }
-#line 2478 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2505 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 96: /* opt_group_by_clause: GROUP BY group_by_clause  */
-#line 556 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 99: /* opt_group_by_clause: GROUP BY group_by_clause  */
+#line 564 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                { (yyval.sv_cols) = (yyvsp[0].sv_cols); }
-#line 2484 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2511 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 97: /* group_by_clause: col  */
-#line 560 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 100: /* group_by_clause: col  */
+#line 568 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
           { (yyval.sv_cols) = std::vector<std::shared_ptr<Col>>{(yyvsp[0].sv_col)}; }
-#line 2490 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2517 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 98: /* group_by_clause: group_by_clause ',' col  */
-#line 561 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 101: /* group_by_clause: group_by_clause ',' col  */
+#line 569 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                               { (yyval.sv_cols).push_back((yyvsp[0].sv_col)); }
-#line 2496 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2523 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 99: /* opt_having_clause: %empty  */
-#line 565 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 102: /* opt_having_clause: %empty  */
+#line 573 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_having_exprs) = {}; }
-#line 2502 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2529 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 100: /* opt_having_clause: HAVING having_clause  */
-#line 566 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 103: /* opt_having_clause: HAVING having_clause  */
+#line 574 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                            { (yyval.sv_having_exprs) = (yyvsp[0].sv_having_exprs); }
-#line 2508 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2535 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 101: /* having_clause: having_condition  */
-#line 570 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 104: /* having_clause: having_condition  */
+#line 578 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                        { (yyval.sv_having_exprs) = std::vector<std::shared_ptr<HavingExpr>>{(yyvsp[0].sv_having_expr)}; }
-#line 2514 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2541 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 102: /* having_clause: having_clause AND having_condition  */
-#line 571 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 105: /* having_clause: having_clause AND having_condition  */
+#line 579 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                                          { (yyval.sv_having_exprs).push_back((yyvsp[0].sv_having_expr)); }
-#line 2520 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2547 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 103: /* having_condition: agg_func op value  */
-#line 575 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 106: /* having_condition: agg_func op value  */
+#line 583 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                         { (yyval.sv_having_expr) = std::make_shared<HavingExpr>((yyvsp[-2].sv_agg_func), (yyvsp[-1].sv_comp_op), (yyvsp[0].sv_val)); }
-#line 2526 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2553 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 104: /* opt_order_clause: ORDER BY order_clause  */
-#line 580 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 107: /* opt_order_clause: ORDER BY order_clause  */
+#line 588 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_orderbys) = (yyvsp[0].sv_orderbys);
     }
-#line 2534 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2561 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 105: /* opt_order_clause: %empty  */
-#line 583 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 108: /* opt_order_clause: %empty  */
+#line 591 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                       { (yyval.sv_orderbys) = {}; }
-#line 2540 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2567 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 106: /* order_clause: col opt_asc_desc  */
-#line 588 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 109: /* order_clause: col opt_asc_desc  */
+#line 596 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyval.sv_orderbys) = {std::make_shared<OrderBy>((yyvsp[-1].sv_col), (yyvsp[0].sv_orderby_dir))};
     }
-#line 2548 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2575 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 107: /* order_clause: order_clause ',' col opt_asc_desc  */
-#line 592 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 110: /* order_clause: order_clause ',' col opt_asc_desc  */
+#line 600 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
     {
         (yyvsp[-3].sv_orderbys).push_back(std::make_shared<OrderBy>((yyvsp[-1].sv_col), (yyvsp[0].sv_orderby_dir)));
         (yyval.sv_orderbys) = (yyvsp[-3].sv_orderbys);
     }
-#line 2557 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2584 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 108: /* opt_asc_desc: ASC  */
-#line 599 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 111: /* opt_asc_desc: ASC  */
+#line 607 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                  { (yyval.sv_orderby_dir) = OrderBy_ASC;     }
-#line 2563 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2590 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 109: /* opt_asc_desc: DESC  */
-#line 600 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 112: /* opt_asc_desc: DESC  */
+#line 608 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                  { (yyval.sv_orderby_dir) = OrderBy_DESC;    }
-#line 2569 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2596 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 110: /* opt_asc_desc: %empty  */
-#line 601 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 113: /* opt_asc_desc: %empty  */
+#line 609 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
             { (yyval.sv_orderby_dir) = OrderBy_DEFAULT; }
-#line 2575 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2602 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 111: /* opt_limit_clause: %empty  */
-#line 605 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 114: /* opt_limit_clause: %empty  */
+#line 613 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_int) = -1; }
-#line 2581 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2608 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 112: /* opt_limit_clause: LIMIT VALUE_INT  */
-#line 606 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 115: /* opt_limit_clause: LIMIT VALUE_INT  */
+#line 614 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                       { (yyval.sv_int) = (yyvsp[0].sv_int); }
-#line 2587 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2614 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 113: /* set_knob_type: ENABLE_NESTLOOP  */
-#line 610 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 116: /* set_knob_type: ENABLE_NESTLOOP  */
+#line 618 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                     { (yyval.sv_setKnobType) = EnableNestLoop; }
-#line 2593 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2620 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
-  case 114: /* set_knob_type: ENABLE_SORTMERGE  */
-#line 611 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+  case 117: /* set_knob_type: ENABLE_SORTMERGE  */
+#line 619 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
                          { (yyval.sv_setKnobType) = EnableSortMerge; }
-#line 2599 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2626 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
     break;
 
 
-#line 2603 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.tab.cpp"
+#line 2630 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.tab.cpp"
 
       default: break;
     }
@@ -2828,5 +2855,5 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 617 "/home/osboxes/Desktop/VMware/db2026_gitee/src/parser/yacc.y"
+#line 625 "/mnt/hgfs/db2026/.worktrees/finals-wire-ssi/src/parser/yacc.y"
 

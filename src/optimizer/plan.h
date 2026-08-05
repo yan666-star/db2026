@@ -146,23 +146,27 @@ public:
 class SortPlan : public Plan
 {
     public:
-        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, TabCol sel_col, bool is_desc)
+        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, TabCol sel_col,
+                 bool is_desc, int limit_num = -1)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
             sel_col_ = sel_col;
             is_desc_ = is_desc;
+            limit_num_ = limit_num;
             sort_cols_.push_back(sel_col);
             is_descs_.push_back(is_desc);
         }
 
         SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan,
-                 std::vector<TabCol> sort_cols, std::vector<bool> is_descs)
+                  std::vector<TabCol> sort_cols, std::vector<bool> is_descs,
+                  int limit_num = -1)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
             sort_cols_ = std::move(sort_cols);
             is_descs_ = std::move(is_descs);
+            limit_num_ = limit_num;
             if (!sort_cols_.empty()) {
                 sel_col_ = sort_cols_[0];
                 is_desc_ = is_descs_[0];
@@ -174,6 +178,7 @@ class SortPlan : public Plan
         bool is_desc_;
         std::vector<TabCol> sort_cols_;
         std::vector<bool> is_descs_;
+        int limit_num_ = -1;
         
 };
 

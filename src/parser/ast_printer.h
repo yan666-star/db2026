@@ -181,6 +181,9 @@ private:
                       << (x->isolation_level_ == SnapshotIsolation
                               ? "SNAPSHOT ISOLATION\n"
                               : "SERIALIZABLE\n");
+        } else if (auto param = std::dynamic_pointer_cast<ParamRef>(node)) {
+            std::cout << "PARAM_REF\n"
+                      << "  $" << param->ordinal << "\n";
         } else {
             assert(0);
         }

@@ -217,12 +217,12 @@ std::chrono::microseconds pending_writer_wait_budget() {
     static auto budget = [] {
         const char *value = std::getenv("RMDB_PENDING_WAIT_US");
         if (value == nullptr || value[0] == '\0') {
-            return std::chrono::microseconds(2000);
+            return std::chrono::microseconds(500);
         }
         char *end = nullptr;
         unsigned long long parsed = std::strtoull(value, &end, 10);
         if (end == value) {
-            return std::chrono::microseconds(2000);
+            return std::chrono::microseconds(500);
         }
         return std::chrono::microseconds(parsed);
     }();

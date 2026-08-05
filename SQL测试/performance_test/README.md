@@ -1,71 +1,214 @@
-# Performance-Test Smoke Suite
+# RMDB 本地测试方法
 
-This directory contains a small local smoke suite for the 2026 preliminary
-performance-test statement. It is not the official 30s warmup plus 360s timed
-TPC-C benchmark. It is meant to quickly check the new required entrances:
-
-- `load file_name into table_name;`
-- `set output_file off` without a semicolon
-- string `MIN` and `MAX`
-- primary-key index creation on loaded TPC-C-shaped tables
-- one compact `NewOrder`-shaped transaction under snapshot isolation
-
-Run it after building RMDB:
-
-```bash
-python3 SQL测试/performance_test/run_performance_smoke.py --start-server
-```
-
-The runner starts the server from `build` so the official relative load paths
-work from the database directory:
+本文档适用于当前 worktree：
 
 ```text
-../../src/test/performance_test/table_data/*.csv
+D:\DMS-DESIGN\db2026\.worktrees\finals-wire-ssi
 ```
 
-To run against an already-started server:
+
+
+## 一、统一的服务生命周期
+
+以下测试入口共用 `server_manager.py` 管理 RMDB：
+
+- `run_performance_smoke.py`
+- `run_acid_tests.py`
+- `run_benchmark.py`
+- `check_consistency.py`
+
+指定 `--start-server` 后，测试脚本会依次完成：
+
+1. 在 `--build-dir/bin/` 中定位 `rmdb`；
+2. 将完整的 `--db-dir` 作为数据库启动参数；
+3. 启动 `rmdb <database-directory>`；
+4. 轮询端口并完成 Wire v3 握手，不使用固定 `sleep`；
+5. 执行原有测试；
+6. 无论测试成功还是抛出异常，都在 `finally` 中关闭 RMDB。
+
+启动失败时会显示：
+
+```text
+RMDB server startup failed
+```
+
+随后输出 `--server-log` 对应的服务日志。
+
+所有入口统一支持：
+
+```text
+--start-server
+--build-dir <build-directory>
+--db-dir <database-directory>
+--host <host>                       # 默认 127.0.0.1
+--port <port>                       # 默认 8765
+--server-log <log-file>
+--startup-timeout <seconds>         # 默认 10 秒
+--reset-db                          # 启动前清理 build 内测试库
+--keep-db                           # 复用已有数据库
+```
+
+兼容参数 `--db-name` 仍然保留，但新命令建议明确使用 `--db-dir`。
+
+如果不指定 `--start-server`，脚本保持原行为：只连接已经运行的 RMDB，不启动或关闭外部服务。
+
+## 二、编译
+
+必须在包含 CMake、C++ 编译器及项目依赖的 Linux 环境中执行：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+```
+
+确认以下程序存在：
+
+```bash
+ls -l build/bin/rmdb build/bin/unit_test
+```
+
+直接运行 `build/bin/rmdb` 会因为缺少数据库参数而显示 Usage。正确形式为：
+
+```bash
+./build/bin/rmdb build/example_db
+```
+
+通常不需要手工执行这一命令；测试脚本的 `--start-server` 会自动处理。
+
+## 三、推荐测试顺序
+
+### 1. C++ 单元测试
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+底层单元测试失败时，应先处理失败，不继续进行并发和性能测试。
+
+### 2. Smoke
 
 ```bash
 python3 SQL测试/performance_test/run_performance_smoke.py \
-  --db-dir build/performance_smoke_db
+  --start-server \
+  --build-dir build \
+  --db-dir build/performance_smoke_db \
+  --server-log build/performance_smoke_server.log
 ```
 
-The runner deliberately preserves the exact no-semicolon form of
-`set output_file off` and checks that `output.txt` does not grow after that
-command.
+该入口自动创建或重建测试库、启动 Wire v3服务、执行SQL和并发探针，最后关闭服务。
 
-## Generic correctness and official-shaped local load
-
-Run table-name-independent ACID, concurrency, phantom and crash-recovery checks:
+### 3. Snapshot Isolation ACID
 
 ```bash
-python3 'SQL测试/performance_test/run_generic_acid_suite.py' \
-  --start-server --crash-check --isolation snapshot
+python3 SQL测试/performance_test/run_acid_tests.py \
+  --start-server \
+  --build-dir build \
+  --db-dir build/acid_snapshot_db \
+  --server-log build/acid_snapshot_server.log \
+  --isolation snapshot
 ```
 
-Run a short 16-client mixed-load regression:
+### 4. Serializable ACID
 
 ```bash
-python3 'SQL测试/performance_test/run_official_like_benchmark.py' \
-  --start-server --quick --clients 16 --crash-check
+python3 SQL测试/performance_test/run_acid_tests.py \
+  --start-server \
+  --build-dir build \
+  --db-dir build/acid_serializable_db \
+  --server-log build/acid_serializable_server.log \
+  --isolation serializable
 ```
 
-Without `--quick`, the mixed-load runner defaults to three rounds of 30 seconds
-warmup plus 360 seconds measurement and reports the median committed NewOrder
-tpmC. Its transaction selection uses the published 10/23 NewOrder, 10/23
-Payment and 1/23 each remaining transaction mix. This is a local engineering
-benchmark, not the private official evaluator.
-
-See `docs/official-performance-test-notes.md` for the requirement summary,
-external-tool analysis, limitations and recommended Ubuntu test matrix.
-
-On Ubuntu, the combined build/correctness/recovery/performance entry point is:
+需要验证 SIGKILL 恢复时增加：
 
 ```bash
-bash 'SQL测试/performance_test/run_local_evaluation.sh' quick
-bash 'SQL测试/performance_test/run_local_evaluation.sh' full
+--crash-check
 ```
 
-`full` uses the published 30s/360s/three-round windows and normally takes more
-than 19 minutes just for the mixed-load phases. Set `CLIENTS=32` to exercise the
-higher local concurrency case, or `SKIP_BUILD=1` to reuse an existing build.
+ACID 脚本会通过同一个 `RMDBServerManager` 执行 `kill()` 和 `restart(reset_db=False)`，恢复阶段不会删除原数据库。
+
+### 5. Quick Benchmark
+
+```bash
+python3 SQL测试/performance_test/run_benchmark.py \
+  --start-server \
+  --build-dir build \
+  --db-dir build/benchmark_db \
+  --server-log build/benchmark_server.log \
+  --setup \
+  --quick \
+  --clients 16
+```
+
+`--setup` 保持原有流程：创建表、装载TPC-C数据并创建索引，然后运行 benchmark。服务生命周期调整没有修改TPC-C workload、Wire请求或装载SQL。
+
+### 6. 一致性检查
+
+一致性检查需要一个已经完成TPC-C装载的数据库。检查现有 benchmark 数据库时使用：
+
+```bash
+python3 SQL测试/performance_test/check_consistency.py \
+  --start-server \
+  --build-dir build \
+  --db-dir build/benchmark_db \
+  --server-log build/consistency_server.log \
+  --keep-db
+```
+
+仅执行下面的命令也能验证自动启动和关闭逻辑：
+
+```bash
+python3 SQL测试/performance_test/check_consistency.py --start-server
+```
+
+但默认的新建 `build/consistency_db` 不含TPC-C表，因此一致性内容检查会报告缺表。`check_consistency.py` 不会隐式装载数据，以免改变原有检查逻辑。
+
+### 7. 本地整套评测
+
+Quick：
+
+```bash
+CLIENTS=16 bash SQL测试/performance_test/run_local_evaluation.sh quick
+```
+
+提高到32客户端：
+
+```bash
+CLIENTS=32 bash SQL测试/performance_test/run_local_evaluation.sh quick
+```
+
+完整长测：
+
+```bash
+CLIENTS=32 bash SQL测试/performance_test/run_local_evaluation.sh full
+```
+
+`run_local_evaluation.sh` 会为 Smoke、两种隔离级别的 ACID 和 Benchmark 分别传入独立的 `--db-dir` 与 `--server-log`，避免测试库互相覆盖。
+
+## 四、测试结束后的进程检查
+
+正常结束和Python异常都会触发 `RMDBServerManager.stop()`。如果测试进程本身被外部强制终止，可手工检查8765端口：
+
+```bash
+ss -ltnp | grep ':8765 '
+```
+
+再核对进程命令行及数据库路径：
+
+```bash
+ps -ef | grep '[b]uild/bin/rmdb'
+```
+
+只终止确认属于当前 worktree 和当前测试数据库的进程，不要使用无范围的批量结束命令。
+
+## 五、结果判断
+
+不要只看脚本最后一行。至少检查：
+
+- 进程退出码是否为0；
+- 输出中是否存在 `FAIL`、`ERROR`、`AssertionError`；
+- server log是否包含崩溃或协议错误；
+- ACID report是否生成；
+- Benchmark JSON是否生成；
+- 测试结束后8765端口是否仍由本轮RMDB占用。
+
