@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include "defs.h"
 #include "record/rm_defs.h"
@@ -122,4 +123,5 @@ struct SetClause {
     TabCol rhs_col;
     char arithmetic_op = '\0';
     Value rhs;
+    std::vector<std::pair<char, Value>> arithmetic_terms;
 };

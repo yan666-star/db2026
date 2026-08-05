@@ -537,7 +537,7 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             SetClause set_clause;
             set_clause.lhs = {.tab_name = x->tab_name, .col_name = sv_set->col_name};
             set_clause.rhs_is_col = sv_set->rhs_is_col;
-            set_clause.is_arithmetic = sv_set->arithmetic_op != '\0';
+            set_clause.is_arithmetic = !sv_set->arithmetic_terms.empty();
             if (set_clause.rhs_is_col) {
                 set_clause.rhs_col = {
                     .tab_name = x->tab_name,
@@ -557,9 +557,22 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
                     throw IncompatibleTypeError(
                         coltype2str(col->type), "numeric");
                 }
-                set_clause.arithmetic_op = sv_set->arithmetic_op;
-            }
-            if (sv_set->val != nullptr) {
+                for (const auto &term : sv_set->arithmetic_terms) {
+                    Value operand = convert_sv_value(term.val);
+                    cast_val_to_col(operand, col->type);
+                    if (col->type != operand.type) {
+                        throw IncompatibleTypeError(
+                            coltype2str(col->type),
+                            coltype2str(operand.type));
+                    }
+                    operand.init_raw(col->len);
+                    set_clause.arithmetic_terms.emplace_back(
+                        term.op, std::move(operand));
+                }
+                set_clause.arithmetic_op =
+                    set_clause.arithmetic_terms.front().first;
+                set_clause.rhs = set_clause.arithmetic_terms.front().second;
+            } else if (sv_set->val != nullptr) {
                 set_clause.rhs = convert_sv_value(sv_set->val);
                 cast_val_to_col(set_clause.rhs, col->type);
                 if (col->type != set_clause.rhs.type) {

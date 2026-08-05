@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <memory>
 #include <ostream>
+#include <utility>
 
 enum JoinType {
     INNER_JOIN, LEFT_JOIN, RIGHT_JOIN, FULL_JOIN
@@ -206,12 +207,18 @@ struct HavingExpr : public TreeNode {
         : lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
 };
 
+struct ArithmeticTerm {
+    char op;
+    std::shared_ptr<Value> val;
+};
+
 struct SetClause : public TreeNode {
     std::string col_name;
     std::string rhs_col_name;
     bool rhs_is_col = false;
     char arithmetic_op = '\0';
     std::shared_ptr<Value> val;
+    std::vector<ArithmeticTerm> arithmetic_terms;
 
     SetClause(std::string col_name_, std::shared_ptr<Value> val_) :
             col_name(std::move(col_name_)), val(std::move(val_)) {}
@@ -227,7 +234,21 @@ struct SetClause : public TreeNode {
             rhs_col_name(std::move(rhs_col_name_)),
             rhs_is_col(true),
             arithmetic_op(arithmetic_op_),
-            val(std::move(val_)) {}
+            val(val_),
+            arithmetic_terms{{arithmetic_op_, std::move(val_)}} {}
+
+    SetClause(std::string col_name_, std::string rhs_col_name_,
+              std::vector<ArithmeticTerm> arithmetic_terms_) :
+            col_name(std::move(col_name_)),
+            rhs_col_name(std::move(rhs_col_name_)),
+            rhs_is_col(true),
+            arithmetic_op(arithmetic_terms_.empty()
+                              ? '\0'
+                              : arithmetic_terms_.front().op),
+            val(arithmetic_terms_.empty()
+                    ? nullptr
+                    : arithmetic_terms_.front().val),
+            arithmetic_terms(std::move(arithmetic_terms_)) {}
 };
 
 struct BinaryExpr : public TreeNode {
@@ -402,6 +423,7 @@ struct SemValue {
 
     std::shared_ptr<SetClause> sv_set_clause;
     std::vector<std::shared_ptr<SetClause>> sv_set_clauses;
+    std::vector<ArithmeticTerm> sv_arithmetic_terms;
 
     std::shared_ptr<BinaryExpr> sv_cond;
     std::vector<std::shared_ptr<BinaryExpr>> sv_conds;

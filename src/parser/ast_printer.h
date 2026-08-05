@@ -130,10 +130,12 @@ private:
             if (x->rhs_is_col) {
                 print_val(x->rhs_col_name, offset);
             }
-            if (x->arithmetic_op != '\0') {
-                print_val(x->arithmetic_op, offset);
-            }
-            if (x->val != nullptr) {
+            if (!x->arithmetic_terms.empty()) {
+                for (const auto &term : x->arithmetic_terms) {
+                    print_val(term.op, offset);
+                    print_node(term.val, offset);
+                }
+            } else if (x->val != nullptr) {
                 print_node(x->val, offset);
             }
         } else if (auto x = std::dynamic_pointer_cast<BinaryExpr>(node)) {

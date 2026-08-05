@@ -125,7 +125,20 @@ inline void bind_plan_parameters(
         }
         bind_condition_parameters(dml->conds_, parameters);
         for (auto &set_clause : dml->set_clauses_) {
-            if (set_clause.rhs.is_param) {
+            if (!set_clause.arithmetic_terms.empty()) {
+                for (auto &term : set_clause.arithmetic_terms) {
+                    auto &operand = term.second;
+                    if (!operand.is_param) {
+                        continue;
+                    }
+                    if (operand.param_index >= parameters.size()) {
+                        throw ParameterBindingError(
+                            "parameter ordinal is outside the bound vector");
+                    }
+                    bind_parameter_value(
+                        operand, parameters[operand.param_index]);
+                }
+            } else if (set_clause.rhs.is_param) {
                 if (set_clause.rhs.param_index >= parameters.size()) {
                     throw ParameterBindingError(
                         "parameter ordinal is outside the bound vector");

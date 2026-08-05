@@ -59,6 +59,7 @@ SET_TXN_SNAPSHOT SET_TXN_SERIALIZABLE
 %type <sv_having_exprs> having_clause opt_having_clause
 %type <sv_set_clause> setClause
 %type <sv_set_clauses> setClauses
+%type <sv_arithmetic_terms> arithmeticTerms
 %type <sv_cond> condition
 %type <sv_conds> whereClause optWhereClause
 %type <sv_orderbys> order_clause opt_order_clause
@@ -400,13 +401,9 @@ setClause:
     {
         $$ = std::make_shared<SetClause>($1, $3, '+', $4);
     }
-    |   colName '=' colName '+' value
+    |   colName '=' colName arithmeticTerms
     {
-        $$ = std::make_shared<SetClause>($1, $3, '+', $5);
-    }
-    |   colName '=' colName '-' value
-    {
-        $$ = std::make_shared<SetClause>($1, $3, '-', $5);
+        $$ = std::make_shared<SetClause>($1, $3, std::move($4));
     }
     |   colName '=' colName '*' value
     {
@@ -415,6 +412,27 @@ setClause:
     |   colName '=' colName '/' value
     {
         $$ = std::make_shared<SetClause>($1, $3, '/', $5);
+    }
+    ;
+
+arithmeticTerms:
+        '+' value
+    {
+        $$ = std::vector<ArithmeticTerm>{{'+', $2}};
+    }
+    |   '-' value
+    {
+        $$ = std::vector<ArithmeticTerm>{{'-', $2}};
+    }
+    |   arithmeticTerms '+' value
+    {
+        $$ = std::move($1);
+        $$.push_back({'+', $3});
+    }
+    |   arithmeticTerms '-' value
+    {
+        $$ = std::move($1);
+        $$.push_back({'-', $3});
     }
     ;
 

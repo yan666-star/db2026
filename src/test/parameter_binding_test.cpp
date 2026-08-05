@@ -105,6 +105,27 @@ void test_non_finite_float_bind_is_rejected() {
         "FLOAT32 NaN must be rejected");
 }
 
+void test_chained_update_binds_every_arithmetic_operand() {
+    SetClause clause;
+    clause.is_arithmetic = true;
+    clause.arithmetic_terms.emplace_back(
+        '-', parameter_value(TYPE_INT, TYPE_INT, 0, sizeof(int)));
+    clause.arithmetic_terms.emplace_back(
+        '+', parameter_value(TYPE_INT, TYPE_INT, 1, sizeof(int)));
+    auto plan = std::make_shared<DMLPlan>(
+        T_Update, nullptr, "fixture", std::vector<Value>{},
+        std::vector<Condition>{}, std::vector<SetClause>{clause});
+
+    rmdb::execution::bind_plan_parameters(
+        plan, {rmdb::execution::TypedValue::Int32(1),
+               rmdb::execution::TypedValue::Int32(91)});
+
+    expect_true(plan->set_clauses_[0].arithmetic_terms[0].second.int_val == 1,
+                "first chained UPDATE operand must be bound");
+    expect_true(plan->set_clauses_[0].arithmetic_terms[1].second.int_val == 91,
+                "second chained UPDATE operand must be bound");
+}
+
 }  // namespace
 
 int main() {
@@ -112,6 +133,7 @@ int main() {
     test_char_bind_uses_storage_width_without_sql_escaping();
     test_null_and_declared_type_mismatch_are_rejected();
     test_non_finite_float_bind_is_rejected();
+    test_chained_update_binds_every_arithmetic_operand();
 
     if (failures != 0) {
         std::cerr << failures << " parameter binding test(s) failed\n";

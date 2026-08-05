@@ -138,49 +138,71 @@ class UpdateExecutor : public AbstractExecutor {
 
                 auto rhs_col = tab_.get_col(set_clause.rhs_col.col_name);
                 if (col->type == TYPE_INT) {
-                    int current;
-                    memcpy(&current, rec->data + rhs_col->offset,
-                           sizeof(current));
-                    int operand = set_clause.rhs.int_val;
                     int result;
-                    switch (set_clause.arithmetic_op) {
-                        case '+': result = current + operand; break;
-                        case '-': result = current - operand; break;
-                        case '*': result = current * operand; break;
-                        case '/':
-                            if (operand == 0) {
-                                throw RMDBError("failure");
-                            }
-                            result = current / operand;
-                            break;
-                        default: throw RMDBError("failure");
+                    memcpy(&result, rec->data + rhs_col->offset,
+                           sizeof(result));
+                    auto apply_term = [&](char op, int operand) {
+                        switch (op) {
+                            case '+': result += operand; break;
+                            case '-': result -= operand; break;
+                            case '*': result *= operand; break;
+                            case '/':
+                                if (operand == 0) {
+                                    throw RMDBError("failure");
+                                }
+                                result /= operand;
+                                break;
+                            default: throw RMDBError("failure");
+                        }
+                    };
+                    if (set_clause.arithmetic_terms.empty()) {
+                        apply_term(set_clause.arithmetic_op,
+                                   set_clause.rhs.int_val);
+                    } else {
+                        for (const auto &term :
+                             set_clause.arithmetic_terms) {
+                            apply_term(term.first, term.second.int_val);
+                        }
                     }
                     memcpy(rec_new->data + col->offset, &result,
                            sizeof(result));
                 } else if (col->type == TYPE_FLOAT) {
-                    float current;
-                    memcpy(&current, rec->data + rhs_col->offset,
-                           sizeof(current));
-                    float operand = set_clause.rhs.float_val;
-                    if (!std::isfinite(current) ||
-                        !std::isfinite(operand)) {
+                    float result;
+                    memcpy(&result, rec->data + rhs_col->offset,
+                           sizeof(result));
+                    if (!std::isfinite(result)) {
                         throw RMDBError("FLOAT operand must be finite");
                     }
-                    float result;
-                    switch (set_clause.arithmetic_op) {
-                        case '+': result = current + operand; break;
-                        case '-': result = current - operand; break;
-                        case '*': result = current * operand; break;
-                        case '/':
-                            if (operand == 0.0f) {
-                                throw RMDBError("failure");
-                            }
-                            result = current / operand;
-                            break;
-                        default: throw RMDBError("failure");
-                    }
-                    if (!std::isfinite(result)) {
-                        throw RMDBError("FLOAT result must be finite");
+                    auto apply_term = [&](char op, float operand) {
+                        if (!std::isfinite(operand)) {
+                            throw RMDBError(
+                                "FLOAT operand must be finite");
+                        }
+                        switch (op) {
+                            case '+': result += operand; break;
+                            case '-': result -= operand; break;
+                            case '*': result *= operand; break;
+                            case '/':
+                                if (operand == 0.0f) {
+                                    throw RMDBError("failure");
+                                }
+                                result /= operand;
+                                break;
+                            default: throw RMDBError("failure");
+                        }
+                        if (!std::isfinite(result)) {
+                            throw RMDBError(
+                                "FLOAT result must be finite");
+                        }
+                    };
+                    if (set_clause.arithmetic_terms.empty()) {
+                        apply_term(set_clause.arithmetic_op,
+                                   set_clause.rhs.float_val);
+                    } else {
+                        for (const auto &term :
+                             set_clause.arithmetic_terms) {
+                            apply_term(term.first, term.second.float_val);
+                        }
                     }
                     memcpy(rec_new->data + col->offset, &result,
                            sizeof(result));
