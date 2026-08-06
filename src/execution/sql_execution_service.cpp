@@ -569,22 +569,7 @@ void SqlExecutionService::execute_load(
     try {
         transaction_manager_->enter_statement(transaction_id_);
         statement_entered = true;
-
-        // LOAD is a standalone initialization operation.  Do not inherit a
-        // SERIALIZABLE/SNAPSHOT setting left by an earlier functional check:
-        // retaining one MVCC version per loaded row makes the multi-million
-        // row load visible through an unnecessary version chain instead of
-        // the authoritative heap record.
-        context.txn_ = transaction_manager_->get_transaction(transaction_id_);
-        if (context.txn_ != nullptr &&
-            context.txn_->get_state() != TransactionState::COMMITTED &&
-            context.txn_->get_state() != TransactionState::ABORTED) {
-            throw RMDBError("LOAD cannot run inside an active transaction");
-        }
-        context.txn_ = transaction_manager_->begin(
-            nullptr, log_manager_, IsolationLevel::READ_COMMITTED);
-        transaction_id_ = context.txn_->get_transaction_id();
-        context.txn_->set_txn_mode(false);
+        ensure_transaction(&context, true);
 
         std::ifstream input(file_name);
         if (!input.is_open()) {

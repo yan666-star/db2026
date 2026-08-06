@@ -93,6 +93,24 @@ int main() {
     assert(second_operand != nullptr && second_operand->val == 91);
     yy_delete_buffer(chained_arithmetic_buf);
 
+    YY_BUFFER_STATE bang_not_equal_buf =
+        yy_scan_string("select count(*) from tb where a != 0;");
+    assert(yyparse() == 0);
+    auto select = std::dynamic_pointer_cast<ast::SelectStmt>(ast::parse_tree);
+    assert(select != nullptr);
+    assert(select->conds.size() == 1);
+    assert(select->conds[0]->op == ast::SV_OP_NE);
+    yy_delete_buffer(bang_not_equal_buf);
+
+    YY_BUFFER_STATE angle_not_equal_buf =
+        yy_scan_string("select count(*) from tb where a <> 0;");
+    assert(yyparse() == 0);
+    select = std::dynamic_pointer_cast<ast::SelectStmt>(ast::parse_tree);
+    assert(select != nullptr);
+    assert(select->conds.size() == 1);
+    assert(select->conds[0]->op == ast::SV_OP_NE);
+    yy_delete_buffer(angle_not_equal_buf);
+
     ast::parse_tree.reset();
     return 0;
 }
