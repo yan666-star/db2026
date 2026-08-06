@@ -189,13 +189,13 @@ void DiskManager::close_file(int fd) {
 
 /**
  * @description: 获得文件的大小
- * @return {int} 文件的大小
+ * @return {int64_t} 文件的大小
  * @param {string} &file_name 文件名
  */
-int DiskManager::get_file_size(const std::string &file_name) {
+int64_t DiskManager::get_file_size(const std::string &file_name) {
     struct stat stat_buf;
     int rc = stat(file_name.c_str(), &stat_buf);
-    return rc == 0 ? stat_buf.st_size : -1;
+    return rc == 0 ? static_cast<int64_t>(stat_buf.st_size) : -1;
 }
 
 /**
@@ -228,18 +228,18 @@ int DiskManager::get_file_fd(const std::string &file_name) {
  * @return {int} 返回读取的数据量，若为-1说明读取数据的起始位置超过了文件大小
  * @param {char} *log_data 读取内容到log_data中
  * @param {int} size 读取的数据量大小
- * @param {int} offset 读取的内容在文件中的位置
+ * @param {int64_t} offset 读取的内容在文件中的位置
  */
-int DiskManager::read_log(char *log_data, int size, int offset) {
+int DiskManager::read_log(char *log_data, int size, int64_t offset) {
     if (log_fd_ == -1) {
         log_fd_ = open_file(LOG_FILE_NAME);
     }
-    int file_size = get_file_size(LOG_FILE_NAME);
-    if (offset < 0 || offset > file_size) {
+    const int64_t file_size = get_file_size(LOG_FILE_NAME);
+    if (size < 0 || offset < 0 || file_size < 0 || offset > file_size) {
         return -1;
     }
 
-    size = std::min(size, file_size - offset);
+    size = static_cast<int>(std::min<int64_t>(size, file_size - offset));
     int read_bytes = 0;
     while (read_bytes < size) {
         ssize_t n = pread(
@@ -303,14 +303,15 @@ void DiskManager::sync_log() {
     }
 }
 
-void DiskManager::truncate_log(int size) {
+void DiskManager::truncate_log(int64_t size) {
     if (size < 0) {
         throw InternalError("Invalid log truncation size");
     }
     if (log_fd_ == -1) {
         log_fd_ = open_file(LOG_FILE_NAME);
     }
-    if (ftruncate(log_fd_, size) < 0 || fsync(log_fd_) < 0) {
+    if (ftruncate(log_fd_, static_cast<off_t>(size)) < 0 ||
+        fsync(log_fd_) < 0) {
         throw UnixError();
     }
     log_write_offset_ = size;

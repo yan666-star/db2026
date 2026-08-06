@@ -151,7 +151,16 @@ python3 SQL测试/performance_test/run_benchmark.py \
   --clients 16
 ```
 
-`--setup` 保持原有流程：创建表、装载TPC-C数据并创建索引，然后运行 benchmark。服务生命周期调整没有修改TPC-C workload、Wire请求或装载SQL。
+`--setup` 的数据流程保持不变：创建表、装载 TPC-C 数据并创建索引。全部索引创建成功后，
+脚本会额外执行一次 `CREATE STATIC_CHECKPOINT;`，再运行 benchmark。该检查点只为大 WAL
+提供恢复起点和索引基线，不能代替每个成功 COMMIT 在响应前完成 WAL 稳定化。
+服务生命周期和检查点调整没有修改 TPC-C workload、事务混合比例、Wire 请求或装载 SQL。
+
+正式排名连接首次发送 `PREPARE_SET` 时，服务端也会在不存在可用检查点的情况下建立同样的
+通用静态检查点。检查点不识别表名、SQL 模板或预期结果，并且仍须等待活动事务全部结束，
+按“写入并同步 checkpoint WAL → 刷新数据页和元数据 → 保存索引快照 → 持久化 restart offset”
+的顺序完成。崩溃重启仍在监听端口之前同步执行 analyze、redo 和 loser undo；不会以提前监听
+规避决赛要求的 `SHOW TABLES` 恢复就绪检查。
 
 ### 6. 一致性检查
 

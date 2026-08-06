@@ -384,7 +384,7 @@ def run_phase(args, duration, round_id, label):
 
 
 def setup_tpcc(args):
-    """Create TPC-C schema, load data, build indexes."""
+    """Create TPC-C schema, load data, build indexes and checkpoint."""
     for name in [
         "00_create_tpcc_tables.sql",
         "01_load_tpcc_tables.sql",
@@ -402,6 +402,19 @@ def setup_tpcc(args):
                         f"setup failed: {stmt}\n{response}")
         finally:
             client.close()
+
+    # The ranked PREPARE_SET path also establishes this generic baseline in
+    # the server. Issue it explicitly in the local harness so setup-only and
+    # crash-check runs exercise the same large-WAL recovery boundary.
+    client = WireSqlClient(args.host, args.port, args.timeout)
+    try:
+        client.connect()
+        response = client.execute("CREATE STATIC_CHECKPOINT;")
+        if response_failed(response):
+            raise AssertionError(
+                f"setup checkpoint failed:\n{response}")
+    finally:
+        client.close()
 
 
 def parse_args():

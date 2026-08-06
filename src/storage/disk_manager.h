@@ -59,20 +59,20 @@ class DiskManager {
 
     void close_file(int fd);
 
-    int get_file_size(const std::string &file_name);
+    int64_t get_file_size(const std::string &file_name);
 
     std::string get_file_name(int fd);
 
     int get_file_fd(const std::string &file_name);
 
     /*日志操作*/
-    int read_log(char *log_data, int size, int offset);
+    int read_log(char *log_data, int size, int64_t offset);
 
     void write_log(char *log_data, int size);
 
     void sync_log();
 
-    void truncate_log(int size);
+    void truncate_log(int64_t size);
 
     void sync_all_open_files();
 

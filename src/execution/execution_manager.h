@@ -10,9 +10,11 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,10 @@ class QlManager {
     SmManager *sm_manager_;
     TransactionManager *txn_mgr_;
     Planner *planner_;
+    std::mutex checkpoint_create_latch_;
+    std::atomic<bool> checkpoint_available_{false};
+
+    void create_static_checkpoint_internal(LogManager *log_manager);
 
    public:
     QlManager(SmManager *sm_manager, TransactionManager *txn_mgr, Planner *planner) 
@@ -45,6 +51,10 @@ class QlManager {
     void explain_analyze(std::unique_ptr<AbstractExecutor> executorTreeRoot,
                      std::shared_ptr<Plan> plan,
                      Context *context);
+
+    void create_static_checkpoint(LogManager *log_manager);
+    void ensure_prepared_checkpoint(LogManager *log_manager);
+    void set_checkpoint_available(bool available);
 
     void run_dml(std::unique_ptr<AbstractExecutor> exec);
 };

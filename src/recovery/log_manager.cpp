@@ -132,7 +132,7 @@ lsn_t LogManager::durable_lsn() {
 void LogManager::initialize_from_disk() {
     std::lock_guard<std::mutex> lock(latch_);
 
-    int file_size = disk_manager_->get_file_size(LOG_FILE_NAME);
+    const int64_t file_size = disk_manager_->get_file_size(LOG_FILE_NAME);
     if (file_size <= 0) {
         global_lsn_.store(0);
         written_lsn_ = INVALID_LSN;
@@ -140,24 +140,25 @@ void LogManager::initialize_from_disk() {
         return;
     }
 
-    int offset = 0;
+    int64_t offset = 0;
     if (disk_manager_->is_file(RESTART_FILE_NAME)) {
         int64_t candidate = disk_manager_->read_restart_offset();
-        if (candidate >= 0 && candidate + LOG_HEADER_SIZE <= file_size) {
+        if (candidate >= 0 &&
+            candidate <= file_size - LOG_HEADER_SIZE) {
             char checkpoint_header[LOG_HEADER_SIZE];
             if (disk_manager_->read_log(
                     checkpoint_header, LOG_HEADER_SIZE,
-                    static_cast<int>(candidate)) == LOG_HEADER_SIZE) {
+                    candidate) == LOG_HEADER_SIZE) {
                 uint32_t checkpoint_len;
                 memcpy(&checkpoint_len,
                        checkpoint_header + OFFSET_LOG_TOT_LEN,
                        sizeof(checkpoint_len));
                 if (checkpoint_len >= LOG_HEADER_SIZE &&
-                    candidate + checkpoint_len <= file_size) {
+                    candidate <= file_size - checkpoint_len) {
                     std::vector<char> checkpoint(checkpoint_len);
                     if (disk_manager_->read_log(
                             checkpoint.data(), checkpoint_len,
-                            static_cast<int>(candidate)) ==
+                            candidate) ==
                             static_cast<int>(checkpoint_len) &&
                         validate_serialized_log_record(
                             checkpoint.data(), checkpoint_len)) {
@@ -165,7 +166,7 @@ void LogManager::initialize_from_disk() {
                         memcpy(&type, checkpoint.data() + OFFSET_LOG_TYPE,
                                sizeof(type));
                         if (type == LogType::CHECKPOINT) {
-                            offset = static_cast<int>(candidate);
+                            offset = candidate;
                         }
                     }
                 }
@@ -173,7 +174,7 @@ void LogManager::initialize_from_disk() {
         }
     }
 
-    int valid_end = offset;
+    int64_t valid_end = offset;
     lsn_t max_lsn = INVALID_LSN;
     char header[LOG_HEADER_SIZE];
     while (offset + LOG_HEADER_SIZE <= file_size) {

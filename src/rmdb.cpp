@@ -189,6 +189,8 @@ void initialize_database(const std::string &database_name) {
         recovery_manager->get_next_txn_id());
     recovery_manager->redo();
     recovery_manager->undo();
+    ql_manager->set_checkpoint_available(
+        recovery_manager->has_usable_checkpoint());
 }
 
 }  // namespace

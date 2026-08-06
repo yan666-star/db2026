@@ -77,9 +77,73 @@ void QlManager::run_mutli_query(std::shared_ptr<Plan> plan, Context *context){
             }
             default:
                 throw InternalError("Unexpected field type");
-                break;  
+                break;
         }
+        // DDL is not represented in the data-change WAL.  Any previous
+        // checkpoint remains a valid data baseline, but its catalog/index
+        // snapshot is stale and must not suppress the next prepared-workload
+        // checkpoint.
+        checkpoint_available_.store(false, std::memory_order_release);
     }
+}
+
+void QlManager::create_static_checkpoint_internal(LogManager *log_manager) {
+    if (log_manager == nullptr) {
+        throw InternalError("Missing log manager for static checkpoint");
+    }
+
+    std::vector<txn_id_t> active_txns = txn_mgr_->begin_static_checkpoint();
+    const char *checkpoint_stage = "applying committed MVCC deletes";
+    try {
+        // MVCC delete commits only drop index entries; the row's physical
+        // slot survives until GC.  Apply those deletes before flushing the
+        // checkpoint baseline so deleted rows cannot reappear after restart.
+        txn_mgr_->apply_committed_deletes_for_checkpoint();
+        checkpoint_stage = "writing checkpoint log";
+        int64_t checkpoint_offset =
+            log_manager->write_checkpoint_record(active_txns);
+        checkpoint_stage = "flushing database pages";
+        sm_manager_->flush_for_checkpoint();
+        checkpoint_stage = "snapshotting indexes";
+        sm_manager_->create_index_snapshots(checkpoint_offset);
+        checkpoint_stage = "writing restart file";
+        log_manager->persist_restart_offset(checkpoint_offset);
+        checkpoint_stage = "cleaning old index snapshots";
+        sm_manager_->cleanup_index_snapshots(checkpoint_offset);
+    } catch (const std::exception &e) {
+        std::cerr << "Static checkpoint failed while " << checkpoint_stage
+                  << ": " << e.what() << std::endl;
+        txn_mgr_->end_static_checkpoint();
+        throw;
+    } catch (...) {
+        std::cerr << "Static checkpoint failed while " << checkpoint_stage
+                  << ": unknown error" << std::endl;
+        txn_mgr_->end_static_checkpoint();
+        throw;
+    }
+    txn_mgr_->end_static_checkpoint();
+}
+
+void QlManager::create_static_checkpoint(LogManager *log_manager) {
+    std::lock_guard<std::mutex> lock(checkpoint_create_latch_);
+    create_static_checkpoint_internal(log_manager);
+    checkpoint_available_.store(true, std::memory_order_release);
+}
+
+void QlManager::ensure_prepared_checkpoint(LogManager *log_manager) {
+    if (checkpoint_available_.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(checkpoint_create_latch_);
+    if (checkpoint_available_.load(std::memory_order_acquire)) {
+        return;
+    }
+    create_static_checkpoint_internal(log_manager);
+    checkpoint_available_.store(true, std::memory_order_release);
+}
+
+void QlManager::set_checkpoint_available(bool available) {
+    checkpoint_available_.store(available, std::memory_order_release);
 }
 
 // 执行help; show tables; desc table; begin; commit; abort;语句
@@ -122,37 +186,7 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
                     throw RMDBError("CREATE STATIC_CHECKPOINT cannot run inside a transaction");
                 }
 
-                std::vector<txn_id_t> active_txns = txn_mgr_->begin_static_checkpoint();
-                const char *checkpoint_stage = "applying committed MVCC deletes";
-                try {
-                    // MVCC delete commits only drop index entries; the row's
-                    // physical slot survives until GC. Apply those deletes
-                    // physically now, otherwise the flushed pages resurrect
-                    // deleted rows after a post-checkpoint crash (the delete
-                    // log records lie before the restart offset).
-                    txn_mgr_->apply_committed_deletes_for_checkpoint();
-                    checkpoint_stage = "writing checkpoint log";
-                    int64_t checkpoint_offset =
-                        context->log_mgr_->write_checkpoint_record(active_txns);
-                    checkpoint_stage = "flushing database pages";
-                    sm_manager_->flush_for_checkpoint();
-                    checkpoint_stage = "snapshotting indexes";
-                    sm_manager_->create_index_snapshots(checkpoint_offset);
-                    checkpoint_stage = "writing restart file";
-                    context->log_mgr_->persist_restart_offset(checkpoint_offset);
-                    sm_manager_->cleanup_index_snapshots(checkpoint_offset);
-                } catch (const std::exception &e) {
-                    std::cerr << "Static checkpoint failed while " << checkpoint_stage
-                              << ": " << e.what() << std::endl;
-                    txn_mgr_->end_static_checkpoint();
-                    throw;
-                } catch (...) {
-                    std::cerr << "Static checkpoint failed while " << checkpoint_stage
-                              << ": unknown error" << std::endl;
-                    txn_mgr_->end_static_checkpoint();
-                    throw;
-                }
-                txn_mgr_->end_static_checkpoint();
+                create_static_checkpoint(context->log_mgr_);
                 break;
             }
             case T_Transaction_begin:

@@ -47,6 +47,9 @@ public:
     }
     int64_t get_restart_offset() const { return restart_offset_; }
     txn_id_t get_next_txn_id() const { return next_txn_id_; }
+    bool has_usable_checkpoint() const {
+        return has_valid_checkpoint_ && indexes_from_checkpoint_;
+    }
 
 private:
     std::unique_ptr<LogRecord> read_log_record(int64_t offset,

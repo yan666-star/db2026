@@ -18,26 +18,27 @@ See the Mulan PSL v2 for more details. */
 
 std::unique_ptr<LogRecord> RecoveryManager::read_log_record(
     int64_t offset, int64_t log_end, int64_t *next_offset) const {
-    if (offset < 0 || offset + LOG_HEADER_SIZE > log_end) {
+    if (offset < 0 || offset > log_end ||
+        log_end - offset < LOG_HEADER_SIZE) {
         return nullptr;
     }
 
     char header[LOG_HEADER_SIZE];
     if (disk_manager_->read_log(
-            header, LOG_HEADER_SIZE, static_cast<int>(offset)) !=
+            header, LOG_HEADER_SIZE, offset) !=
         LOG_HEADER_SIZE) {
         return nullptr;
     }
 
     uint32_t total_len;
     memcpy(&total_len, header + OFFSET_LOG_TOT_LEN, sizeof(total_len));
-    if (total_len < LOG_HEADER_SIZE || offset + total_len > log_end) {
+    if (total_len < LOG_HEADER_SIZE || total_len > log_end - offset) {
         return nullptr;
     }
 
     std::vector<char> data(total_len);
     if (disk_manager_->read_log(
-            data.data(), total_len, static_cast<int>(offset)) !=
+            data.data(), total_len, offset) !=
         static_cast<int>(total_len)) {
         return nullptr;
     }
@@ -61,28 +62,29 @@ void RecoveryManager::analyze() {
     has_valid_checkpoint_ = false;
     indexes_from_checkpoint_ = false;
 
-    const int log_size = disk_manager_->get_file_size(LOG_FILE_NAME);
+    const int64_t log_size = disk_manager_->get_file_size(LOG_FILE_NAME);
     if (log_size <= 0) {
         restart_offset_ = 0;
         return;
     }
 
     restart_offset_ = 0;
-    int scan_start = 0;
+    int64_t scan_start = 0;
     if (disk_manager_->is_file(RESTART_FILE_NAME)) {
         int64_t candidate = disk_manager_->read_restart_offset();
-        if (candidate >= 0 && candidate + LOG_HEADER_SIZE <= log_size) {
+        if (candidate >= 0 &&
+            candidate <= log_size - LOG_HEADER_SIZE) {
             char header[LOG_HEADER_SIZE];
             if (disk_manager_->read_log(
-                    header, LOG_HEADER_SIZE, static_cast<int>(candidate)) ==
+                    header, LOG_HEADER_SIZE, candidate) ==
                 LOG_HEADER_SIZE) {
                 uint32_t total_len;
                 memcpy(&total_len, header + OFFSET_LOG_TOT_LEN, sizeof(total_len));
                 if (total_len >= LOG_HEADER_SIZE &&
-                    candidate + total_len <= log_size) {
+                    candidate <= log_size - total_len) {
                     std::vector<char> data(total_len);
                     if (disk_manager_->read_log(
-                            data.data(), total_len, static_cast<int>(candidate)) ==
+                            data.data(), total_len, candidate) ==
                         static_cast<int>(total_len)) {
                         auto checkpoint =
                             deserialize_log_record(data.data(), total_len);
@@ -93,7 +95,7 @@ void RecoveryManager::analyze() {
                             if (checkpoint_record->active_txns_.empty()) {
                                 has_valid_checkpoint_ = true;
                                 restart_offset_ = candidate;
-                                scan_start = static_cast<int>(candidate);
+                                scan_start = candidate;
                                 next_txn_id_ = std::max(
                                     next_txn_id_,
                                     static_cast<txn_id_t>(
@@ -106,7 +108,7 @@ void RecoveryManager::analyze() {
         }
     }
 
-    int offset = scan_start;
+    int64_t offset = scan_start;
     txn_id_t max_txn_id = INVALID_TXN_ID;
     while (offset < log_size) {
         int64_t next_offset = offset;
@@ -148,7 +150,7 @@ void RecoveryManager::analyze() {
                 break;
         }
 
-        offset = static_cast<int>(next_offset);
+        offset = next_offset;
     }
     valid_log_end_ = offset;
 

@@ -374,6 +374,11 @@ std::vector<OutputColumn> SqlExecutionService::infer_output_schema(
 
 wire::PreparedArtifact SqlExecutionService::prepare(
     const wire::PrepareEntry &entry) {
+    // PREPARE_SET is sent after schema creation/LOAD/index creation and
+    // before ranked transaction timing.  Establish one generic durable
+    // recovery baseline here when no usable checkpoint exists; this does not
+    // inspect statement text or alter the prepared workload.
+    ql_manager_->ensure_prepared_checkpoint(log_manager_);
     auto plan = build_plan(entry.sql, &entry.parameter_types);
     auto schema = infer_output_schema(plan);
     return {
