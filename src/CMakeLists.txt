@@ -78,5 +78,9 @@ add_executable(test_batch_visibility test/batch_visibility_test.cpp)
 target_link_libraries(test_batch_visibility transaction record system recovery pthread)
 add_test(NAME test_batch_visibility COMMAND test_batch_visibility)
 
+add_executable(test_record_buffer_reuse test/record_buffer_reuse_test.cpp)
+target_link_libraries(test_record_buffer_reuse record system transaction storage pthread)
+add_test(NAME test_record_buffer_reuse COMMAND test_record_buffer_reuse)
+
 add_executable(test_projection_alias test/projection_alias_test.cpp)
 add_test(NAME test_projection_alias COMMAND test_projection_alias)
