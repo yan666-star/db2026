@@ -23,6 +23,7 @@ See the Mulan PSL v2 for more details. */
 #include "bitmap.h"
 #include "common/context.h"
 #include "rm_defs.h"
+#include "rm_record_pool.h"
 
 class RmManager;
 
@@ -98,7 +99,9 @@ class RmFileHandle {
 
     std::unique_ptr<RmRecord> get_record(const Rid &rid, Context *context) const;
 
-    std::vector<std::unique_ptr<RmRecord>> batch_get_records(int page_no, std::vector<Rid> &rids, Context *context) const;
+    std::vector<std::unique_ptr<RmRecord>> batch_get_records(
+        int page_no, std::vector<Rid> &rids, Context *context,
+        RmRecordPool *record_pool = nullptr) const;
 
     std::vector<Rid> lookup_int_equal_records(int offset, int value);
 

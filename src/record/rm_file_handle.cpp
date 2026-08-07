@@ -61,8 +61,9 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
     return physical_record;
 }
 
-std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_no, std::vector<Rid> &rids,
-                                                                       Context *context) const {
+std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
+    int page_no, std::vector<Rid> &rids, Context *context,
+    RmRecordPool *record_pool) const {
     std::vector<std::unique_ptr<RmRecord>> records;
     if (rids.empty()) {
         return records;
@@ -76,6 +77,7 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
     RmPageHandle page_handle = fetch_page_handle(page_no);
     std::vector<Rid> valid_rids;
     valid_rids.reserve(rids.size());
+    records.reserve(rids.size());
     for (const auto &rid : rids) {
         if (rid.page_no != page_no) {
             continue;
@@ -83,7 +85,9 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
         if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
             continue;
         }
-        auto record = std::make_unique<RmRecord>(file_hdr_.record_size);
+        auto record = record_pool == nullptr
+                          ? std::make_unique<RmRecord>(file_hdr_.record_size)
+                          : record_pool->acquire(file_hdr_.record_size);
         memcpy(record->data, page_handle.get_slot(rid.slot_no), file_hdr_.record_size);
         records.push_back(std::move(record));
         valid_rids.push_back(rid);
