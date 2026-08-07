@@ -1,7 +1,10 @@
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -154,9 +157,22 @@ float run_float_sum(const std::vector<float> &values) {
     return result;
 }
 
+void require_seq_scan_owns_local_record_pool(const std::string &source_root) {
+    std::ifstream input(source_root + "/src/execution/executor_seq_scan.h");
+    std::string source((std::istreambuf_iterator<char>(input)),
+                       std::istreambuf_iterator<char>());
+    require(source.find("RmRecordPool record_pool_") != std::string::npos,
+            "SeqScanExecutor must own a local record pool");
+    require(source.find("context_, &record_pool_") != std::string::npos,
+            "page batch reads must consume the local record pool");
+    require(source.find("static RmRecordPool") == std::string::npos,
+            "record pools must not be global or shared across scans");
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    require(argc == 2, "aggregate test requires the source root");
     require(run_count(false) == 7, "COUNT(col) must retain every input row");
     require(run_count(true) == 3,
             "COUNT(DISTINCT col) must eliminate join fan-out duplicates");
@@ -164,6 +180,7 @@ int main() {
             "SUM(FLOAT) must accumulate binary32 inputs in binary64 and "
             "round once");
     require_aggregate_borrows_scan_records();
+    require_seq_scan_owns_local_record_pool(argv[1]);
     std::cout << "aggregate distinct tests passed\n";
     return 0;
 }

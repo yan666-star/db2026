@@ -72,7 +72,8 @@ add_test(NAME test_log_manager_durability COMMAND test_log_manager_durability)
 
 add_executable(test_aggregate_distinct test/aggregate_distinct_test.cpp)
 target_link_libraries(test_aggregate_distinct execution record system pthread)
-add_test(NAME test_aggregate_distinct COMMAND test_aggregate_distinct)
+add_test(NAME test_aggregate_distinct
+         COMMAND test_aggregate_distinct ${CMAKE_SOURCE_DIR})
 
 add_executable(test_batch_visibility test/batch_visibility_test.cpp)
 target_link_libraries(test_batch_visibility transaction record system recovery pthread)

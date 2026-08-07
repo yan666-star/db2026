@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include "record/rm_scan.h"
 #include "system/sm.h"
 #include "optimizer/plan.h"
+#include "record/rm_record_pool.h"
 class SeqScanExecutor : public AbstractExecutor {
    private:
     ScanPlan *scan_plan_ = nullptr;
@@ -38,6 +39,7 @@ class SeqScanExecutor : public AbstractExecutor {
     bool bulk_read_requested_ = false;
     bool bulk_table_locked_ = false;
     bool track_serializable_reads_ = true;
+    RmRecordPool record_pool_;
     std::vector<std::unique_ptr<RmRecord>> batch_recs_;
     std::vector<Rid> batch_rids_;
     size_t batch_index_ = 0;
@@ -45,6 +47,20 @@ class SeqScanExecutor : public AbstractExecutor {
     bool is_end_ = true;
 
     SmManager *sm_manager_;
+
+    void recycle_record(std::unique_ptr<RmRecord> &record) {
+        record_pool_.release(std::move(record));
+    }
+
+    void recycle_batch_records() {
+        recycle_record(current_rec_);
+        for (auto &record : batch_recs_) {
+            recycle_record(record);
+        }
+        batch_recs_.clear();
+        batch_rids_.clear();
+        batch_index_ = 0;
+    }
 
     bool lock_reads_for_committed_visibility() const {
         return context_ != nullptr && context_->txn_ != nullptr &&
@@ -141,9 +157,7 @@ class SeqScanExecutor : public AbstractExecutor {
     }
 
     bool load_next_page_batch() {
-        batch_recs_.clear();
-        batch_rids_.clear();
-        batch_index_ = 0;
+        recycle_batch_records();
 
         while (scan_ != nullptr && !scan_->is_end() && batch_recs_.empty()) {
             int batch_size = scan_->get_batch_num();
@@ -163,8 +177,8 @@ class SeqScanExecutor : public AbstractExecutor {
                 lock_records_for_committed_read(page_rids);
             std::vector<std::unique_ptr<RmRecord>> page_recs;
             try {
-                page_recs =
-                    fh_->batch_get_records(page_no, page_rids, context_);
+                page_recs = fh_->batch_get_records(
+                    page_no, page_rids, context_, &record_pool_);
             } catch (...) {
                 unlock_committed_read_records(locked);
                 throw;
@@ -188,6 +202,8 @@ class SeqScanExecutor : public AbstractExecutor {
                     }
                     batch_recs_.push_back(std::move(page_recs[i]));
                     batch_rids_.push_back(page_rids[i]);
+                } else {
+                    recycle_record(page_recs[i]);
                 }
             }
         }
@@ -240,10 +256,7 @@ class SeqScanExecutor : public AbstractExecutor {
     bool is_end() const override { return is_end_; }
 
     void beginTuple() override {
-        batch_recs_.clear();
-        batch_rids_.clear();
-        batch_index_ = 0;
-        current_rec_.reset();
+        recycle_batch_records();
         scan_.reset();
         bulk_table_locked_ = false;
         if (bulk_read_requested_ &&
@@ -291,6 +304,7 @@ class SeqScanExecutor : public AbstractExecutor {
         }
 
         if (batch_index_ + 1 < batch_recs_.size()) {
+            recycle_record(current_rec_);
             batch_index_++;
             current_rec_ = std::move(batch_recs_[batch_index_]);
             rid_ = batch_rids_[batch_index_];
