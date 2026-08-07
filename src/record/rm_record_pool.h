@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "record/rm_defs.h"
@@ -26,7 +27,7 @@ class RmRecordPool {
         }
     }
 
-    size_t available() const { return records_.size(); }
+    std::size_t available() const { return records_.size(); }
 
    private:
     std::vector<std::unique_ptr<RmRecord>> records_;
