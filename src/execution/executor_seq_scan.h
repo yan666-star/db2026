@@ -35,6 +35,8 @@ class SeqScanExecutor : public AbstractExecutor {
     size_t equality_pos_ = 0;
     bool using_equality_cache_ = false;
     bool enable_equality_cache_ = false;
+    bool bulk_read_requested_ = false;
+    bool bulk_table_locked_ = false;
     bool track_serializable_reads_ = true;
     std::vector<std::unique_ptr<RmRecord>> batch_recs_;
     std::vector<Rid> batch_rids_;
@@ -54,7 +56,7 @@ class SeqScanExecutor : public AbstractExecutor {
     std::vector<Rid> lock_records_for_committed_read(
         const std::vector<Rid> &rids) {
         std::vector<Rid> locked;
-        if (!lock_reads_for_committed_visibility()) {
+        if (!lock_reads_for_committed_visibility() || bulk_table_locked_) {
             return locked;
         }
         context_->lock_mgr_->lock_IS_on_table(context_->txn_, fh_->GetFd());
@@ -89,7 +91,7 @@ class SeqScanExecutor : public AbstractExecutor {
 
     std::unique_ptr<RmRecord> read_record_committed(const Rid &rid) {
         bool locked = false;
-        if (lock_reads_for_committed_visibility()) {
+        if (lock_reads_for_committed_visibility() && !bulk_table_locked_) {
             context_->lock_mgr_->lock_IS_on_table(context_->txn_, fh_->GetFd());
             context_->lock_mgr_->lock_shared_on_record(context_->txn_, rid, fh_->GetFd());
             locked = true;
@@ -196,7 +198,7 @@ class SeqScanExecutor : public AbstractExecutor {
             return false;
         }
 
-        current_rec_ = std::make_unique<RmRecord>(*batch_recs_[0]);
+        current_rec_ = std::move(batch_recs_[0]);
         rid_ = batch_rids_[0];
         is_end_ = false;
         return true;
@@ -243,6 +245,13 @@ class SeqScanExecutor : public AbstractExecutor {
         batch_index_ = 0;
         current_rec_.reset();
         scan_.reset();
+        bulk_table_locked_ = false;
+        if (bulk_read_requested_ &&
+            lock_reads_for_committed_visibility() &&
+            !context_->txn_->get_txn_mode()) {
+            bulk_table_locked_ = context_->lock_mgr_->lock_shared_on_table(
+                context_->txn_, fh_->GetFd());
+        }
 
         equality_rids_.clear();
         equality_pos_ = 0;
@@ -283,7 +292,7 @@ class SeqScanExecutor : public AbstractExecutor {
 
         if (batch_index_ + 1 < batch_recs_.size()) {
             batch_index_++;
-            current_rec_ = std::make_unique<RmRecord>(*batch_recs_[batch_index_]);
+            current_rec_ = std::move(batch_recs_[batch_index_]);
             rid_ = batch_rids_[batch_index_];
             return;
         }
@@ -297,6 +306,12 @@ class SeqScanExecutor : public AbstractExecutor {
         }
         return std::make_unique<RmRecord>(*current_rec_);
     }
+
+    const RmRecord *current_record() const override {
+        return current_rec_.get();
+    }
+
+    void enable_bulk_read() override { bulk_read_requested_ = true; }
 
     Rid &rid() override { return rid_; }
     ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }

@@ -74,5 +74,9 @@ add_executable(test_aggregate_distinct test/aggregate_distinct_test.cpp)
 target_link_libraries(test_aggregate_distinct execution record system pthread)
 add_test(NAME test_aggregate_distinct COMMAND test_aggregate_distinct)
 
+add_executable(test_batch_visibility test/batch_visibility_test.cpp)
+target_link_libraries(test_batch_visibility transaction record system recovery pthread)
+add_test(NAME test_batch_visibility COMMAND test_batch_visibility)
+
 add_executable(test_projection_alias test/projection_alias_test.cpp)
 add_test(NAME test_projection_alias COMMAND test_projection_alias)

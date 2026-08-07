@@ -44,6 +44,17 @@ class AbstractExecutor {
 
     virtual std::unique_ptr<RmRecord> Next() = 0;
 
+    // Executors that already own the current tuple may expose a borrowed
+    // view. Consumers must not retain it after nextTuple(). The default keeps
+    // compatibility with materializing executors and lets callers fall back
+    // to Next().
+    virtual const RmRecord *current_record() const { return nullptr; }
+
+    // A blocking consumer such as aggregation can request a coarse read path.
+    // Scan executors may use this hint only when it preserves transaction
+    // semantics; other executors can ignore it.
+    virtual void enable_bulk_read() {}
+
     virtual ColMeta get_col_offset(const TabCol &target) { return ColMeta();};
 
     virtual bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) {

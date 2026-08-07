@@ -38,9 +38,16 @@ public:
     void beginTuple() override { index_ = 0; }
     void nextTuple() override { ++index_; }
     bool is_end() const override { return index_ >= records_.size(); }
+    const RmRecord *current_record() const override {
+        return is_end() ? nullptr : records_.at(index_).get();
+    }
+    void enable_bulk_read() override { bulk_read_enabled_ = true; }
     std::unique_ptr<RmRecord> Next() override {
+        next_calls_++;
         return std::make_unique<RmRecord>(*records_.at(index_));
     }
+    size_t next_calls() const { return next_calls_; }
+    bool bulk_read_enabled() const { return bulk_read_enabled_; }
     Rid &rid() override { return rid_; }
     ColMeta get_col_offset(const TabCol &) override { return columns_.front(); }
 
@@ -48,6 +55,8 @@ private:
     std::vector<ColMeta> columns_;
     std::vector<std::unique_ptr<RmRecord>> records_;
     size_t index_{0};
+    size_t next_calls_{0};
+    bool bulk_read_enabled_{false};
     Rid rid_{};
 };
 
@@ -109,6 +118,27 @@ int run_count(bool distinct) {
     return result;
 }
 
+void require_aggregate_borrows_scan_records() {
+    SelectItem item;
+    item.is_agg = true;
+    item.agg.type = AGG_COUNT;
+    item.agg.col = {"stock", "s_i_id"};
+    AggregatePlan plan(nullptr, {item}, {}, {}, {}, -1);
+
+    auto input = std::make_unique<ValuesExecutor>(
+        std::vector<int>{1, 2, 3, 4});
+    ValuesExecutor *input_view = input.get();
+    AggregationExecutor executor(std::move(input), &plan);
+    executor.beginTuple();
+
+    require(input_view->next_calls() == 0,
+            "aggregation must borrow the scan's current record instead of "
+            "allocating an owned copy for every input row");
+    require(input_view->bulk_read_enabled(),
+            "aggregation must mark its input as a bulk read so an implicit "
+            "READ COMMITTED scan can use one table lock");
+}
+
 float run_float_sum(const std::vector<float> &values) {
     SelectItem item;
     item.is_agg = true;
@@ -133,6 +163,7 @@ int main() {
     require(run_float_sum({16777216.0F, 1.0F, 1.0F}) == 16777218.0F,
             "SUM(FLOAT) must accumulate binary32 inputs in binary64 and "
             "round once");
+    require_aggregate_borrows_scan_records();
     std::cout << "aggregate distinct tests passed\n";
     return 0;
 }

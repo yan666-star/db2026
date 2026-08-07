@@ -49,6 +49,8 @@ class IndexScanExecutor : public AbstractExecutor {
     std::vector<char> lookup_key_;
     bool has_lookup_key_ = false;
     bool track_serializable_reads_ = true;
+    bool bulk_read_requested_ = false;
+    bool bulk_table_locked_ = false;
 
     bool uses_mvcc() const {
         return context_ != nullptr && context_->txn_mgr_ != nullptr &&
@@ -65,7 +67,7 @@ class IndexScanExecutor : public AbstractExecutor {
     std::vector<Rid> lock_records_for_committed_read(
         const std::vector<Rid> &rids) {
         std::vector<Rid> locked;
-        if (!lock_reads_for_committed_visibility()) {
+        if (!lock_reads_for_committed_visibility() || bulk_table_locked_) {
             return locked;
         }
         context_->lock_mgr_->lock_IS_on_table(context_->txn_, fh_->GetFd());
@@ -147,6 +149,13 @@ class IndexScanExecutor : public AbstractExecutor {
         batch_rids_map_.clear();
         batch_index_ = 0;
         rid_ = {-1, -1};
+        bulk_table_locked_ = false;
+        if (bulk_read_requested_ &&
+            lock_reads_for_committed_visibility() &&
+            !context_->txn_->get_txn_mode()) {
+            bulk_table_locked_ = context_->lock_mgr_->lock_shared_on_table(
+                context_->txn_, fh_->GetFd());
+        }
 
         std::vector<std::string> full_index_col_names;
         for (const auto &col : index_meta_.cols) {
@@ -204,7 +213,7 @@ class IndexScanExecutor : public AbstractExecutor {
 
         if (batch_index_ + 1 < batch_recs_.size()) {
             batch_index_++;
-            rec_ = std::make_unique<RmRecord>(*batch_recs_[batch_index_]);
+            rec_ = std::move(batch_recs_[batch_index_]);
             rid_ = batch_rids_[batch_index_];
             return;
         }
@@ -218,6 +227,10 @@ class IndexScanExecutor : public AbstractExecutor {
         }
         return std::make_unique<RmRecord>(*rec_);
     }
+
+    const RmRecord *current_record() const override { return rec_.get(); }
+
+    void enable_bulk_read() override { bulk_read_requested_ = true; }
 
     bool is_end() const override { return is_end_ || (scan_ && scan_->is_end() && rid_.slot_no == -1); }
 
@@ -384,7 +397,7 @@ class IndexScanExecutor : public AbstractExecutor {
         }
 
         if (!batch_recs_.empty()) {
-            rec_ = std::make_unique<RmRecord>(*batch_recs_[0]);
+            rec_ = std::move(batch_recs_[0]);
             rid_ = batch_rids_[0];
         } else {
             is_end_ = true;

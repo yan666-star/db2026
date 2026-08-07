@@ -91,27 +91,8 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(int page_
     buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
 
     if (context != nullptr && context->txn_mgr_ != nullptr) {
-        std::vector<std::unique_ptr<RmRecord>> visible_records;
-        std::vector<Rid> visible_rids;
-        visible_records.reserve(records.size());
-        visible_rids.reserve(valid_rids.size());
-        for (size_t i = 0; i < records.size(); i++) {
-            std::unique_ptr<RmRecord> visible;
-            if (context->txn_mgr_->uses_mvcc(context->txn_)) {
-                visible = context->txn_mgr_->get_visible_record(
-                    context->txn_, mvcc_file_id_, valid_rids[i],
-                    records[i].get());
-            } else {
-                visible = context->txn_mgr_->get_latest_committed_record(
-                    mvcc_file_id_, valid_rids[i], records[i].get());
-            }
-            if (visible != nullptr) {
-                visible_records.push_back(std::move(visible));
-                visible_rids.push_back(valid_rids[i]);
-            }
-        }
-        records = std::move(visible_records);
-        valid_rids = std::move(visible_rids);
+        context->txn_mgr_->filter_visible_records(
+            context->txn_, mvcc_file_id_, valid_rids, records);
     }
 
     rids = std::move(valid_rids);

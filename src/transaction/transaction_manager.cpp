@@ -579,6 +579,17 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
     }
 
     auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+    auto owned_physical = physical_record == nullptr
+                              ? nullptr
+                              : std::make_unique<RmRecord>(*physical_record);
+    return resolve_snapshot_record_under_latch(
+        txn, file_id, rid, std::move(owned_physical));
+}
+
+std::unique_ptr<RmRecord>
+TransactionManager::resolve_snapshot_record_under_latch(
+    Transaction *txn, uint64_t file_id, const Rid &rid,
+    std::unique_ptr<RmRecord> physical_record) {
     RecordKey key{file_id, rid};
     auto history_it = record_versions_.find(key);
     if (history_it == record_versions_.end()) {
@@ -587,9 +598,7 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
         // version map: prepare_write() creates it from old_record on the first
         // UPDATE/DELETE. Avoiding read-only entries keeps large scans from
         // permanently growing record_versions_ and every later GC pass.
-        return physical_record == nullptr
-                   ? nullptr
-                   : std::make_unique<RmRecord>(*physical_record);
+        return physical_record;
     }
 
     const auto &history = history_it->second;
@@ -617,12 +626,21 @@ std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
 std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
     uint64_t file_id, const Rid &rid, const RmRecord *physical_record) {
     auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+    auto owned_physical = physical_record == nullptr
+                              ? nullptr
+                              : std::make_unique<RmRecord>(*physical_record);
+    return resolve_latest_record_under_latch(
+        file_id, rid, std::move(owned_physical));
+}
+
+std::unique_ptr<RmRecord>
+TransactionManager::resolve_latest_record_under_latch(
+    uint64_t file_id, const Rid &rid,
+    std::unique_ptr<RmRecord> physical_record) {
     RecordKey key{file_id, rid};
     auto history_it = record_versions_.find(key);
     if (history_it == record_versions_.end()) {
-        return physical_record == nullptr
-                   ? nullptr
-                   : std::make_unique<RmRecord>(*physical_record);
+        return physical_record;
     }
 
     const MvccVersion *latest = nullptr;
@@ -654,12 +672,40 @@ std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
     // would mask non-MVCC updates and cause lost updates once a row has an MVCC
     // history entry, so prefer the physical record.
     if (physical_record != nullptr) {
-        return std::make_unique<RmRecord>(*physical_record);
+        return physical_record;
     }
     if (latest == nullptr) {
         return nullptr;
     }
     return make_record(latest->data);
+}
+
+void TransactionManager::filter_visible_records(
+    Transaction *txn, uint64_t file_id, std::vector<Rid> &rids,
+    std::vector<std::unique_ptr<RmRecord>> &records) {
+    if (rids.size() != records.size()) {
+        throw InternalError("RID/record batch size mismatch");
+    }
+
+    auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+    const bool snapshot = uses_mvcc(txn);
+    size_t visible_count = 0;
+    for (size_t index = 0; index < records.size(); ++index) {
+        std::unique_ptr<RmRecord> visible =
+            snapshot
+                ? resolve_snapshot_record_under_latch(
+                      txn, file_id, rids[index], std::move(records[index]))
+                : resolve_latest_record_under_latch(
+                      file_id, rids[index], std::move(records[index]));
+        if (visible == nullptr) {
+            continue;
+        }
+        rids[visible_count] = rids[index];
+        records[visible_count] = std::move(visible);
+        visible_count++;
+    }
+    rids.resize(visible_count);
+    records.resize(visible_count);
 }
 
 bool TransactionManager::predicate_matches(

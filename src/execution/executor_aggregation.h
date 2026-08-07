@@ -238,22 +238,31 @@ class AggregationExecutor : public AbstractExecutor {
         st.count++;
         st.has_value = true;
         if (v.first == TYPE_INT) {
-            st.sum += static_cast<double>(*(int *)v.second.data());
+            if (agg.type == AGG_SUM || agg.type == AGG_AVG) {
+                st.sum += static_cast<double>(*(int *)v.second.data());
+            }
         } else if (v.first == TYPE_FLOAT) {
             float input = 0.0F;
             std::memcpy(&input, v.second.data(), sizeof(input));
             if (!std::isfinite(input)) {
-                throw RMDBError("SUM(FLOAT) input must be finite");
+                throw RMDBError("FLOAT aggregate input must be finite");
             }
-            st.sum += static_cast<double>(input);
-            if (!std::isfinite(st.sum)) {
-                throw RMDBError("SUM(FLOAT) accumulator must be finite");
+            if (agg.type == AGG_SUM || agg.type == AGG_AVG) {
+                st.sum += static_cast<double>(input);
+                if (!std::isfinite(st.sum)) {
+                    throw RMDBError(
+                        "SUM(FLOAT) accumulator must be finite");
+                }
             }
         }
-        if (st.min_bin.empty() || cmp_bin(v.first, v.second, v.first, st.min_bin) < 0) {
+        if (agg.type == AGG_MIN &&
+            (st.min_bin.empty() ||
+             cmp_bin(v.first, v.second, v.first, st.min_bin) < 0)) {
             st.min_bin = v.second;
         }
-        if (st.max_bin.empty() || cmp_bin(v.first, v.second, v.first, st.max_bin) > 0) {
+        if (agg.type == AGG_MAX &&
+            (st.max_bin.empty() ||
+             cmp_bin(v.first, v.second, v.first, st.max_bin) > 0)) {
             st.max_bin = v.second;
         }
     }
@@ -283,6 +292,7 @@ class AggregationExecutor : public AbstractExecutor {
 
    public:
     AggregationExecutor(std::unique_ptr<AbstractExecutor> prev, AggregatePlan *plan) : prev_(std::move(prev)), plan_(plan) {
+        prev_->enable_bulk_read();
         in_cols_ = prev_->cols();
         int off = 0;
         for (auto &item : plan_->select_items_) {
@@ -346,19 +356,47 @@ class AggregationExecutor : public AbstractExecutor {
             // including the empty-input case. Avoid constructing an empty
             // group-key vector/string and probing an unordered_map per row.
             GroupState scalar_group;
+            std::vector<std::pair<std::string, AggExpr>> scalar_aggs;
+            std::vector<AggState> scalar_states;
+            scalar_aggs.reserve(required_aggs.size());
+            scalar_states.resize(required_aggs.size());
+            for (const auto &entry : required_aggs) {
+                scalar_aggs.push_back(entry);
+            }
             while (!prev_->is_end()) {
-                auto rec = prev_->Next();
-                for (auto &kv : required_aggs) {
-                    update_agg(kv.second,
-                               scalar_group.agg_states[kv.first], *rec);
+                std::unique_ptr<RmRecord> owned_record;
+                const RmRecord *rec = prev_->current_record();
+                if (rec == nullptr) {
+                    owned_record = prev_->Next();
+                    rec = owned_record.get();
+                }
+                if (rec == nullptr) {
+                    throw InternalError("Input executor returned no record");
+                }
+                for (size_t index = 0; index < scalar_aggs.size(); ++index) {
+                    update_agg(
+                        scalar_aggs[index].second, scalar_states[index], *rec);
                 }
                 prev_->nextTuple();
+            }
+            for (size_t index = 0; index < scalar_aggs.size(); ++index) {
+                scalar_group.agg_states.emplace(
+                    std::move(scalar_aggs[index].first),
+                    std::move(scalar_states[index]));
             }
             groups.emplace("", std::move(scalar_group));
             group_order.push_back("");
         } else {
             while (!prev_->is_end()) {
-                auto rec = prev_->Next();
+                std::unique_ptr<RmRecord> owned_record;
+                const RmRecord *rec = prev_->current_record();
+                if (rec == nullptr) {
+                    owned_record = prev_->Next();
+                    rec = owned_record.get();
+                }
+                if (rec == nullptr) {
+                    throw InternalError("Input executor returned no record");
+                }
                 std::vector<std::pair<ColType, std::string>> gvals;
                 for (auto &g : plan_->group_bys_) {
                     gvals.push_back(read_col_bin(*rec, g));

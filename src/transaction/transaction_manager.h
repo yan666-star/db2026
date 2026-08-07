@@ -107,6 +107,13 @@ public:
     std::unique_ptr<RmRecord> get_latest_committed_record(
         uint64_t file_id, const Rid &rid, const RmRecord *physical_record);
 
+    // Resolve one storage-page batch under a single MVCC latch acquisition.
+    // The RID and record vectors remain aligned; invisible records are
+    // removed. Unversioned physical records are moved, not copied.
+    void filter_visible_records(
+        Transaction *txn, uint64_t file_id, std::vector<Rid> &rids,
+        std::vector<std::unique_ptr<RmRecord>> &records);
+
     void register_table_read(Transaction *txn, uint64_t file_id,
                              const std::vector<Condition> &conditions,
                              const std::vector<ColMeta> &columns);
@@ -299,6 +306,12 @@ private:
                               const MvccTxnState &right) const;
     bool mvcc_txn_aborted(txn_id_t txn_id) const;
     void mark_mvcc_txn_aborted(txn_id_t txn_id);
+    std::unique_ptr<RmRecord> resolve_snapshot_record_under_latch(
+        Transaction *txn, uint64_t file_id, const Rid &rid,
+        std::unique_ptr<RmRecord> physical_record);
+    std::unique_ptr<RmRecord> resolve_latest_record_under_latch(
+        uint64_t file_id, const Rid &rid,
+        std::unique_ptr<RmRecord> physical_record);
     void check_physical_before(Transaction *txn, const std::string &table_name,
                                const Rid &rid, const RmRecord *before_record);
     void validate_pending_physical_before(Transaction *txn);
