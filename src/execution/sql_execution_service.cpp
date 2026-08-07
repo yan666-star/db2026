@@ -524,7 +524,19 @@ void SqlExecutionService::execute_plan(
 
         if (context.txn_ != nullptr &&
             !context.txn_->get_txn_mode()) {
-            transaction_manager_->commit(context.txn_, log_manager_);
+            // An implicit SELECT has no COMMIT command/ACK and no recovery
+            // state to make durable.  Still run the complete transaction
+            // commit path (MVCC/SSI validation, lock release and lifecycle
+            // cleanup), but do not append and synchronously flush a WAL
+            // COMMIT record for every read-only operation in EXEC_BATCH.
+            // Explicit COMMIT and every mutating statement keep passing the
+            // real log manager, so their audited WAL-before-ACK contract is
+            // unchanged.
+            const bool implicit_read_only =
+                plan != nullptr && plan->tag == T_select &&
+                context.txn_->get_write_set()->empty();
+            transaction_manager_->commit(
+                context.txn_, implicit_read_only ? nullptr : log_manager_);
             transaction_manager_->release_transaction(context.txn_);
             context.txn_ = nullptr;
             transaction_id_ = INVALID_TXN_ID;
@@ -591,6 +603,18 @@ void SqlExecutionService::execute_load(
         const auto csv_column_mapping =
             build_csv_column_mapping(parse_csv_line(line), table);
 
+        // LOAD stays one atomic transaction.  For the normal non-MVCC load
+        // path, keep all inserted RIDs in one compact undo record instead of
+        // allocating a WriteRecord and table-name string for every CSV row.
+        // Per-row WAL, index maintenance, failure rollback, and the final
+        // durable COMMIT remain unchanged.
+        WriteRecord *bulk_insert_record = nullptr;
+        if (context.txn_ != nullptr && !context.txn_->uses_mvcc()) {
+            bulk_insert_record =
+                new WriteRecord(WType::BULK_INSERT_TUPLES, table_name);
+            context.txn_->append_write_record(bulk_insert_record);
+        }
+
         while (std::getline(input, line)) {
             if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
@@ -609,7 +633,8 @@ void SqlExecutionService::execute_load(
                     fields[csv_column_mapping[index]], table.cols[index]));
             }
             InsertExecutor executor(
-                sm_manager_, table_name, std::move(values), &context);
+                sm_manager_, table_name, std::move(values), &context,
+                bulk_insert_record);
             executor.Next();
         }
 

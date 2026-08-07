@@ -26,9 +26,12 @@ class InsertExecutor : public AbstractExecutor {
     std::string tab_name_;
     Rid rid_;
     SmManager *sm_manager_;
+    WriteRecord *bulk_insert_record_ = nullptr;
 
    public:
-    InsertExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<Value> values, Context *context) {
+    InsertExecutor(SmManager *sm_manager, const std::string &tab_name,
+                   std::vector<Value> values, Context *context,
+                   WriteRecord *bulk_insert_record = nullptr) {
         sm_manager_ = sm_manager;
         tab_ = sm_manager_->db_.get_table(tab_name);
         values_ = std::move(values);
@@ -38,6 +41,13 @@ class InsertExecutor : public AbstractExecutor {
         }
         fh_ = sm_manager_->fhs_.at(tab_name).get();
         context_ = context;
+        bulk_insert_record_ = bulk_insert_record;
+        if (bulk_insert_record_ != nullptr &&
+            (bulk_insert_record_->GetWriteType() !=
+                 WType::BULK_INSERT_TUPLES ||
+             bulk_insert_record_->GetTableName() != tab_name_)) {
+            throw InternalError("Invalid bulk insert undo record");
+        }
     };
 
     std::unique_ptr<RmRecord> Next() override {
@@ -112,8 +122,12 @@ class InsertExecutor : public AbstractExecutor {
 
         rid_ = fh_->insert_record(rec.data, context_, tab_name_);
         if (context_->txn_ != nullptr) {
-            context_->txn_->append_write_record(
-                new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
+            if (bulk_insert_record_ != nullptr) {
+                bulk_insert_record_->AppendRid(rid_);
+            } else {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
+            }
         }
 
         for (size_t i = 0; i < tab_.indexes.size(); ++i) {

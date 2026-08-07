@@ -81,7 +81,12 @@ void LogManager::flush_log_to_disk_locked(bool force_sync) {
         log_buffer_.offset_ = 0;
     }
 
-    if (force_sync) {
+    // A dirty-page eviction may ask for WAL durability many times after the
+    // same WAL prefix has already been synced.  Repeating fsync without a new
+    // WAL write cannot advance the durable boundary and is especially costly
+    // during indexed LOAD.  Only sync when there is a written-but-not-yet-
+    // durable LSN; COMMIT still waits for durable_lsn_ to cover its own LSN.
+    if (force_sync && durable_lsn_ < written_lsn_) {
         disk_manager_->sync_log();
         durable_lsn_ = written_lsn_;
     }

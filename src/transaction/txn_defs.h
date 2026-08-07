@@ -11,6 +11,8 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <atomic>
+#include <string>
+#include <vector>
 
 #include "common/config.h"
 #include "defs.h"
@@ -28,8 +30,13 @@ enum class IsolationLevel {
     SERIALIZABLE
 };
 
-/* 事务写操作类型，包括插入、删除、更新三种操作 */
-enum class WType { INSERT_TUPLE = 0, DELETE_TUPLE, UPDATE_TUPLE};
+/* 事务写操作类型，包括插入、删除、更新和批量插入撤销记录 */
+enum class WType {
+    INSERT_TUPLE = 0,
+    DELETE_TUPLE,
+    UPDATE_TUPLE,
+    BULK_INSERT_TUPLES
+};
 
 /**
  * @brief 事务的写操作记录，用于事务的回滚
@@ -54,6 +61,10 @@ class WriteRecord {
     WriteRecord(WType wtype, const std::string &tab_name, const Rid &rid, const RmRecord &record)
         : wtype_(wtype), tab_name_(tab_name), rid_(rid), record_(record) {}
 
+    // Constructor for one atomic LOAD statement's compact insert undo set.
+    WriteRecord(WType wtype, const std::string &tab_name)
+        : wtype_(wtype), tab_name_(tab_name) {}
+
     ~WriteRecord() = default;
 
     inline RmRecord &GetRecord() { return record_; }
@@ -64,11 +75,16 @@ class WriteRecord {
 
     inline std::string &GetTableName() { return tab_name_; }
 
+    inline void AppendRid(const Rid &rid) { rids_.push_back(rid); }
+
+    inline std::vector<Rid> &GetRids() { return rids_; }
+
    private:
     WType wtype_;
     std::string tab_name_;
     Rid rid_;
     RmRecord record_;
+    std::vector<Rid> rids_;
 };
 
 /* 多粒度锁，加锁对象的类型，包括记录和表 */

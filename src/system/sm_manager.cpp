@@ -550,6 +550,14 @@ void SmManager::rollback(WriteRecord* record, Context* context) {
         case WType::UPDATE_TUPLE:
             rollback_update(record->GetTableName(), record->GetRid(), record->GetRecord(), context);
             break;
+        case WType::BULK_INSERT_TUPLES: {
+            auto &rids = record->GetRids();
+            for (auto it = rids.rbegin(); it != rids.rend(); ++it) {
+                Rid rid = *it;
+                rollback_insert(record->GetTableName(), rid, context);
+            }
+            break;
+        }
         default:
             throw RMDBError("Invalid rollback type");
     }

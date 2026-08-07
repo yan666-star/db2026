@@ -688,6 +688,14 @@ void TransactionManager::filter_visible_records(
     }
 
     auto lock = rmdb_perf::lock_mvcc(mvcc_latch_);
+    if (record_versions_.empty()) {
+        // Recovery has already materialized the committed heap state and the
+        // in-memory version directory starts empty after restart.  Every
+        // occupied physical record is therefore visible, so avoid one failed
+        // hash lookup per row during post-crash aggregate/partition scans.
+        // The first MVCC version automatically restores the normal path.
+        return;
+    }
     const bool snapshot = uses_mvcc(txn);
     size_t visible_count = 0;
     for (size_t index = 0; index < records.size(); ++index) {
