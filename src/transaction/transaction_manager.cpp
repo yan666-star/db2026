@@ -1616,19 +1616,18 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     };
     std::vector<PhysicalOp> ops;
 
-    // ── Phase 1: version publication ──────────────────────────────────
     // commit_apply_latch_ serializes commit-ts assignment so two commits
     // touching the same RID land in timestamp order.  txn_state + affected
     // shards are locked underneath for conflict checking and version update.
-    // Physical record/index I/O is deferred to Phase 2 so commit application
-    // is no longer globally serialized on I/O.
+    // Physical application still runs under commit_apply_latch_ to avoid
+    // overwhelming the I/O subsystem with concurrent Phase-2 writes.
+    auto apply_lock =
+        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
-        auto apply_lock =
-            rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
-
         std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
 
-        // Collect and lock all shards touched by this transaction.
+        // Collect and lock all shards touched by this transaction (sorted
+        // to avoid AB-BA deadlocks with other lockers).
         std::set<size_t> sorted_shards;
         {
             auto state_it = mvcc_txns_.find(txn->get_transaction_id());
@@ -1644,7 +1643,6 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
         }
 
         check_commit_conflict_under_latch(txn);
-
         timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
         txn->set_commit_ts(commit_ts);
         auto state_it = mvcc_txns_.find(txn->get_transaction_id());
@@ -1709,17 +1707,13 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                 own_pending->commit_ts = commit_ts;
             }
         }
-        // shard locks → txn lock → apply lock released in reverse order
     }
     mvcc_cv_.notify_all();
-    // commit_apply_latch_ is now free — other transactions can publish their
-    // versions while this one applies physical changes.
 
-    // ── Phase 2: physical application ──────────────────────────────────
-    // No global locks are held.  Per-table insert_latch_ and per-index
-    // root_latch_ protect individual tables/indices.  check_physical_before
-    // re-verifies each row because another commit's Phase 2 may have modified
-    // the physical record between our Phase 1 and now.
+    // Physical application — still serialized under commit_apply_latch_.
+    // Per-table / per-index latches provide intra-table concurrency, but
+    // only one transaction applies physical changes at a time so the buffer
+    // pool and disk are not overwhelmed.
     for (size_t op_index = 0; op_index < ops.size(); ++op_index) {
         auto &op = ops[op_index];
         RmRecord before(static_cast<int>(op.before.size()),
@@ -1741,9 +1735,8 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                                txn);
             }
         } catch (const TransactionAbortException &) {
-            // Phase 2 failure: mark the transaction aborted (txn_state is NOT
-            // held here so use the public version), then roll back already-
-            // applied physical operations in reverse order.
+            // txn_state is NOT held here — use the public version that
+            // acquires the latch internally.
             mark_mvcc_txn_aborted(txn->get_transaction_id());
             Context rollback_context(lock_manager_, nullptr, txn);
             for (size_t rollback_index = op_index; rollback_index > 0;
@@ -1874,30 +1867,32 @@ timestamp_t TransactionManager::GetWatermark() {
 }
 
 void TransactionManager::GarbageCollection() {
-    // Same lock ordering as commit_mvcc.  GC only compacts in-memory version
-    // metadata; committed DELETEs have already been applied to the heap before
-    // commit_mvcc() returns.
+    // Lock ordering: commit_apply_latch_ → txn_state_latch_ →
+    //   mvcc_shards_[*].latch.
+    //
+    // GC only compacts in-memory version metadata; committed DELETEs have
+    // already been applied to the heap before commit_mvcc() returns.
     auto apply_lock =
         rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
+
+    // Hold txn_state for the entire shard scan so that unique_conflict_keys
+    // cleanup does not invert the lock order (shard → txn_state would
+    // deadlock against prepare_write's txn_state → shard).
+    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
 
     // The watermark is the smallest read timestamp of any in-flight MVCC
     // transaction. Any committed version older than the watermark can never
     // be observed again, so it is safe to reclaim.
-    timestamp_t watermark;
-    {
-        std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
-        watermark = last_commit_ts_.load();
-        for (const auto &[txn_id, state] : mvcc_txns_) {
-            (void)txn_id;
-            if (state.aborted || state.commit_ts != INVALID_TS) {
-                continue;
-            }
-            watermark = std::min(watermark, state.start_ts);
+    timestamp_t watermark = last_commit_ts_.load();
+    for (const auto &[txn_id, state] : mvcc_txns_) {
+        (void)txn_id;
+        if (state.aborted || state.commit_ts != INVALID_TS) {
+            continue;
         }
+        watermark = std::min(watermark, state.start_ts);
     }
 
-    // Process each shard independently — no need to hold more than one shard
-    // latch at a time.
+    // Process each shard independently — one shard latch at a time.
     for (size_t shard_idx = 0; shard_idx < kMvccShardCount; ++shard_idx) {
         std::lock_guard<std::mutex> shard_lock(mvcc_shards_[shard_idx].latch);
         auto &shard = mvcc_shards_[shard_idx];
@@ -1940,24 +1935,16 @@ void TransactionManager::GarbageCollection() {
                     only.commit_ts <= watermark) {
                     // Once a version is settled below the watermark it can no
                     // longer conflict with a future unique-key write.
-                    {
-                        // unique_conflict_keys_by_file_ is under txn_state;
-                        // it's safe to read/write here because we are the only
-                        // writer of this candidate set while commit_apply is
-                        // held, and new candidates are only added under shard
-                        // + txn_state during prepare_write.
-                        std::lock_guard<std::mutex> txn_lock(
-                            txn_state_latch_);
-                        auto candidate_it =
-                            mvcc_unique_conflict_keys_by_file_.find(
-                                it->first.file_id);
-                        if (candidate_it !=
-                            mvcc_unique_conflict_keys_by_file_.end()) {
-                            candidate_it->second.erase(it->first);
-                            if (candidate_it->second.empty()) {
-                                mvcc_unique_conflict_keys_by_file_.erase(
-                                    candidate_it);
-                            }
+                    // (txn_state_latch_ is already held — see above.)
+                    auto candidate_it =
+                        mvcc_unique_conflict_keys_by_file_.find(
+                            it->first.file_id);
+                    if (candidate_it !=
+                        mvcc_unique_conflict_keys_by_file_.end()) {
+                        candidate_it->second.erase(it->first);
+                        if (candidate_it->second.empty()) {
+                            mvcc_unique_conflict_keys_by_file_.erase(
+                                candidate_it);
                         }
                     }
                     if (only.deleted) {
@@ -1984,19 +1971,16 @@ void TransactionManager::GarbageCollection() {
     }
 
     // Prune bookkeeping for transactions that can no longer participate in
-    // any conflict check.
-    {
-        std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
-        for (auto it = mvcc_txns_.begin(); it != mvcc_txns_.end();) {
-            const auto &state = it->second;
-            bool committed_settled =
-                state.commit_ts != INVALID_TS && state.commit_ts <= watermark;
-            bool aborted_settled = state.aborted && state.cleanup_done;
-            if (committed_settled || aborted_settled) {
-                it = mvcc_txns_.erase(it);
-            } else {
-                ++it;
-            }
+    // any conflict check.  (txn_state_latch_ is still held.)
+    for (auto it = mvcc_txns_.begin(); it != mvcc_txns_.end();) {
+        const auto &state = it->second;
+        bool committed_settled =
+            state.commit_ts != INVALID_TS && state.commit_ts <= watermark;
+        bool aborted_settled = state.aborted && state.cleanup_done;
+        if (committed_settled || aborted_settled) {
+            it = mvcc_txns_.erase(it);
+        } else {
+            ++it;
         }
     }
 }
