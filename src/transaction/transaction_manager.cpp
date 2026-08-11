@@ -239,7 +239,7 @@ static void clear_write_set(Transaction *txn) {
     }
 }
 
-std::unique_lock<std::mutex>
+std::shared_lock<std::shared_mutex>
 TransactionManager::acquire_commit_apply_latch() {
     return rmdb_perf::lock_commit_apply_read(commit_apply_latch_);
 }
@@ -571,21 +571,16 @@ std::unique_ptr<RmRecord> make_record(const std::vector<char> &data) {
 
 std::unique_ptr<RmRecord> TransactionManager::get_visible_record(
     Transaction *txn, uint64_t file_id, const Rid &rid,
-    const RmRecord *physical_record) {
+    std::unique_ptr<RmRecord> physical_record) {
     if (!uses_mvcc(txn)) {
-        return physical_record == nullptr
-                   ? nullptr
-                   : std::make_unique<RmRecord>(*physical_record);
+        return physical_record;
     }
 
-    auto owned_physical = physical_record == nullptr
-                              ? nullptr
-                              : std::make_unique<RmRecord>(*physical_record);
     RecordKey key{file_id, rid};
     auto &shard = mvcc_shards_[get_shard_idx(key)];
     auto shard_lock = rmdb_perf::lock_mvcc(shard.latch);
     return resolve_snapshot_record_under_latch(
-        txn, file_id, rid, std::move(owned_physical));
+        txn, file_id, rid, std::move(physical_record));
 }
 
 std::unique_ptr<RmRecord>
@@ -623,15 +618,13 @@ TransactionManager::resolve_snapshot_record_under_latch(
 }
 
 std::unique_ptr<RmRecord> TransactionManager::get_latest_committed_record(
-    uint64_t file_id, const Rid &rid, const RmRecord *physical_record) {
+    uint64_t file_id, const Rid &rid,
+    std::unique_ptr<RmRecord> physical_record) {
     RecordKey key{file_id, rid};
     auto &shard = mvcc_shards_[get_shard_idx(key)];
     auto shard_lock = rmdb_perf::lock_mvcc(shard.latch);
-    auto owned_physical = physical_record == nullptr
-                              ? nullptr
-                              : std::make_unique<RmRecord>(*physical_record);
     return resolve_latest_record_under_latch(
-        file_id, rid, std::move(owned_physical));
+        file_id, rid, std::move(physical_record));
 }
 
 std::unique_ptr<RmRecord>

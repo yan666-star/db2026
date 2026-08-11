@@ -104,10 +104,11 @@ public:
 
     std::unique_ptr<RmRecord> get_visible_record(
         Transaction *txn, uint64_t file_id, const Rid &rid,
-        const RmRecord *physical_record);
+        std::unique_ptr<RmRecord> physical_record);
 
     std::unique_ptr<RmRecord> get_latest_committed_record(
-        uint64_t file_id, const Rid &rid, const RmRecord *physical_record);
+        uint64_t file_id, const Rid &rid,
+        std::unique_ptr<RmRecord> physical_record);
 
     // Resolve one storage-page batch under a single MVCC latch acquisition.
     // The RID and record vectors remain aligned; invisible records are
@@ -146,7 +147,7 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
 
-    std::unique_lock<std::mutex> acquire_commit_apply_latch();
+    std::shared_lock<std::shared_mutex> acquire_commit_apply_latch();
 
     /**
      * @description: 获取事务ID为txn_id的事务对象
@@ -369,7 +370,7 @@ private:
     // Shard latches are LEAF locks with respect to txn_state: no txn_state
     // acquisition, condition-variable wait, or file/index call may be nested
     // inside a shard latch.
-    std::mutex commit_apply_latch_;
+    std::shared_mutex commit_apply_latch_;
 
     // ── Phase-2 concurrency limiter ─────────────────────────────────────
     // Physical application (heap writes + index maintenance) runs outside

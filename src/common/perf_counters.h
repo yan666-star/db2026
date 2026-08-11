@@ -95,18 +95,38 @@ inline std::unique_lock<std::mutex> lock_buffer_frame(std::mutex &latch) {
                       c.buffer_frame_latch_wait_us);
 }
 
-inline std::unique_lock<std::mutex> lock_commit_apply_read(
-    std::mutex &latch) {
+inline std::shared_lock<std::shared_mutex> lock_commit_apply_read(
+    std::shared_mutex &latch) {
     auto &c = shared_counters();
-    return timed_lock(latch, c.commit_apply_read_acquires,
-                      c.commit_apply_read_wait_us);
+    if (!enabled()) {
+        return std::shared_lock<std::shared_mutex>(latch);
+    }
+    c.commit_apply_read_acquires.fetch_add(1, std::memory_order_relaxed);
+    auto start = std::chrono::steady_clock::now();
+    std::shared_lock<std::shared_mutex> lock(latch);
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+    c.commit_apply_read_wait_us.fetch_add(static_cast<uint64_t>(elapsed),
+                                          std::memory_order_relaxed);
+    return lock;
 }
 
-inline std::unique_lock<std::mutex> lock_commit_apply_write(
-    std::mutex &latch) {
+inline std::unique_lock<std::shared_mutex> lock_commit_apply_write(
+    std::shared_mutex &latch) {
     auto &c = shared_counters();
-    return timed_lock(latch, c.commit_apply_write_acquires,
-                      c.commit_apply_write_wait_us);
+    if (!enabled()) {
+        return std::unique_lock<std::shared_mutex>(latch);
+    }
+    c.commit_apply_write_acquires.fetch_add(1, std::memory_order_relaxed);
+    auto start = std::chrono::steady_clock::now();
+    std::unique_lock<std::shared_mutex> lock(latch);
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count();
+    c.commit_apply_write_wait_us.fetch_add(static_cast<uint64_t>(elapsed),
+                                           std::memory_order_relaxed);
+    return lock;
 }
 
 inline std::unique_lock<std::mutex> lock_mvcc(std::mutex &latch) {

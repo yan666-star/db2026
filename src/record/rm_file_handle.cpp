@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "rm_file_handle.h"
 
 #include <cstring>
+#include <shared_mutex>
 
 #include "errors.h"
 #include "recovery/log_manager.h"
@@ -31,7 +32,7 @@ int read_int_key(const char *record, int offset) {
  * @return {unique_ptr<RmRecord>} rid对应的记录对象指针
  */
 std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* context) const {
-    std::unique_lock<std::mutex> commit_apply_guard;
+    std::shared_lock<std::shared_mutex> commit_apply_guard;
     if (context != nullptr && context->txn_mgr_ != nullptr) {
         commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
     }
@@ -49,11 +50,11 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
     if (context != nullptr && context->txn_mgr_ != nullptr &&
         context->txn_mgr_->uses_mvcc(context->txn_)) {
         return context->txn_mgr_->get_visible_record(
-            context->txn_, mvcc_file_id_, rid, physical_record.get());
+            context->txn_, mvcc_file_id_, rid, std::move(physical_record));
     }
     if (context != nullptr && context->txn_mgr_ != nullptr) {
         return context->txn_mgr_->get_latest_committed_record(
-            mvcc_file_id_, rid, physical_record.get());
+            mvcc_file_id_, rid, std::move(physical_record));
     }
     if (!exists) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
@@ -69,7 +70,7 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
         return records;
     }
 
-    std::unique_lock<std::mutex> commit_apply_guard;
+    std::shared_lock<std::shared_mutex> commit_apply_guard;
     if (context != nullptr && context->txn_mgr_ != nullptr) {
         commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
     }
