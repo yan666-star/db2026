@@ -10,10 +10,12 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
@@ -306,6 +308,7 @@ private:
                               const MvccTxnState &right) const;
     bool mvcc_txn_aborted(txn_id_t txn_id) const;
     void mark_mvcc_txn_aborted(txn_id_t txn_id);
+    void mark_mvcc_txn_aborted_under_latch(txn_id_t txn_id);
     std::unique_ptr<RmRecord> resolve_snapshot_record_under_latch(
         Transaction *txn, uint64_t file_id, const Rid &rid,
         std::unique_ptr<RmRecord> physical_record);
@@ -351,21 +354,45 @@ private:
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC
     std::atomic<uint64_t> mvcc_commit_count_{0};    // 用于按周期触发MVCC垃圾回收
 
-    // Lock ordering: commit_apply_latch_ -> (file insert_latch_ / index latches)
-    // and commit_apply_latch_ -> mvcc_latch_. mvcc_latch_ is a LEAF lock: no
-    // file-handle or index operation may be invoked while holding it, because
-    // inserts acquire the file insert_latch_ first and then mvcc_latch_ (via
-    // prepare_insert); calling back into the file layer under mvcc_latch_
-    // deadlocks (ABBA).
+    // Lock ordering: commit_apply_latch_ → txn_state_latch_ →
+    //   mvcc_shards_[sorted].latch → (file insert_latch_ / index latches).
+    //
+    // commit_apply_latch_ serializes version publication (timestamp assignment +
+    // marking versions committed).  Physical application (heap write, index
+    // maintenance) runs under per-table / per-index locks only; it must NOT hold
+    // commit_apply_latch_.
+    //
+    // txn_state_latch_ guards mvcc_txns_, mvcc_cv_, and the unique-conflict-key
+    // index.  It is taken before any shard latch so that commit's multi-shard
+    // phase and prepare_write's single-shard path share a consistent order.
+    //
+    // Shard latches are LEAF locks with respect to txn_state: no txn_state
+    // acquisition, condition-variable wait, or file/index call may be nested
+    // inside a shard latch.
     std::mutex commit_apply_latch_;
-    mutable std::mutex mvcc_latch_;
+
+    // ── MVCC sharded version store ──────────────────────────────────────
+    static constexpr size_t kMvccShardCount = 64;
+
+    struct MvccShard {
+        std::mutex latch;
+        std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash>
+            record_versions;
+        // Version chains changed since the previous GC pass within this shard.
+        std::unordered_set<RecordKey, RecordKeyHash> gc_dirty_keys;
+    };
+    std::array<MvccShard, kMvccShardCount> mvcc_shards_;
+
+    size_t get_shard_idx(const RecordKey &key) const {
+        return RecordKeyHash{}(key) & (kMvccShardCount - 1);
+    }
+
+    // ── Transaction state (separate latch) ──────────────────────────────
+    std::mutex txn_state_latch_;
     std::condition_variable mvcc_cv_;
-    std::unordered_map<RecordKey, std::vector<MvccVersion>, RecordKeyHash> record_versions_;
-    // Version chains changed since the previous GC pass.  Unresolved chains
-    // remain in this worklist, so the frequent GC cycle prunes hot histories
-    // without rescanning every stable row accumulated since server start.
-    std::unordered_set<RecordKey, RecordKeyHash> gc_dirty_keys_;
+    std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;
+    // Unique-key conflict candidate index.  Keyed by mvcc file_id; each set
+    // entry is a RecordKey whose version chain may contain a live unique key.
     std::unordered_map<uint64_t, std::unordered_set<RecordKey, RecordKeyHash>>
         mvcc_unique_conflict_keys_by_file_;
-    std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;
 };
