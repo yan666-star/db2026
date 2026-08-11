@@ -69,6 +69,12 @@ class SmManager {
 
     void flush_for_checkpoint();
 
+    // Targeted flush for recovery: only syncs metadata, file headers of
+    // touched tables, dirty buffer-pool pages, and open files — without
+    // flushing all live indexes onto the readiness critical path.
+    void flush_touched_for_recovery(
+        const std::unordered_set<std::string> &table_names);
+
     void rebuild_indexes_for_recovery(
         const std::unordered_set<std::string> &table_names);
 

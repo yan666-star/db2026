@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 #include "common/config.h"
@@ -27,23 +28,12 @@ namespace {
 
 void copy_file_for_checkpoint(const std::string &source,
                               const std::string &destination) {
-    std::ifstream input(source, std::ios::binary);
-    if (!input.is_open()) {
-        throw InternalError("Cannot open checkpoint snapshot source");
-    }
-    std::ofstream output(
-        destination, std::ios::binary | std::ios::trunc);
-    if (!output.is_open()) {
-        throw InternalError("Cannot open checkpoint snapshot destination");
-    }
-    output << input.rdbuf();
-    output.flush();
-    if (input.bad() || !output.good()) {
-        throw InternalError("Cannot copy index checkpoint snapshot");
-    }
-    output.close();
-    if (!output) {
-        throw InternalError("Cannot close index checkpoint snapshot");
+    std::error_code ec;
+    std::filesystem::copy_file(
+        source, destination,
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        throw InternalError("Checkpoint snapshot copy failed: " + ec.message());
     }
 }
 
@@ -157,6 +147,20 @@ void SmManager::flush_for_checkpoint() {
     }
     for (const auto &entry : ihs_) {
         entry.second->flush_file_header();
+    }
+    buffer_pool_manager_->flush_all_pages();
+    disk_manager_->sync_all_open_files();
+    disk_manager_->sync_file(DB_META_NAME);
+}
+
+void SmManager::flush_touched_for_recovery(
+    const std::unordered_set<std::string> &table_names) {
+    flush_meta();
+    for (const auto &table_name : table_names) {
+        auto fh_it = fhs_.find(table_name);
+        if (fh_it != fhs_.end()) {
+            fh_it->second->flush_file_header();
+        }
     }
     buffer_pool_manager_->flush_all_pages();
     disk_manager_->sync_all_open_files();

@@ -282,6 +282,82 @@ class IndexScanExecutor : public AbstractExecutor {
         return true;
     }
 
+    // Multi-binding overload: form the longest possible key prefix by
+    // combining dynamic (outer-tuple) bindings with literal equality
+    // conditions, following index column order.  A complete key uses
+    // equality lookup; a partial prefix sets a range-scan lower bound.
+    bool set_index_lookup(const std::vector<IndexLookupBinding> &bindings) override {
+        has_lookup_key_ = false;
+        lookup_key_.clear();
+        if (bindings.empty()) {
+            return false;
+        }
+
+        // Index dynamic bindings by column name.
+        std::unordered_map<std::string, const IndexLookupBinding *> dyn;
+        for (const auto &b : bindings) {
+            if (b.target.tab_name == tab_name_ && b.data != nullptr) {
+                dyn[b.target.col_name] = &b;
+            }
+        }
+        if (dyn.empty()) {
+            return false;
+        }
+
+        std::vector<char> key(index_meta_.col_tot_len);
+        int offset = 0;
+        int bound_count = 0;
+        for (const auto &col : index_meta_.cols) {
+            auto dyn_it = dyn.find(col.name);
+            if (dyn_it != dyn.end()) {
+                const auto *b = dyn_it->second;
+                if (col.type != b->type || col.len != b->len) {
+                    return false;
+                }
+                memcpy(key.data() + offset, b->data, col.len);
+                bound_count++;
+            } else {
+                auto conds_it = col2conds_.find(col.name);
+                if (conds_it == col2conds_.end()) {
+                    break;
+                }
+                auto equality_it = std::find_if(
+                    conds_it->second.begin(), conds_it->second.end(),
+                    [](const Condition &cond) { return cond.op == OP_EQ; });
+                if (equality_it == conds_it->second.end()) {
+                    break;
+                }
+                write_condition_rhs_val_to_key(
+                    key.data() + offset, *equality_it, col.len);
+                bound_count++;
+            }
+            offset += col.len;
+        }
+
+        if (bound_count == 0) {
+            return false;
+        }
+
+        // Complete key -> exact B+tree lookup.
+        if (bound_count == static_cast<int>(index_meta_.cols.size())) {
+            lookup_key_ = std::move(key);
+            has_lookup_key_ = true;
+            return true;
+        }
+
+        // Partial prefix -> zero-extend and use as a range-scan lower bound.
+        int partial_len = 0;
+        for (int i = 0; i < bound_count; ++i) {
+            partial_len += index_meta_.cols[i].len;
+        }
+        key.resize(index_meta_.col_tot_len);
+        memset(key.data() + partial_len, 0,
+               static_cast<size_t>(index_meta_.col_tot_len) - partial_len);
+        lookup_key_ = std::move(key);
+        has_lookup_key_ = true;
+        return true;
+    }
+
    private:
     bool build_complete_equality_key(std::vector<char> &key) {
         key.resize(index_meta_.col_tot_len);

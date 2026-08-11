@@ -185,7 +185,12 @@ void RecoveryManager::redo() {
                          base.log_type_ == LogType::UPDATE;
         if (is_action &&
             active_txns_.find(base.log_tid_) != active_txns_.end()) {
+            // Active loser: record offset for UNDO, but do NOT physically
+            // redo.  Replaying a loser's actions can cause unique-index
+            // conflicts with committed winners that UNDO cannot clean up.
             loser_action_offsets_.push_back(offset);
+            offset = next_offset;
+            continue;
         }
         if (aborted_txns_.find(base.log_tid_) != aborted_txns_.end()) {
             // An ABORT record is written only after runtime rollback has
@@ -283,6 +288,21 @@ void RecoveryManager::undo_update(const UpdateLogRecord &record) {
         record.table_name_, record.rid_, record.old_value_, &record.new_value_);
 }
 
+bool RecoveryManager::index_key_changed(const std::string &table_name,
+                                         const RmRecord &old_rec,
+                                         const RmRecord &new_rec) {
+    const TabMeta &table = sm_manager_->db_.get_table(table_name);
+    for (const auto &index : table.indexes) {
+        for (const auto &col : index.cols) {
+            if (memcmp(old_rec.data + col.offset,
+                       new_rec.data + col.offset, col.len) != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void RecoveryManager::install_record(const std::string &table_name, const Rid &rid,
                                      const RmRecord &record,
                                      const RmRecord *known_old_record) {
@@ -294,17 +314,23 @@ void RecoveryManager::install_record(const std::string &table_name, const Rid &r
         throw InternalError("Recovery record size does not match table schema");
     }
 
-    if (indexes_from_checkpoint_) {
-        if (known_old_record != nullptr) {
-            delete_index_entries(table_name, *known_old_record, rid);
-        }
-        if (file_handle->record_exists(rid)) {
-            auto current = file_handle->get_record(rid, nullptr);
-            delete_index_entries(table_name, *current, rid);
-        }
+    // Determine whether the new record changes any index key relative to the
+    // old record.  If keys are unchanged we skip the surrounding delete+insert
+    // to avoid spurious unique-key conflicts and unnecessary index churn.
+    bool keys_changed = true;
+    if (indexes_from_checkpoint_ && known_old_record != nullptr) {
+        keys_changed = index_key_changed(
+            table_name, *known_old_record, record);
+    }
+    if (indexes_from_checkpoint_ && keys_changed && known_old_record != nullptr) {
+        delete_index_entries(table_name, *known_old_record, rid);
+    }
+    if (indexes_from_checkpoint_ && keys_changed && file_handle->record_exists(rid)) {
+        auto current = file_handle->get_record(rid, nullptr);
+        delete_index_entries(table_name, *current, rid);
     }
     file_handle->upsert_record_for_recovery(rid, record.data);
-    if (indexes_from_checkpoint_) {
+    if (indexes_from_checkpoint_ && keys_changed) {
         insert_index_entries(table_name, record, rid);
     }
     touched_tables_.insert(table_name);
@@ -375,11 +401,21 @@ void RecoveryManager::delete_index_entries(const std::string &table_name,
 }
 
 void RecoveryManager::finish_recovery() {
-    for (const auto &table_name : touched_tables_) {
-        sm_manager_->fhs_.at(table_name)->rebuild_free_page_list();
+    // Only rebuild free-page lists when we cannot trust the checkpoint's
+    // on-disk state.  When a valid checkpoint exists, every file-header
+    // field (including the free-list head) was captured atomically and
+    // recovery's page-level redo/undo maintains correctness, so a full
+    // O(n) scan-walk is wasteful at scale.
+    if (!has_valid_checkpoint_) {
+        for (const auto &table_name : touched_tables_) {
+            sm_manager_->fhs_.at(table_name)->rebuild_free_page_list();
+        }
     }
     if (!indexes_from_checkpoint_) {
         sm_manager_->rebuild_indexes_for_recovery(index_rebuild_tables_);
     }
-    sm_manager_->flush_for_checkpoint();
+    // Targeted flush: only persists metadata, file headers of tables
+    // actually touched during recovery, dirty buffer-pool pages, and
+    // open files — avoiding a full index scan on the readiness path.
+    sm_manager_->flush_touched_for_recovery(touched_tables_);
 }

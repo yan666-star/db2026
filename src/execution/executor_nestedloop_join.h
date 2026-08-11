@@ -42,6 +42,10 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         }
         const auto &left_cols = left_->cols();
         const auto &right_cols = right_->cols();
+
+        // Collect all cross-table EQ bindings so that IndexScanExecutor can
+        // form composite-index keys from multiple outer-tuple columns.
+        std::vector<IndexLookupBinding> bindings;
         for (const auto &cond : fed_conds_) {
             if (cond.is_rhs_val || cond.op != OP_EQ) {
                 continue;
@@ -61,15 +65,24 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
                 continue;
             }
             const ColMeta *outer_meta = find_exact_col(left_cols, *left_col);
-            if (right_->set_index_lookup(
-                    *right_col,
-                    left_rec->data + outer_meta->offset,
-                    outer_meta->type,
-                    outer_meta->len)) {
-                return true;
-            }
+            bindings.push_back(IndexLookupBinding{
+                *right_col,
+                left_rec->data + outer_meta->offset,
+                outer_meta->type,
+                outer_meta->len});
         }
-        return false;
+        if (bindings.empty()) {
+            return false;
+        }
+        // Try the single-binding path first (compatible with all executors).
+        if (right_->set_index_lookup(bindings[0].target, bindings[0].data,
+                                      bindings[0].type, bindings[0].len)) {
+            return true;
+        }
+        // If single-binding failed, try the multi-binding overload.  This
+        // handles composite indexes where the join supplies two or more key
+        // columns.
+        return right_->set_index_lookup(bindings);
     }
 
     std::unique_ptr<RmRecord> join_records(const RmRecord &left_rec, const RmRecord &right_rec) {

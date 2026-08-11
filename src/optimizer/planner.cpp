@@ -191,64 +191,84 @@ static bool select_inner_join_index(SmManager *sm_manager,
     if (scan == nullptr) {
         return false;
     }
-    TabMeta &tab = sm_manager->db_.get_table(inner_table);
+
+    // Collect which inner-table columns are provided by join EQ conditions.
+    std::set<std::string> join_inner_cols;
     for (const auto &cond : join_conds) {
         if (cond.is_rhs_val || cond.op != OP_EQ) {
             continue;
         }
-        std::string inner_col;
         if (cond.lhs_col.tab_name == inner_table) {
-            inner_col = cond.lhs_col.col_name;
+            join_inner_cols.insert(cond.lhs_col.col_name);
         } else if (cond.rhs_col.tab_name == inner_table) {
-            inner_col = cond.rhs_col.col_name;
-        } else {
-            continue;
+            join_inner_cols.insert(cond.rhs_col.col_name);
         }
-        std::vector<std::string> index_cols{inner_col};
-        if (tab.is_index(index_cols)) {
-            scan->tag = T_IndexScan;
-            scan->index_col_names_ = std::move(index_cols);
-            return true;
-        }
+    }
+    if (join_inner_cols.empty()) {
+        return false;
+    }
 
-        // A parameterized nested-loop lookup can also use a composite index
-        // when the join supplies one key column and literal equality
-        // predicates supply every remaining column. Example: (w_id, i_id)
-        // with w_id = 1 and i_id = outer.i_id. Keep all predicates in the
-        // plan; the executor only uses the complete key as an access path.
-        for (const auto &index : tab.indexes) {
-            bool contains_dynamic_col = false;
-            bool complete_key = true;
-            for (const auto &index_col : index.cols) {
-                if (index_col.name == inner_col) {
-                    contains_dynamic_col = true;
-                    continue;
-                }
-                bool has_literal_eq = std::any_of(
-                    scan->conds_.begin(), scan->conds_.end(),
-                    [&](const Condition &scan_cond) {
-                        return scan_cond.is_rhs_val &&
-                               scan_cond.op == OP_EQ &&
-                               scan_cond.lhs_col.tab_name == inner_table &&
-                               scan_cond.lhs_col.col_name == index_col.name;
-                    });
-                if (!has_literal_eq) {
-                    complete_key = false;
-                    break;
-                }
-            }
-            if (!contains_dynamic_col || !complete_key) {
-                continue;
-            }
+    TabMeta &tab = sm_manager->db_.get_table(inner_table);
+
+    // First, try a single-column index on any join column (fast path).
+    for (const auto &col_name : join_inner_cols) {
+        std::vector<std::string> idx{col_name};
+        if (tab.is_index(idx)) {
             scan->tag = T_IndexScan;
-            scan->index_col_names_.clear();
-            for (const auto &index_col : index.cols) {
-                scan->index_col_names_.push_back(index_col.name);
-            }
+            scan->index_col_names_ = std::move(idx);
             return true;
         }
     }
-    return false;
+
+    // Second, score every composite index by the length of its continuous
+    // prefix covered by (join_columns ∪ literal_EQ_conditions).  Prefer the
+    // longest prefix; on a tie prefer fewer total columns.
+    const IndexMeta *best_index = nullptr;
+    int best_prefix = 0;
+    int best_total = 0;
+
+    for (const auto &index : tab.indexes) {
+        int prefix = 0;
+        for (const auto &index_col : index.cols) {
+            if (join_inner_cols.count(index_col.name)) {
+                prefix++;
+                continue;
+            }
+            bool has_literal_eq = std::any_of(
+                scan->conds_.begin(), scan->conds_.end(),
+                [&](const Condition &scan_cond) {
+                    return scan_cond.is_rhs_val &&
+                           scan_cond.op == OP_EQ &&
+                           scan_cond.lhs_col.tab_name == inner_table &&
+                           scan_cond.lhs_col.col_name == index_col.name;
+                });
+            if (!has_literal_eq) {
+                break;
+            }
+            prefix++;
+        }
+        if (prefix == 0) {
+            continue;
+        }
+        int total = static_cast<int>(index.cols.size());
+        if (prefix > best_prefix ||
+            (prefix == best_prefix && total < best_total)) {
+            best_prefix = prefix;
+            best_total = total;
+            best_index = &index;
+        }
+    }
+
+    if (best_index == nullptr) {
+        return false;
+    }
+
+    scan->tag = T_IndexScan;
+    scan->index_col_names_.clear();
+    for (const auto &index_col : best_index->cols) {
+        scan->index_col_names_.push_back(index_col.name);
+    }
+    return true;
 }
 
 std::shared_ptr<Plan> pop_scan(int *scantbl,

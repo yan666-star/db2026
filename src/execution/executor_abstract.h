@@ -10,10 +10,22 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <vector>
+
 #include "execution_defs.h"
 #include "common/common.h"
 #include "index/ix.h"
 #include "system/sm.h"
+
+// Bundles one dynamic index-key column with its runtime value from an outer
+// tuple.  Used by NestedLoopJoinExecutor to pass multiple cross-table EQ
+// bindings to the inner IndexScanExecutor in a single call.
+struct IndexLookupBinding {
+    TabCol target;
+    const char *data;
+    ColType type;
+    int len;
+};
 
 class AbstractExecutor {
    public:
@@ -58,6 +70,18 @@ class AbstractExecutor {
     virtual ColMeta get_col_offset(const TabCol &target) { return ColMeta();};
 
     virtual bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) {
+        return false;
+    }
+
+    // Multi-binding overload: pass all cross-table EQ columns at once so that
+    // IndexScanExecutor can form composite-index keys.  The default falls
+    // back to the single-binding path for each binding in order.
+    virtual bool set_index_lookup(const std::vector<IndexLookupBinding> &bindings) {
+        for (const auto &b : bindings) {
+            if (set_index_lookup(b.target, b.data, b.type, b.len)) {
+                return true;
+            }
+        }
         return false;
     }
 

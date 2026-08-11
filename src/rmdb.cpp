@@ -106,34 +106,43 @@ void *client_handler(void *raw_fd) {
 }
 
 int create_listener() {
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        throw UnixError();
-    }
+    constexpr int kMaxRetries = 5;
+    constexpr int kRetryDelayUs = 200000;  // 200 ms
+    for (int attempt = 0; ; ++attempt) {
+        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
+            throw UnixError();
+        }
 
-    const int reuse_address = 1;
-    if (setsockopt(
-            fd, SOL_SOCKET, SO_REUSEADDR, &reuse_address,
-            sizeof(reuse_address)) < 0) {
-        close(fd);
-        throw UnixError();
-    }
+        const int reuse_address = 1;
+        if (setsockopt(
+                fd, SOL_SOCKET, SO_REUSEADDR, &reuse_address,
+                sizeof(reuse_address)) < 0) {
+            close(fd);
+            throw UnixError();
+        }
 
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(kServerPort);
-    if (bind(
-            fd, reinterpret_cast<sockaddr *>(&address),
-            sizeof(address)) < 0) {
-        close(fd);
-        throw UnixError();
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
+        address.sin_port = htons(kServerPort);
+        if (bind(
+                fd, reinterpret_cast<sockaddr *>(&address),
+                sizeof(address)) < 0) {
+            if (errno == EADDRINUSE && attempt < kMaxRetries) {
+                close(fd);
+                usleep(kRetryDelayUs);
+                continue;
+            }
+            close(fd);
+            throw UnixError();
+        }
+        if (listen(fd, kListenBacklog) < 0) {
+            close(fd);
+            throw UnixError();
+        }
+        return fd;
     }
-    if (listen(fd, kListenBacklog) < 0) {
-        close(fd);
-        throw UnixError();
-    }
-    return fd;
 }
 
 void start_server() {

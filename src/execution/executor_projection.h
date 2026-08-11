@@ -122,4 +122,7 @@ class ProjectionExecutor : public AbstractExecutor {
     bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) override {
         return prev_->set_index_lookup(target, data, type, len);
     }
+    bool set_index_lookup(const std::vector<IndexLookupBinding> &bindings) override {
+        return prev_->set_index_lookup(bindings);
+    }
 };

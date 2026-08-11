@@ -61,6 +61,10 @@ private:
     void undo_insert(const InsertLogRecord &record);
     void undo_delete(const DeleteLogRecord &record);
     void undo_update(const UpdateLogRecord &record);
+    // Returns true when any index key column differs between the two records.
+    bool index_key_changed(const std::string &table_name,
+                           const RmRecord &old_rec,
+                           const RmRecord &new_rec);
     void install_record(const std::string &table_name, const Rid &rid,
                         const RmRecord &record,
                         const RmRecord *known_old_record = nullptr);
