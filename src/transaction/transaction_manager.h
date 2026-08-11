@@ -358,9 +358,9 @@ private:
     //   mvcc_shards_[sorted].latch → (file insert_latch_ / index latches).
     //
     // commit_apply_latch_ serializes version publication (timestamp assignment +
-    // marking versions committed).  Physical application (heap write, index
-    // maintenance) runs under per-table / per-index locks only; it must NOT hold
-    // commit_apply_latch_.
+    // marking versions committed).  Physical application is gated by the Phase-2
+    // semaphore (kMaxConcurrentPhase2 slots) so that at most a handful of
+    // transactions apply heap/index changes concurrently, avoiding I/O overload.
     //
     // txn_state_latch_ guards mvcc_txns_, mvcc_cv_, and the unique-conflict-key
     // index.  It is taken before any shard latch so that commit's multi-shard
@@ -370,6 +370,15 @@ private:
     // acquisition, condition-variable wait, or file/index call may be nested
     // inside a shard latch.
     std::mutex commit_apply_latch_;
+
+    // ── Phase-2 concurrency limiter ─────────────────────────────────────
+    // Physical application (heap writes + index maintenance) runs outside
+    // commit_apply_latch_ but is capped to prevent overwhelming the buffer
+    // pool and disk subsystem with too many concurrent writers.
+    static constexpr int kMaxConcurrentPhase2 = 8;
+    std::mutex phase2_latch_;
+    std::condition_variable phase2_cv_;
+    int phase2_active_count_ = 0;
 
     // ── MVCC sharded version store ──────────────────────────────────────
     static constexpr size_t kMvccShardCount = 64;

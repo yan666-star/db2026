@@ -1616,149 +1616,191 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     };
     std::vector<PhysicalOp> ops;
 
+    // ── Phase 1: version publication ──────────────────────────────────
     // commit_apply_latch_ serializes commit-ts assignment so two commits
     // touching the same RID land in timestamp order.  txn_state + affected
-    // shards are locked underneath for conflict checking and version update.
-    // Physical application still runs under commit_apply_latch_ to avoid
-    // overwhelming the I/O subsystem with concurrent Phase-2 writes.
-    auto apply_lock =
-        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
+    // shards are locked underneath for conflict checking and version marking.
+    // This phase is purely in-memory (< 100 µs); commit_apply is released
+    // before Phase 2 so that other transactions can publish their versions
+    // while physical I/O is in flight.
     {
-        std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
-
-        // Collect and lock all shards touched by this transaction (sorted
-        // to avoid AB-BA deadlocks with other lockers).
-        std::set<size_t> sorted_shards;
+        auto apply_lock =
+            rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
         {
+            std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+
+            // Collect and lock all shards touched (sorted → no deadlock).
+            std::set<size_t> sorted_shards;
+            {
+                auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+                if (state_it != mvcc_txns_.end()) {
+                    for (const auto &key : state_it->second.write_records) {
+                        sorted_shards.insert(get_shard_idx(key));
+                    }
+                }
+            }
+            std::vector<std::unique_lock<std::mutex>> shard_locks;
+            for (size_t idx : sorted_shards) {
+                shard_locks.emplace_back(mvcc_shards_[idx].latch);
+            }
+
+            check_commit_conflict_under_latch(txn);
+            timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
+            txn->set_commit_ts(commit_ts);
             auto state_it = mvcc_txns_.find(txn->get_transaction_id());
             if (state_it != mvcc_txns_.end()) {
+                state_it->second.commit_ts = commit_ts;
                 for (const auto &key : state_it->second.write_records) {
-                    sorted_shards.insert(get_shard_idx(key));
-                }
-            }
-        }
-        std::vector<std::unique_lock<std::mutex>> shard_locks;
-        for (size_t idx : sorted_shards) {
-            shard_locks.emplace_back(mvcc_shards_[idx].latch);
-        }
+                    auto &shard = mvcc_shards_[get_shard_idx(key)];
+                    auto history_it = shard.record_versions.find(key);
+                    MvccVersion *own_pending = nullptr;
+                    if (history_it != shard.record_versions.end()) {
+                        own_pending = find_own_pending_version(
+                            history_it->second, txn->get_transaction_id());
+                    }
+                    if (own_pending == nullptr) {
+                        if (write_record_is_insert_only(txn, key)) {
+                            continue;
+                        }
+                        mark_mvcc_txn_aborted_under_latch(
+                            txn->get_transaction_id());
+                        throw TransactionAbortException(
+                            txn->get_transaction_id(),
+                            AbortReason::WRITE_CONFLICT);
+                    }
 
-        check_commit_conflict_under_latch(txn);
-        timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
-        txn->set_commit_ts(commit_ts);
-        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-        if (state_it != mvcc_txns_.end()) {
-            state_it->second.commit_ts = commit_ts;
-            for (const auto &key : state_it->second.write_records) {
-                auto &shard = mvcc_shards_[get_shard_idx(key)];
-                auto history_it = shard.record_versions.find(key);
-                MvccVersion *own_pending = nullptr;
-                if (history_it != shard.record_versions.end()) {
-                    own_pending = find_own_pending_version(
-                        history_it->second, txn->get_transaction_id());
-                }
-                if (own_pending == nullptr) {
                     if (write_record_is_insert_only(txn, key)) {
+                        own_pending->commit_ts = commit_ts;
                         continue;
                     }
-                    mark_mvcc_txn_aborted_under_latch(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                }
 
-                if (write_record_is_insert_only(txn, key)) {
+                    std::vector<char> before = own_pending->before;
+                    if (has_multiple_mutating_writes(txn, key)) {
+                        WriteRecord *mutating =
+                            first_mutating_write_record(txn, key);
+                        if (mutating != nullptr &&
+                            mutating->GetRecord().size > 0) {
+                            before = copy_record(&mutating->GetRecord());
+                        }
+                    } else if (before.empty()) {
+                        WriteRecord *mutating =
+                            first_mutating_write_record(txn, key);
+                        if (mutating != nullptr &&
+                            mutating->GetRecord().size > 0) {
+                            before = copy_record(&mutating->GetRecord());
+                        }
+                    }
+                    std::string table_name = own_pending->table_name;
+                    if (table_name.empty()) {
+                        WriteRecord *mutating =
+                            first_mutating_write_record(txn, key);
+                        if (mutating != nullptr) {
+                            table_name = mutating->GetTableName();
+                        }
+                    }
+                    if (before.empty() || table_name.empty()) {
+                        mark_mvcc_txn_aborted_under_latch(
+                            txn->get_transaction_id());
+                        throw TransactionAbortException(
+                            txn->get_transaction_id(),
+                            AbortReason::WRITE_CONFLICT);
+                    }
+                    if (!own_pending->deleted && own_pending->data.empty()) {
+                        mark_mvcc_txn_aborted_under_latch(
+                            txn->get_transaction_id());
+                        throw TransactionAbortException(
+                            txn->get_transaction_id(),
+                            AbortReason::WRITE_CONFLICT);
+                    }
+                    ops.push_back(PhysicalOp{own_pending->deleted, table_name,
+                                             key.rid, before,
+                                             own_pending->data});
                     own_pending->commit_ts = commit_ts;
-                    continue;
                 }
-
-                std::vector<char> before = own_pending->before;
-                if (has_multiple_mutating_writes(txn, key)) {
-                    WriteRecord *mutating =
-                        first_mutating_write_record(txn, key);
-                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
-                        before = copy_record(&mutating->GetRecord());
-                    }
-                } else if (before.empty()) {
-                    WriteRecord *mutating =
-                        first_mutating_write_record(txn, key);
-                    if (mutating != nullptr && mutating->GetRecord().size > 0) {
-                        before = copy_record(&mutating->GetRecord());
-                    }
-                }
-                std::string table_name = own_pending->table_name;
-                if (table_name.empty()) {
-                    WriteRecord *mutating =
-                        first_mutating_write_record(txn, key);
-                    if (mutating != nullptr) {
-                        table_name = mutating->GetTableName();
-                    }
-                }
-                if (before.empty() || table_name.empty()) {
-                    mark_mvcc_txn_aborted_under_latch(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                }
-                if (!own_pending->deleted && own_pending->data.empty()) {
-                    mark_mvcc_txn_aborted_under_latch(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
-                }
-                ops.push_back(PhysicalOp{own_pending->deleted, table_name,
-                                         key.rid, before, own_pending->data});
-                own_pending->commit_ts = commit_ts;
             }
-        }
-    }
+        } // shard locks → txn_lock released
+    } // apply_lock released
     mvcc_cv_.notify_all();
 
-    // Physical application — still serialized under commit_apply_latch_.
-    // Per-table / per-index latches provide intra-table concurrency, but
-    // only one transaction applies physical changes at a time so the buffer
-    // pool and disk are not overwhelmed.
-    for (size_t op_index = 0; op_index < ops.size(); ++op_index) {
-        auto &op = ops[op_index];
-        RmRecord before(static_cast<int>(op.before.size()),
-                        const_cast<char *>(op.before.data()));
-        try {
-            check_physical_before(txn, op.table_name, op.rid, &before);
-            if (op.is_delete) {
-                delete_indexes(sm_manager_, op.table_name, before, op.rid, txn);
-                auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
-                if (file_handle->record_exists(op.rid)) {
-                    file_handle->delete_record(op.rid, nullptr);
-                }
-            } else {
-                auto file_handle = sm_manager_->fhs_.at(op.table_name).get();
-                RmRecord after(static_cast<int>(op.after.size()),
-                               const_cast<char *>(op.after.data()));
-                file_handle->update_record(op.rid, after.data, nullptr);
-                update_indexes(sm_manager_, op.table_name, before, after, op.rid,
-                               txn);
-            }
-        } catch (const TransactionAbortException &) {
-            // txn_state is NOT held here — use the public version that
-            // acquires the latch internally.
-            mark_mvcc_txn_aborted(txn->get_transaction_id());
-            Context rollback_context(lock_manager_, nullptr, txn);
-            for (size_t rollback_index = op_index; rollback_index > 0;
-                 --rollback_index) {
-                const auto &applied = ops[rollback_index - 1];
-                RmRecord applied_before(
-                    static_cast<int>(applied.before.size()),
-                    const_cast<char *>(applied.before.data()));
-                Rid applied_rid = applied.rid;
-                if (applied.is_delete) {
-                    sm_manager_->rollback_delete(applied.table_name,
-                                                 applied_rid, applied_before,
-                                                 &rollback_context);
-                } else {
-                    sm_manager_->rollback_update(applied.table_name,
-                                                 applied_rid, applied_before,
-                                                 &rollback_context);
-                }
-            }
-            throw;
-        }
+    // ── Phase 2: physical application ──────────────────────────────────
+    // commit_apply_latch_ is no longer held.  Up to kMaxConcurrentPhase2
+    // transactions may apply physical changes concurrently so that the
+    // buffer pool and disk are not overwhelmed by unbounded write
+    // parallelism, while still exploiting available I/O bandwidth.
+    {
+        std::unique_lock<std::mutex> phase2_lock(phase2_latch_);
+        phase2_cv_.wait(phase2_lock, [&] {
+            return phase2_active_count_ < kMaxConcurrentPhase2;
+        });
+        ++phase2_active_count_;
+        phase2_lock.unlock();
     }
+
+    try {
+        for (size_t op_index = 0; op_index < ops.size(); ++op_index) {
+            auto &op = ops[op_index];
+            RmRecord before(static_cast<int>(op.before.size()),
+                            const_cast<char *>(op.before.data()));
+            try {
+                check_physical_before(txn, op.table_name, op.rid, &before);
+                if (op.is_delete) {
+                    delete_indexes(sm_manager_, op.table_name, before, op.rid,
+                                   txn);
+                    auto file_handle =
+                        sm_manager_->fhs_.at(op.table_name).get();
+                    if (file_handle->record_exists(op.rid)) {
+                        file_handle->delete_record(op.rid, nullptr);
+                    }
+                } else {
+                    auto file_handle =
+                        sm_manager_->fhs_.at(op.table_name).get();
+                    RmRecord after(static_cast<int>(op.after.size()),
+                                   const_cast<char *>(op.after.data()));
+                    file_handle->update_record(op.rid, after.data, nullptr);
+                    update_indexes(sm_manager_, op.table_name, before, after,
+                                   op.rid, txn);
+                }
+            } catch (const TransactionAbortException &) {
+                // txn_state is NOT held here — use the public version that
+                // acquires the latch internally.
+                mark_mvcc_txn_aborted(txn->get_transaction_id());
+                Context rollback_context(lock_manager_, nullptr, txn);
+                for (size_t rollback_index = op_index; rollback_index > 0;
+                     --rollback_index) {
+                    const auto &applied = ops[rollback_index - 1];
+                    RmRecord applied_before(
+                        static_cast<int>(applied.before.size()),
+                        const_cast<char *>(applied.before.data()));
+                    Rid applied_rid = applied.rid;
+                    if (applied.is_delete) {
+                        sm_manager_->rollback_delete(
+                            applied.table_name, applied_rid, applied_before,
+                            &rollback_context);
+                    } else {
+                        sm_manager_->rollback_update(
+                            applied.table_name, applied_rid, applied_before,
+                            &rollback_context);
+                    }
+                }
+                throw;
+            }
+        }
+    } catch (...) {
+        // Release Phase-2 slot before propagating the abort.
+        {
+            std::lock_guard<std::mutex> lk(phase2_latch_);
+            --phase2_active_count_;
+        }
+        phase2_cv_.notify_one();
+        throw;
+    }
+
+    // Release Phase-2 slot.
+    {
+        std::lock_guard<std::mutex> lk(phase2_latch_);
+        --phase2_active_count_;
+    }
+    phase2_cv_.notify_one();
 }
 
 void TransactionManager::remove_dependencies(txn_id_t txn_id) {
