@@ -518,7 +518,7 @@ void SqlExecutionService::execute_plan(
         lock_manager_, log_manager_, nullptr, transaction_manager_,
         &isolation_level_, &tracking_sink);
     bool statement_entered = false;
-    std::shared_lock<WriterPrioritySharedMutex> visibility_guard;
+    std::shared_lock<std::shared_mutex> visibility_guard;
     try {
         const bool checkpoint =
             plan != nullptr && plan->tag == T_StaticCheckpoint;
@@ -611,7 +611,7 @@ void SqlExecutionService::execute_load(
         lock_manager_, log_manager_, nullptr, transaction_manager_,
         &isolation_level_, &tracking_sink);
     bool statement_entered = false;
-    std::shared_lock<WriterPrioritySharedMutex> visibility_guard;
+    std::shared_lock<std::shared_mutex> visibility_guard;
     try {
         transaction_manager_->enter_statement(transaction_id_);
         statement_entered = true;

@@ -240,7 +240,7 @@ static void clear_write_set(Transaction *txn) {
     }
 }
 
-std::shared_lock<WriterPrioritySharedMutex>
+std::shared_lock<std::shared_mutex>
 TransactionManager::acquire_commit_apply_latch() {
     return rmdb_perf::lock_commit_apply_read(commit_apply_latch_);
 }
@@ -468,21 +468,7 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     }
 
     Context context(lock_manager_, log_manager, txn);
-    std::unique_lock<WriterPrioritySharedMutex> apply_lock;
     const auto write_set = txn->get_write_set();
-    const bool has_physical_mvcc_insert =
-        txn->uses_mvcc() &&
-        std::any_of(write_set->begin(), write_set->end(),
-                    [](WriteRecord *record) {
-                        return record != nullptr &&
-                               (record->GetWriteType() == WType::INSERT_TUPLE ||
-                                record->GetWriteType() ==
-                                    WType::BULK_INSERT_TUPLES);
-                    });
-    if (has_physical_mvcc_insert) {
-        apply_lock =
-            rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
-    }
     bool did_physical_rollback = false;
     bool entered_mvcc_commit =
         txn->uses_mvcc() && txn->get_commit_ts() != INVALID_TS;
@@ -503,13 +489,11 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     }
 
     if (txn->uses_mvcc()) {
-        // Physical INSERT rollback and pending-version removal form one
-        // visibility transition.  Once both are complete, readers may resume;
-        // the following durability work does not need the global barrier.
+        // MVCC INSERT rollback removes index/heap state before dropping the
+        // pending version.  During that interval readers either resolve the
+        // still-pending row as invisible or find no physical row, so rollback
+        // does not need the global commit visibility barrier.
         abort_mvcc(txn);
-        if (apply_lock.owns_lock()) {
-            apply_lock.unlock();
-        }
     }
 
     // UPDATE/DELETE are only pending versions before MVCC commit. If this
@@ -1720,7 +1704,7 @@ void TransactionManager::commit_mvcc(Transaction *txn,
     // their pending version.  Once COMMIT WAL is durable these operations may
     // not abort.  Unexpected storage/index failure is therefore fail-stop and
     // recovery redoes the committed transaction.
-    std::unique_lock<WriterPrioritySharedMutex> apply_lock;
+    std::unique_lock<std::shared_mutex> apply_lock;
     if (!ops.empty()) {
         apply_lock =
             rmdb_perf::lock_commit_apply_write(commit_apply_latch_);

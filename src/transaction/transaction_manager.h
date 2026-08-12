@@ -31,7 +31,6 @@ See the Mulan PSL v2 for more details. */
 #include "concurrency/lock_manager.h"
 #include "system/sm_manager.h"
 #include "common/exception.h"
-#include "common/writer_priority_shared_mutex.h"
 
 /* 系统采用的并发控制算法，当前题目中要求两阶段封锁并发控制算法 */
 enum class ConcurrencyMode { TWO_PHASE_LOCKING = 0, BASIC_TO, MVCC };
@@ -148,7 +147,7 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
 
-    std::shared_lock<WriterPrioritySharedMutex> acquire_commit_apply_latch();
+    std::shared_lock<std::shared_mutex> acquire_commit_apply_latch();
 
     /**
      * @description: 获取事务ID为txn_id的事务对象
@@ -371,7 +370,7 @@ private:
     // Shard latches are LEAF locks with respect to txn_state: no txn_state
     // acquisition, condition-variable wait, or file/index call may be nested
     // inside a shard latch.
-    WriterPrioritySharedMutex commit_apply_latch_;
+    std::shared_mutex commit_apply_latch_;
 
     // ── MVCC sharded version store ──────────────────────────────────────
     static constexpr size_t kMvccShardCount = 64;
