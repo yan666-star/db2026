@@ -83,5 +83,11 @@ add_executable(test_record_buffer_reuse test/record_buffer_reuse_test.cpp)
 target_link_libraries(test_record_buffer_reuse record system transaction storage pthread)
 add_test(NAME test_record_buffer_reuse COMMAND test_record_buffer_reuse)
 
+add_executable(test_writer_priority_shared_mutex
+               test/writer_priority_shared_mutex_test.cpp)
+target_link_libraries(test_writer_priority_shared_mutex pthread)
+add_test(NAME test_writer_priority_shared_mutex
+         COMMAND test_writer_priority_shared_mutex)
+
 add_executable(test_projection_alias test/projection_alias_test.cpp)
 add_test(NAME test_projection_alias COMMAND test_projection_alias)

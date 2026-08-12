@@ -12,10 +12,12 @@ See the Mulan PSL v2 for more details. */
 
 #include <assert.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -64,9 +66,21 @@ class RmFileHandle {
     inline static std::atomic<uint64_t> next_mvcc_file_id_{0};
     uint64_t mvcc_file_id_;
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
-    std::mutex insert_latch_;
+    mutable std::shared_mutex insert_latch_;
     std::mutex logical_update_latch_;
+    // Heap contents are protected independently from the file header/free
+    // list.  A fixed striped array avoids a dynamically growing lock table;
+    // unrelated pages can be read/updated concurrently, while operations on
+    // the same page remain ordered.
+    static constexpr size_t kPageLatchCount = 1024;
+    mutable std::array<std::shared_mutex, kPageLatchCount> page_latches_;
+    mutable std::shared_mutex equality_cache_latch_;
     std::unordered_map<int, IntEqualityCache> int_equality_caches_;
+
+    std::shared_mutex &page_latch(int page_no) const {
+        return page_latches_[static_cast<size_t>(page_no) %
+                             kPageLatchCount];
+    }
 
    public:
     RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
@@ -82,7 +96,10 @@ class RmFileHandle {
         disk_manager_->set_fd2pageno(fd, file_hdr_.num_pages);
     }
 
-    RmFileHdr get_file_hdr() { return file_hdr_; }
+    RmFileHdr get_file_hdr() {
+        std::shared_lock<std::shared_mutex> file_guard(insert_latch_);
+        return file_hdr_;
+    }
     int GetFd() { return fd_; }
     uint64_t GetMvccFileId() const { return mvcc_file_id_; }
     std::unique_lock<std::mutex> acquire_logical_update_latch() {
@@ -91,6 +108,9 @@ class RmFileHandle {
 
     /* 判断指定位置上是否已经存在一条记录，通过Bitmap来判断 */
     bool is_record(const Rid &rid) const {
+        std::shared_lock<std::shared_mutex> file_guard(insert_latch_);
+        std::shared_lock<std::shared_mutex> page_guard(
+            page_latch(rid.page_no));
         RmPageHandle page_handle = fetch_page_handle(rid.page_no);
         bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <shared_mutex>
 #include <sstream>
 #include <unordered_map>
 #include <utility>
@@ -107,6 +108,15 @@ wire::SqlType wire_type(ColType type) {
 
 bool is_begin_plan(const std::shared_ptr<Plan> &plan) {
     return plan != nullptr && plan->tag == T_Transaction_begin;
+}
+
+bool accesses_table_data(const std::shared_ptr<Plan> &plan) {
+    if (plan == nullptr) {
+        return false;
+    }
+    return plan->tag == T_Transaction_begin || plan->tag == T_select ||
+           plan->tag == T_Update ||
+           plan->tag == T_Delete || plan->tag == T_Insert;
 }
 
 std::string trim_copy(const std::string &value) {
@@ -508,12 +518,18 @@ void SqlExecutionService::execute_plan(
         lock_manager_, log_manager_, nullptr, transaction_manager_,
         &isolation_level_, &tracking_sink);
     bool statement_entered = false;
+    std::shared_lock<WriterPrioritySharedMutex> visibility_guard;
     try {
         const bool checkpoint =
             plan != nullptr && plan->tag == T_StaticCheckpoint;
         if (!checkpoint) {
             transaction_manager_->enter_statement(transaction_id_);
             statement_entered = true;
+            if (accesses_table_data(plan)) {
+                visibility_guard =
+                    transaction_manager_->acquire_commit_apply_latch();
+                context.commit_visibility_guard_held_ = true;
+            }
             ensure_transaction(&context, !is_begin_plan(plan));
         }
 
@@ -524,6 +540,10 @@ void SqlExecutionService::execute_plan(
 
         if (context.txn_ != nullptr &&
             !context.txn_->get_txn_mode()) {
+            if (visibility_guard.owns_lock()) {
+                context.commit_visibility_guard_held_ = false;
+                visibility_guard.unlock();
+            }
             // An implicit SELECT has no COMMIT command/ACK and no recovery
             // state to make durable.  Still run the complete transaction
             // commit path (MVCC/SSI validation, lock release and lifecycle
@@ -548,6 +568,10 @@ void SqlExecutionService::execute_plan(
             transaction_manager_->leave_statement();
         }
     } catch (TransactionAbortException &error) {
+        if (visibility_guard.owns_lock()) {
+            context.commit_visibility_guard_held_ = false;
+            visibility_guard.unlock();
+        }
         abort_active_transaction();
         explicit_txn_failed_ = false;
         if (statement_entered) {
@@ -555,6 +579,10 @@ void SqlExecutionService::execute_plan(
         }
         throw wire::TransactionAbortError(error.GetInfo());
     } catch (...) {
+        if (visibility_guard.owns_lock()) {
+            context.commit_visibility_guard_held_ = false;
+            visibility_guard.unlock();
+        }
         // Old rmdb.cpp behaviour for explicit transactions: abort the
         // pending writes, flag the txn as failed, and let the client
         // clean up with ROLLBACK / ABORT / BEGIN.
@@ -583,9 +611,13 @@ void SqlExecutionService::execute_load(
         lock_manager_, log_manager_, nullptr, transaction_manager_,
         &isolation_level_, &tracking_sink);
     bool statement_entered = false;
+    std::shared_lock<WriterPrioritySharedMutex> visibility_guard;
     try {
         transaction_manager_->enter_statement(transaction_id_);
         statement_entered = true;
+        visibility_guard =
+            transaction_manager_->acquire_commit_apply_latch();
+        context.commit_visibility_guard_held_ = true;
         ensure_transaction(&context, true);
 
         std::ifstream input(file_name);
@@ -638,6 +670,8 @@ void SqlExecutionService::execute_load(
             executor.Next();
         }
 
+        context.commit_visibility_guard_held_ = false;
+        visibility_guard.unlock();
         transaction_manager_->commit(context.txn_, log_manager_);
         transaction_manager_->release_transaction(context.txn_);
         context.txn_ = nullptr;
@@ -645,12 +679,20 @@ void SqlExecutionService::execute_load(
         tracking_sink.command_ok();
         transaction_manager_->leave_statement();
     } catch (TransactionAbortException &error) {
+        if (visibility_guard.owns_lock()) {
+            context.commit_visibility_guard_held_ = false;
+            visibility_guard.unlock();
+        }
         abort_active_transaction();
         if (statement_entered) {
             transaction_manager_->leave_statement();
         }
         throw wire::TransactionAbortError(error.GetInfo());
     } catch (...) {
+        if (visibility_guard.owns_lock()) {
+            context.commit_visibility_guard_held_ = false;
+            visibility_guard.unlock();
+        }
         abort_active_transaction();
         if (statement_entered) {
             transaction_manager_->leave_statement();

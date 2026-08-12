@@ -35,4 +35,9 @@ public:
     TransactionManager *txn_mgr_;
     IsolationLevel *session_isolation_;
     rmdb::execution::ResultSink *result_sink_;
+    // True while the execution service holds the commit visibility barrier
+    // for the complete statement.  Heap reads then avoid recursively locking
+    // the same shared mutex; index lookup and heap visibility remain covered
+    // by one atomic statement boundary.
+    bool commit_visibility_guard_held_ = false;
 };

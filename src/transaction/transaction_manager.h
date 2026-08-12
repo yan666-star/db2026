@@ -31,6 +31,7 @@ See the Mulan PSL v2 for more details. */
 #include "concurrency/lock_manager.h"
 #include "system/sm_manager.h"
 #include "common/exception.h"
+#include "common/writer_priority_shared_mutex.h"
 
 /* 系统采用的并发控制算法，当前题目中要求两阶段封锁并发控制算法 */
 enum class ConcurrencyMode { TWO_PHASE_LOCKING = 0, BASIC_TO, MVCC };
@@ -147,7 +148,7 @@ public:
         Transaction *txn, uint64_t file_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
 
-    std::shared_lock<std::shared_mutex> acquire_commit_apply_latch();
+    std::shared_lock<WriterPrioritySharedMutex> acquire_commit_apply_latch();
 
     /**
      * @description: 获取事务ID为txn_id的事务对象
@@ -239,7 +240,7 @@ private:
     void release_snapshot_admission(txn_id_t txn_id);
     void check_commit_conflict(Transaction *txn);
     void check_commit_conflict_under_latch(Transaction *txn);
-    void commit_mvcc(Transaction *txn);
+    void commit_mvcc(Transaction *txn, LogManager *log_manager);
     void abort_mvcc(Transaction *txn);
 
     struct RecordKey {
@@ -318,7 +319,6 @@ private:
         std::unique_ptr<RmRecord> physical_record);
     void check_physical_before(Transaction *txn, const std::string &table_name,
                                const Rid &rid, const RmRecord *before_record);
-    void validate_pending_physical_before(Transaction *txn);
     RecordKey make_record_key(const std::string &table_name, const Rid &rid) const;
     WriteRecord *first_mutating_write_record(Transaction *txn,
                                              const RecordKey &key) const;
@@ -358,10 +358,11 @@ private:
     // Lock ordering: commit_apply_latch_ → txn_state_latch_ →
     //   mvcc_shards_[sorted].latch → (file insert_latch_ / index latches).
     //
-    // commit_apply_latch_ serializes version publication (timestamp assignment +
-    // marking versions committed).  Physical application is gated by the Phase-2
-    // semaphore (kMaxConcurrentPhase2 slots) so that at most a handful of
-    // transactions apply heap/index changes concurrently, avoiding I/O overload.
+    // commit_apply_latch_ is the commit visibility barrier.  Data statements
+    // hold it shared across index lookup plus heap/version resolution.  MVCC
+    // commit, GC and checkpoint maintenance hold it exclusively.  A commit
+    // publishes its timestamp only after heap/index application and its COMMIT
+    // WAL record are both complete and durable.
     //
     // txn_state_latch_ guards mvcc_txns_, mvcc_cv_, and the unique-conflict-key
     // index.  It is taken before any shard latch so that commit's multi-shard
@@ -370,16 +371,7 @@ private:
     // Shard latches are LEAF locks with respect to txn_state: no txn_state
     // acquisition, condition-variable wait, or file/index call may be nested
     // inside a shard latch.
-    std::shared_mutex commit_apply_latch_;
-
-    // ── Phase-2 concurrency limiter ─────────────────────────────────────
-    // Physical application (heap writes + index maintenance) runs outside
-    // commit_apply_latch_ but is capped to prevent overwhelming the buffer
-    // pool and disk subsystem with too many concurrent writers.
-    static constexpr int kMaxConcurrentPhase2 = 8;
-    std::mutex phase2_latch_;
-    std::condition_variable phase2_cv_;
-    int phase2_active_count_ = 0;
+    WriterPrioritySharedMutex commit_apply_latch_;
 
     // ── MVCC sharded version store ──────────────────────────────────────
     static constexpr size_t kMvccShardCount = 64;
