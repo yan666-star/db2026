@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "ix_index_handle.h"
 
 #include "ix_scan.h"
+#include "common/perf_counters.h"
 
 /**
  * @brief 在当前node中查找第一个>=target的key_idx
@@ -251,7 +252,8 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
 bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transaction *transaction)
 {
     (void)transaction;
-    std::shared_lock<std::shared_mutex> lock(root_latch_);
+    auto lock = rmdb_perf::lock_shared_mutex(
+        root_latch_, rmdb_perf::Metric::INDEX_ROOT_READ_WAIT);
     if (file_hdr_->root_page_ == INVALID_PAGE_ID) {
         return false;
     }
@@ -410,7 +412,8 @@ void IxIndexHandle::insert_into_parent(IxNodeHandle *old_node, const char *key, 
  */
 page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transaction *transaction)
 {
-    std::unique_lock<std::shared_mutex> lock(root_latch_);
+    auto lock = rmdb_perf::lock_unique_shared_mutex(
+        root_latch_, rmdb_perf::Metric::INDEX_ROOT_WRITE_WAIT);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::INSERT, transaction);
     if (leaf_node == nullptr) {
         leaf_node = create_node();
@@ -448,7 +451,8 @@ page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transac
  */
 bool IxIndexHandle::delete_entry(const char *key, Transaction *transaction)
 {
-    std::unique_lock<std::shared_mutex> lock(root_latch_);
+    auto lock = rmdb_perf::lock_unique_shared_mutex(
+        root_latch_, rmdb_perf::Metric::INDEX_ROOT_WRITE_WAIT);
     auto [node, root_is_latched_ignored] = find_leaf_page(key, Operation::DELETE, transaction);
     if (node == nullptr) {
         return false;
@@ -686,7 +690,8 @@ std::vector<Rid> IxIndexHandle::get_rids(const Iid &iid) const
  */
 Iid IxIndexHandle::lower_bound(const char *key)
 {
-    std::shared_lock<std::shared_mutex> lock(root_latch_);
+    auto lock = rmdb_perf::lock_shared_mutex(
+        root_latch_, rmdb_perf::Metric::INDEX_ROOT_READ_WAIT);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
     if (leaf_node == nullptr) {
         return {IX_NO_PAGE, 0};
@@ -726,7 +731,8 @@ Iid IxIndexHandle::lower_bound(const char *key)
  */
 Iid IxIndexHandle::upper_bound(const char *key)
 {
-    std::shared_lock<std::shared_mutex> lock(root_latch_);
+    auto lock = rmdb_perf::lock_shared_mutex(
+        root_latch_, rmdb_perf::Metric::INDEX_ROOT_READ_WAIT);
     auto [leaf_node, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
     if (leaf_node == nullptr) {
         return {IX_NO_PAGE, 0};

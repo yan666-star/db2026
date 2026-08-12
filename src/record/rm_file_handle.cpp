@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <shared_mutex>
 
 #include "errors.h"
+#include "common/perf_counters.h"
 #include "recovery/log_manager.h"
 #include "transaction/transaction_manager.h"
 
@@ -105,7 +106,8 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
 }
 
 std::vector<Rid> RmFileHandle::all_record_slots() {
-    std::lock_guard<std::mutex> lock(insert_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        insert_latch_, rmdb_perf::Metric::HEAP_FILE_WAIT);
     std::vector<Rid> slots;
     if (file_hdr_.num_pages <= RM_FIRST_RECORD_PAGE) {
         return slots;
@@ -124,7 +126,8 @@ std::vector<Rid> RmFileHandle::all_record_slots() {
 }
 
 std::vector<Rid> RmFileHandle::lookup_int_equal_records(int offset, int value) {
-    std::lock_guard<std::mutex> lock(insert_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        insert_latch_, rmdb_perf::Metric::HEAP_FILE_WAIT);
     auto cache_it = int_equality_caches_.find(offset);
     if (cache_it == int_equality_caches_.end()) {
         IntEqualityCache cache;
@@ -172,7 +175,8 @@ Rid RmFileHandle::insert_record(char *buf, Context *context, const std::string &
 }
 
 Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std::string *table_name) {
-    std::lock_guard<std::mutex> lock(insert_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        insert_latch_, rmdb_perf::Metric::HEAP_FILE_WAIT);
     bool uses_mvcc_insert =
         context != nullptr && context->txn_mgr_ != nullptr &&
         context->txn_mgr_->uses_mvcc(context->txn_) && table_name != nullptr;
@@ -233,7 +237,8 @@ Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std:
  * @param {char*} buf 要插入记录的数据
  */
 void RmFileHandle::insert_record(const Rid& rid, char* buf) {
-    std::lock_guard<std::mutex> lock(insert_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        insert_latch_, rmdb_perf::Metric::HEAP_FILE_WAIT);
     ensure_page_exists(rid.page_no);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool existed = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
@@ -261,7 +266,8 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
  * @param {Context*} context
  */
 void RmFileHandle::delete_record(const Rid& rid, Context* context) {
-    std::lock_guard<std::mutex> lock(insert_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        insert_latch_, rmdb_perf::Metric::HEAP_FILE_WAIT);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
@@ -287,7 +293,8 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
  * @param {Context*} context
  */
 void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
-    std::lock_guard<std::mutex> lock(insert_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        insert_latch_, rmdb_perf::Metric::HEAP_FILE_WAIT);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);

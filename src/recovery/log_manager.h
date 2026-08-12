@@ -491,6 +491,7 @@ private:
     std::mutex latch_;                  // 用于对log_buffer_的互斥访问
     std::condition_variable durable_cv_;
     bool group_flush_in_progress_{false};
+    size_t force_flush_waiters_{0};
     LogBuffer log_buffer_;              // 日志缓冲区
     lsn_t written_lsn_;                 // 已写入 WAL 文件（可能尚在页缓存）的最大 LSN
     lsn_t durable_lsn_;                 // 已被 fsync/fdatasync 覆盖的最大 LSN

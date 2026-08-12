@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
+#include "common/perf_counters.h"
 #include "log_manager.h"
 
 namespace {
@@ -87,7 +88,18 @@ void LogManager::flush_log_to_disk_locked(bool force_sync) {
     // during indexed LOAD.  Only sync when there is a written-but-not-yet-
     // durable LSN; COMMIT still waits for durable_lsn_ to cover its own LSN.
     if (force_sync && durable_lsn_ < written_lsn_) {
-        disk_manager_->sync_log();
+        if (rmdb_perf::enabled()) {
+            auto start = std::chrono::steady_clock::now();
+            disk_manager_->sync_log();
+            auto elapsed =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - start)
+                    .count();
+            rmdb_perf::record(rmdb_perf::Metric::WAL_FSYNC,
+                              static_cast<uint64_t>(elapsed));
+        } else {
+            disk_manager_->sync_log();
+        }
         durable_lsn_ = written_lsn_;
     }
 }
@@ -97,35 +109,58 @@ void LogManager::force_flush_up_to(lsn_t target_lsn) {
         throw InternalError("Cannot force an invalid WAL LSN");
     }
 
+    const bool diagnose = rmdb_perf::enabled();
+    const auto wait_start = diagnose ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
     std::unique_lock<std::mutex> lock(latch_);
-    while (durable_lsn_ < target_lsn) {
-        if (group_flush_in_progress_) {
-            durable_cv_.wait(lock, [&] {
-                return durable_lsn_ >= target_lsn ||
-                       !group_flush_in_progress_;
-            });
-            continue;
-        }
-
-        // 首个到达者成为本轮 group commit leader。短暂释放 latch，让其他
-        // 已完成逻辑提交的线程把 commit record 追加到同一 WAL buffer。
-        group_flush_in_progress_ = true;
-        try {
-            durable_cv_.wait_for(lock, group_commit_delay(), [&] {
-                return durable_lsn_ >= target_lsn;
-            });
-            if (durable_lsn_ < target_lsn) {
-                // 同一 ACK 窗口内先产生 WAL 正字节写入，再 fsync 同一 fd；
-                // 返回后 durable_lsn_ 覆盖本事务的 commit record。
-                flush_log_to_disk_locked(true);
+    ++force_flush_waiters_;
+    try {
+        while (durable_lsn_ < target_lsn) {
+            if (group_flush_in_progress_) {
+                durable_cv_.wait(lock, [&] {
+                    return durable_lsn_ >= target_lsn ||
+                           !group_flush_in_progress_;
+                });
+                continue;
             }
-            group_flush_in_progress_ = false;
-            durable_cv_.notify_all();
-        } catch (...) {
-            group_flush_in_progress_ = false;
-            durable_cv_.notify_all();
-            throw;
+
+            // 首个到达者成为本轮 group commit leader。短暂释放 latch，让其他
+            // 已完成逻辑提交的线程把 commit record 追加到同一 WAL buffer。
+            group_flush_in_progress_ = true;
+            try {
+                durable_cv_.wait_for(lock, group_commit_delay(), [&] {
+                    return durable_lsn_ >= target_lsn;
+                });
+                if (durable_lsn_ < target_lsn) {
+                    if (diagnose) {
+                        rmdb_perf::record(
+                            rmdb_perf::Metric::WAL_GROUP_SIZE,
+                            static_cast<uint64_t>(force_flush_waiters_));
+                    }
+                    // 同一 ACK 窗口内先产生 WAL 正字节写入，再 fsync 同一 fd；
+                    // 返回后 durable_lsn_ 覆盖本事务的 commit record。
+                    flush_log_to_disk_locked(true);
+                }
+                group_flush_in_progress_ = false;
+                durable_cv_.notify_all();
+            } catch (...) {
+                group_flush_in_progress_ = false;
+                durable_cv_.notify_all();
+                throw;
+            }
         }
+        --force_flush_waiters_;
+    } catch (...) {
+        --force_flush_waiters_;
+        throw;
+    }
+    lock.unlock();
+    if (diagnose) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                           std::chrono::steady_clock::now() - wait_start)
+                           .count();
+        rmdb_perf::record(rmdb_perf::Metric::WAL_DURABLE_WAIT,
+                          static_cast<uint64_t>(elapsed));
     }
 }
 

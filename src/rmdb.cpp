@@ -25,6 +25,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze/analyze.h"
 #include "common/config.h"
+#include "common/perf_counters.h"
 #include "execution/execution_manager.h"
 #include "execution/sql_execution_service.h"
 #include "network/connection_session.h"
@@ -102,6 +103,9 @@ void *client_handler(void *raw_fd) {
     }
 
     close(fd);
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::flush_thread_local();
+    }
     return nullptr;
 }
 

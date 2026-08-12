@@ -166,6 +166,7 @@ void print_perf_diag() {
               << " mvcc_latch_wait_us="
               << shared.mvcc_latch_wait_us.load()
               << std::endl;
+    rmdb_perf::write_report(std::cerr);
 }
 
 void ensure_perf_diag_registered() {
@@ -246,6 +247,7 @@ TransactionManager::acquire_commit_apply_latch() {
 
 Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager,
                                        IsolationLevel isolation_level) {
+    ensure_perf_diag_registered();
     if (txn == nullptr) {
         txn_id_t txn_id = next_txn_id_.fetch_add(1);
         txn = new Transaction(txn_id, isolation_level);
@@ -258,7 +260,8 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
             // the same latch acquisition: otherwise GC could compute a
             // watermark that misses this transaction and prune versions its
             // snapshot still needs.
-            std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+            auto txn_lock = rmdb_perf::lock_mutex(
+                txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
             timestamp_t start_ts = last_commit_ts_.load();
             txn->set_start_ts(start_ts);
             txn->set_read_ts(start_ts);
@@ -293,7 +296,8 @@ void TransactionManager::ensure_snapshot_admission(Transaction *txn) {
     // access, not merely when BEGIN is acknowledged. Transactions waiting in
     // the admission queue must not retain a timestamp that became stale while
     // earlier admitted transactions committed.
-    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     timestamp_t start_ts = last_commit_ts_.load();
     txn->set_start_ts(start_ts);
     txn->set_read_ts(start_ts);
@@ -838,7 +842,8 @@ void TransactionManager::mark_mvcc_txn_aborted_under_latch(txn_id_t txn_id) {
 }
 
 void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
-    std::lock_guard<std::mutex> lock(txn_state_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     mark_mvcc_txn_aborted_under_latch(txn_id);
 }
 
@@ -1054,7 +1059,8 @@ void TransactionManager::register_table_read(
         return;
     }
 
-    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
     if (state_it == mvcc_txns_.end()) {
         return;
@@ -1102,7 +1108,8 @@ void TransactionManager::register_record_read(
     txn_id_t reader = txn->get_transaction_id();
     RecordKey key{file_id, rid};
 
-    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     auto state_it = mvcc_txns_.find(reader);
     if (state_it == mvcc_txns_.end()) {
         return;
@@ -1159,7 +1166,8 @@ void TransactionManager::check_write_conflict(
 
     RecordKey key{file_id, rid};
     auto &shard = mvcc_shards_[get_shard_idx(key)];
-    std::unique_lock<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     while (true) {
         std::unique_lock<std::mutex> shard_lock(shard.latch);
         auto history_it = shard.record_versions.find(key);
@@ -1217,7 +1225,8 @@ bool TransactionManager::has_stale_write_target(
         return false;
     }
 
-    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     for (size_t si = 0; si < kMvccShardCount; ++si) {
         auto &shard = mvcc_shards_[si];
         std::lock_guard<std::mutex> shard_lock(shard.latch);
@@ -1277,7 +1286,8 @@ void TransactionManager::check_unique_key_conflict(
         return true;
     };
 
-    std::unique_lock<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     auto candidate_it = mvcc_unique_conflict_keys_by_file_.find(file_id);
     if (candidate_it == mvcc_unique_conflict_keys_by_file_.end()) {
         return;
@@ -1360,7 +1370,8 @@ void TransactionManager::prepare_write(
     RecordKey key{file_id, rid};
     auto &shard = mvcc_shards_[get_shard_idx(key)];
 
-    std::unique_lock<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
 
     MvccVersion *own_pending = nullptr;
     while (true) {
@@ -1576,7 +1587,8 @@ void TransactionManager::check_commit_conflict(Transaction *txn) {
         return;
     }
 
-    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     // Collect and lock all shards touched by this transaction.
     std::set<size_t> sorted_shards;
     {
@@ -1620,7 +1632,8 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
         auto apply_lock =
             rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
         {
-            std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+            auto txn_lock = rmdb_perf::lock_mutex(
+                txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
 
             // Collect and lock all shards touched (sorted → no deadlock).
             std::set<size_t> sorted_shards;
@@ -1822,7 +1835,8 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
         return;
     }
 
-    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
     if (state_it == mvcc_txns_.end()) {
         return;
@@ -1889,7 +1903,8 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
 }
 
 timestamp_t TransactionManager::GetWatermark() {
-    std::lock_guard<std::mutex> lock(txn_state_latch_);
+    auto lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     timestamp_t watermark = last_commit_ts_.load();
     for (const auto &[txn_id, state] : mvcc_txns_) {
         (void)txn_id;
@@ -1913,7 +1928,8 @@ void TransactionManager::GarbageCollection() {
     // Hold txn_state for the entire shard scan so that unique_conflict_keys
     // cleanup does not invert the lock order (shard → txn_state would
     // deadlock against prepare_write's txn_state → shard).
-    std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
 
     // The watermark is the smallest read timestamp of any in-flight MVCC
     // transaction. Any committed version older than the watermark can never
@@ -2030,7 +2046,8 @@ void TransactionManager::apply_committed_deletes_for_checkpoint() {
     auto apply_lock =
         rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
-        std::lock_guard<std::mutex> txn_lock(txn_state_latch_);
+        auto txn_lock = rmdb_perf::lock_mutex(
+            txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
 
         for (size_t shard_idx = 0; shard_idx < kMvccShardCount; ++shard_idx) {
             std::lock_guard<std::mutex> shard_lock(

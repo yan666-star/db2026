@@ -80,8 +80,20 @@ target_link_libraries(test_batch_visibility transaction record system recovery p
 add_test(NAME test_batch_visibility COMMAND test_batch_visibility)
 
 add_executable(test_record_buffer_reuse test/record_buffer_reuse_test.cpp)
-target_link_libraries(test_record_buffer_reuse record system transaction storage pthread)
+# record, system and transaction form a static-library dependency cycle.
+# Keep them in one GNU ld rescan group so symbols first referenced by a later
+# archive (notably SmManager -> RmScan) are resolved deterministically.
+target_link_libraries(
+    test_record_buffer_reuse
+    -Wl,--start-group
+    record system transaction recovery index storage
+    -Wl,--end-group
+    pthread)
 add_test(NAME test_record_buffer_reuse COMMAND test_record_buffer_reuse)
+
+add_executable(test_perf_counters test/perf_counters_test.cpp)
+target_link_libraries(test_perf_counters pthread)
+add_test(NAME test_perf_counters COMMAND test_perf_counters)
 
 add_executable(test_projection_alias test/projection_alias_test.cpp)
 add_test(NAME test_projection_alias COMMAND test_projection_alias)
