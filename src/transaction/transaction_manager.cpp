@@ -473,7 +473,7 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     const bool has_physical_mvcc_insert =
         txn->uses_mvcc() &&
         std::any_of(write_set->begin(), write_set->end(),
-                    [](const WriteRecord *record) {
+                    [](WriteRecord *record) {
                         return record != nullptr &&
                                (record->GetWriteType() == WType::INSERT_TUPLE ||
                                 record->GetWriteType() ==
