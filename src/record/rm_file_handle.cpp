@@ -33,13 +33,10 @@ int read_int_key(const char *record, int offset) {
  */
 std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* context) const {
     std::shared_lock<std::shared_mutex> commit_apply_guard;
-    if (context != nullptr && context->txn_mgr_ != nullptr &&
-        !context->commit_visibility_guard_held_) {
+    if (context != nullptr && context->txn_mgr_ != nullptr) {
         commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
     }
 
-    std::shared_lock<std::shared_mutex> file_guard(insert_latch_);
-    std::shared_lock<std::shared_mutex> page_guard(page_latch(rid.page_no));
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
     std::unique_ptr<RmRecord> physical_record;
@@ -49,8 +46,6 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
                file_hdr_.record_size);
     }
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
-    page_guard.unlock();
-    file_guard.unlock();
 
     if (context != nullptr && context->txn_mgr_ != nullptr &&
         context->txn_mgr_->uses_mvcc(context->txn_)) {
@@ -76,13 +71,10 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
     }
 
     std::shared_lock<std::shared_mutex> commit_apply_guard;
-    if (context != nullptr && context->txn_mgr_ != nullptr &&
-        !context->commit_visibility_guard_held_) {
+    if (context != nullptr && context->txn_mgr_ != nullptr) {
         commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
     }
 
-    std::shared_lock<std::shared_mutex> file_guard(insert_latch_);
-    std::shared_lock<std::shared_mutex> page_guard(page_latch(page_no));
     RmPageHandle page_handle = fetch_page_handle(page_no);
     std::vector<Rid> valid_rids;
     valid_rids.reserve(rids.size());
@@ -102,8 +94,6 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
         valid_rids.push_back(rid);
     }
     buffer_pool_manager_->unpin_page(PageId{fd_, page_no}, false);
-    page_guard.unlock();
-    file_guard.unlock();
 
     if (context != nullptr && context->txn_mgr_ != nullptr) {
         context->txn_mgr_->filter_visible_records(
@@ -115,7 +105,7 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
 }
 
 std::vector<Rid> RmFileHandle::all_record_slots() {
-    std::shared_lock<std::shared_mutex> lock(insert_latch_);
+    std::lock_guard<std::mutex> lock(insert_latch_);
     std::vector<Rid> slots;
     if (file_hdr_.num_pages <= RM_FIRST_RECORD_PAGE) {
         return slots;
@@ -134,8 +124,7 @@ std::vector<Rid> RmFileHandle::all_record_slots() {
 }
 
 std::vector<Rid> RmFileHandle::lookup_int_equal_records(int offset, int value) {
-    std::shared_lock<std::shared_mutex> lock(insert_latch_);
-    std::unique_lock<std::shared_mutex> cache_guard(equality_cache_latch_);
+    std::lock_guard<std::mutex> lock(insert_latch_);
     auto cache_it = int_equality_caches_.find(offset);
     if (cache_it == int_equality_caches_.end()) {
         IntEqualityCache cache;
@@ -146,8 +135,6 @@ std::vector<Rid> RmFileHandle::lookup_int_equal_records(int offset, int value) {
                 file_hdr_.num_records_per_page);
         }
         for (int page_no = RM_FIRST_RECORD_PAGE; page_no < file_hdr_.num_pages; ++page_no) {
-            std::shared_lock<std::shared_mutex> page_guard(
-                page_latch(page_no));
             RmPageHandle page_handle = fetch_page_handle(page_no);
             for (int slot_no = 0; slot_no < file_hdr_.num_records_per_page; ++slot_no) {
                 if (!Bitmap::is_set(page_handle.bitmap, slot_no)) {
@@ -185,7 +172,7 @@ Rid RmFileHandle::insert_record(char *buf, Context *context, const std::string &
 }
 
 Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std::string *table_name) {
-    std::unique_lock<std::shared_mutex> lock(insert_latch_);
+    std::lock_guard<std::mutex> lock(insert_latch_);
     bool uses_mvcc_insert =
         context != nullptr && context->txn_mgr_ != nullptr &&
         context->txn_mgr_->uses_mvcc(context->txn_) && table_name != nullptr;
@@ -246,7 +233,7 @@ Rid RmFileHandle::insert_record_internal(char *buf, Context *context, const std:
  * @param {char*} buf 要插入记录的数据
  */
 void RmFileHandle::insert_record(const Rid& rid, char* buf) {
-    std::unique_lock<std::shared_mutex> lock(insert_latch_);
+    std::lock_guard<std::mutex> lock(insert_latch_);
     ensure_page_exists(rid.page_no);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool existed = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
@@ -274,7 +261,7 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
  * @param {Context*} context
  */
 void RmFileHandle::delete_record(const Rid& rid, Context* context) {
-    std::unique_lock<std::shared_mutex> lock(insert_latch_);
+    std::lock_guard<std::mutex> lock(insert_latch_);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
@@ -300,17 +287,7 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
  * @param {Context*} context
  */
 void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
-    std::shared_lock<std::shared_mutex> file_guard(insert_latch_);
-    std::shared_lock<std::shared_mutex> cache_read_guard(
-        equality_cache_latch_);
-    std::unique_lock<std::shared_mutex> cache_write_guard;
-    if (!int_equality_caches_.empty()) {
-        cache_read_guard.unlock();
-        cache_write_guard =
-            std::unique_lock<std::shared_mutex>(equality_cache_latch_);
-    }
-    std::unique_lock<std::shared_mutex> page_guard(
-        page_latch(rid.page_no));
+    std::lock_guard<std::mutex> lock(insert_latch_);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
@@ -324,12 +301,10 @@ void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
 }
 
 bool RmFileHandle::record_exists(const Rid &rid) const {
-    std::shared_lock<std::shared_mutex> file_guard(insert_latch_);
     if (rid.page_no < RM_FIRST_RECORD_PAGE || rid.page_no >= file_hdr_.num_pages ||
         rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
         return false;
     }
-    std::shared_lock<std::shared_mutex> page_guard(page_latch(rid.page_no));
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
@@ -342,7 +317,6 @@ void RmFileHandle::upsert_record_for_recovery(const Rid &rid, const char *buf) {
         throw InternalError("Invalid RID in recovery log");
     }
 
-    std::unique_lock<std::shared_mutex> file_guard(insert_latch_);
     ensure_page_exists(rid.page_no);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
@@ -354,24 +328,16 @@ void RmFileHandle::upsert_record_for_recovery(const Rid &rid, const char *buf) {
 }
 
 void RmFileHandle::delete_record_for_recovery(const Rid &rid) {
-    std::unique_lock<std::shared_mutex> file_guard(insert_latch_);
-    if (rid.page_no < RM_FIRST_RECORD_PAGE ||
-        rid.page_no >= file_hdr_.num_pages || rid.slot_no < 0 ||
-        rid.slot_no >= file_hdr_.num_records_per_page) {
+    if (!record_exists(rid)) {
         return;
     }
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
-    if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
-        buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
-        return;
-    }
     Bitmap::reset(page_handle.bitmap, rid.slot_no);
     page_handle.page_hdr->num_records--;
     buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, true);
 }
 
 void RmFileHandle::rebuild_free_page_list() {
-    std::unique_lock<std::shared_mutex> file_guard(insert_latch_);
     int first_free_page_no = RM_NO_PAGE;
     for (int page_no = file_hdr_.num_pages - 1; page_no >= RM_FIRST_RECORD_PAGE; --page_no) {
         RmPageHandle page_handle = fetch_page_handle(page_no);
@@ -387,7 +353,6 @@ void RmFileHandle::rebuild_free_page_list() {
 }
 
 void RmFileHandle::flush_file_header() const {
-    std::shared_lock<std::shared_mutex> file_guard(insert_latch_);
     disk_manager_->write_page(
         fd_, RM_FILE_HDR_PAGE, reinterpret_cast<const char *>(&file_hdr_), sizeof(file_hdr_));
 }

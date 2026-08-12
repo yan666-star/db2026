@@ -14,7 +14,6 @@ See the Mulan PSL v2 for more details. */
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -606,12 +605,7 @@ void SmManager::rollback_delete(const std::string& table_name, Rid& rid, RmRecor
             memcpy(key_buf + key_offset, record.data + index_meta.cols[i].offset, index_meta.cols[i].len);
             key_offset += index_meta.cols[i].len;
         }
-        std::vector<Rid> existing;
-        if (!index_handle->get_value(key_buf, &existing, context->txn_) ||
-            std::find(existing.begin(), existing.end(), rid) ==
-                existing.end()) {
-            index_handle->insert_entry(key_buf, rid, context->txn_);
-        }
+        index_handle->insert_entry(key_buf, rid, context->txn_);
         delete[] key_buf;
     }
 }
@@ -643,18 +637,8 @@ void SmManager::rollback_update(const std::string& table_name, Rid& rid, RmRecor
             delete[] new_key;
             continue;
         }
-        std::vector<Rid> old_rids;
-        if (!index_handle->get_value(old_key, &old_rids, context->txn_) ||
-            std::find(old_rids.begin(), old_rids.end(), rid) ==
-                old_rids.end()) {
-            index_handle->insert_entry(old_key, rid, context->txn_);
-        }
-        std::vector<Rid> new_rids;
-        if (index_handle->get_value(new_key, &new_rids, context->txn_) &&
-            std::find(new_rids.begin(), new_rids.end(), rid) !=
-                new_rids.end()) {
-            index_handle->delete_entry(new_key, context->txn_);
-        }
+        index_handle->insert_entry(old_key, rid, context->txn_);
+        index_handle->delete_entry(new_key, context->txn_);
         delete[] old_key;
         delete[] new_key;
     }

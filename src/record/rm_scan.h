@@ -21,7 +21,6 @@ class RmScan : public RecScan {
     Rid rid_;
     std::vector<Rid> rids_;
     int current_index_ = 0;
-    int end_page_no_ = RM_FIRST_RECORD_PAGE;
 
     void load_page_rids(int page_no);
 
