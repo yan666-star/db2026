@@ -393,6 +393,12 @@ private:
     };
     std::array<MvccShard, kMvccShardCount> mvcc_shards_;
 
+    // Monotonic latch-free fast path for filter_visible_records: flips to true
+    // on the first version ever installed and is never reset, so it can only be
+    // a conservative over-approximation of "the store is non-empty".  This lets
+    // the batch-read path avoid scanning all 64 shard headers on every call.
+    std::atomic<bool> any_versions_ever_{false};
+
     size_t get_shard_idx(const RecordKey &key) const {
         return RecordKeyHash{}(key) & (kMvccShardCount - 1);
     }

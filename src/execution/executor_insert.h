@@ -74,8 +74,18 @@ class InsertExecutor : public AbstractExecutor {
         bool uses_mvcc =
             context_->txn_mgr_ != nullptr &&
             context_->txn_mgr_->uses_mvcc(context_->txn_);
+        // The per-table logical_update_latch_ serializes every INSERT to an
+        // indexed table, which in TPC-C turns order_line / orders / new_orders
+        // (5-15 rows per NewOrder) into a single global choke point.  For MVCC
+        // transactions it is redundant: concurrent duplicate-key inserts are
+        // detected by check_unique_key_conflict (pending-version scan) and
+        // check_write_conflict (uncommitted index entry), with a final safety
+        // net in commit_mvcc's write-write conflict check.  Only the 2PL path,
+        // which has none of that machinery, still needs the table latch — this
+        // mirrors executor_update.h / executor_delete.h, which already skip it
+        // for MVCC.
         std::unique_lock<std::mutex> unique_insert_guard;
-        if (!tab_.indexes.empty()) {
+        if (!uses_mvcc && !tab_.indexes.empty()) {
             unique_insert_guard = fh_->acquire_logical_update_latch();
         }
 

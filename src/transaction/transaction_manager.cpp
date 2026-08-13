@@ -679,27 +679,19 @@ void TransactionManager::filter_visible_records(
         throw InternalError("RID/record batch size mismatch");
     }
 
-    // Check whether any shard has version data; if the entire version store is
-    // empty the physical records are all visible.
-    bool any_versions = false;
-    for (const auto &shard : mvcc_shards_) {
-        if (!shard.record_versions.empty()) {
-            any_versions = true;
-            break;
-        }
-    }
-    if (!any_versions) {
+    // Fast path: if no version was ever installed the physical records are all
+    // visible.  any_versions_ever_ is monotonic (set once, never reset), so a
+    // false here safely proves the store is empty without touching all 64 shard
+    // headers on every batch read.
+    if (!any_versions_ever_.load(std::memory_order_acquire)) {
         return;
     }
 
     // Group record indices by shard so each shard is locked once.
-    std::vector<size_t> shard_indices(rids.size());
     std::unordered_map<size_t, std::vector<size_t>> shard_groups;
     for (size_t i = 0; i < rids.size(); ++i) {
         RecordKey key{file_id, rids[i]};
-        size_t idx = get_shard_idx(key);
-        shard_indices[i] = idx;
-        shard_groups[idx].push_back(i);
+        shard_groups[get_shard_idx(key)].push_back(i);
     }
 
     const bool snapshot = uses_mvcc(txn);
@@ -1515,6 +1507,12 @@ void TransactionManager::prepare_write(
         }
     }
 
+    // Latch-free fast path for filter_visible_records: set once, never reset.
+    // The check-then-set avoids bouncing the cache line once the bit is set.
+    if (!any_versions_ever_.load(std::memory_order_relaxed)) {
+        any_versions_ever_.store(true, std::memory_order_release);
+    }
+
     auto state_it = mvcc_txns_.find(txn->get_transaction_id());
     if (state_it != mvcc_txns_.end()) {
         state_it->second.write_records.insert(key);
@@ -1917,13 +1915,18 @@ timestamp_t TransactionManager::GetWatermark() {
 }
 
 void TransactionManager::GarbageCollection() {
-    // Lock ordering: commit_apply_latch_ → txn_state_latch_ →
-    //   mvcc_shards_[*].latch.
+    // Lock ordering: txn_state_latch_ → mvcc_shards_[*].latch.
     //
     // GC only compacts in-memory version metadata; committed DELETEs have
     // already been applied to the heap before commit_mvcc() returns.
-    auto apply_lock =
-        rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
+    //
+    // The commit_apply_latch_ is deliberately NOT held here.  Every shard's
+    // version chain is accessed under that shard's own latch, which is what
+    // serializes GC's pruning against both readers (resolve_snapshot_record
+    // _under_latch) and writers (prepare_write / commit_mvcc).  Holding the
+    // global commit_apply exclusive would needlessly stall every concurrent
+    // reader and committer for the duration of the full 64-shard scan — the
+    // periodic 256-commit GC would otherwise serialize the whole system.
 
     // Hold txn_state for the entire shard scan so that unique_conflict_keys
     // cleanup does not invert the lock order (shard → txn_state would
