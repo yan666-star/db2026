@@ -17,7 +17,12 @@ See the Mulan PSL v2 for more details. */
 
 void BufferPoolManager::flush_wal_before_page_write() {
     if (log_manager_ != nullptr) {
-        log_manager_->flush_log_to_disk(true);
+        // WAL-before-data: write the log bytes to the kernel before the page so
+        // that a later COMMIT fsync covers them. fsync is reserved for the
+        // COMMIT ACK; doing it on every dirty eviction serializes the whole
+        // buffer pool on the log fd and collapses throughput under eviction
+        // pressure (the dominant cost once the working set exceeds the pool).
+        log_manager_->flush_log_to_disk(false);
     }
 }
 
