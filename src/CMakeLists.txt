@@ -106,6 +106,10 @@ add_executable(test_mvcc_index_visibility test/mvcc_index_visibility_test.cpp)
 target_link_libraries(test_mvcc_index_visibility transaction pthread)
 add_test(NAME test_mvcc_index_visibility COMMAND test_mvcc_index_visibility)
 
+add_executable(test_transaction_write_batch test/transaction_write_batch_test.cpp)
+target_link_libraries(test_transaction_write_batch transaction pthread)
+add_test(NAME test_transaction_write_batch COMMAND test_transaction_write_batch)
+
 add_executable(test_record_buffer_reuse test/record_buffer_reuse_test.cpp)
 # record, system and transaction form a static-library dependency cycle.
 # Keep them in one GNU ld rescan group so symbols first referenced by a later
