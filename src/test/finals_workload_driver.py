@@ -488,14 +488,16 @@ def phase_worker(worker_id: int, round_id: int, args, barrier, clock):
     try:
         try:
             client = connect_worker(args)
-        except (ConnectionError, OSError, TimeoutError, RuntimeError):
+        except (ConnectionError, OSError, TimeoutError, RuntimeError,
+                WireProtocolError):
             record_connection_setup_failure(stats)
         barrier.wait(timeout=args.startup_timeout + args.timeout + 5)
         while time.monotonic() < clock["deadline"]:
             if client is None:
                 try:
                     client = connect_worker(args)
-                except (ConnectionError, OSError, TimeoutError, RuntimeError):
+                except (ConnectionError, OSError, TimeoutError, RuntimeError,
+                        WireProtocolError):
                     record_connection_setup_failure(stats)
                     time.sleep(0.05)
                     continue
@@ -794,6 +796,26 @@ def run_self_test() -> int:
     if (outcome_stats.connection_setup_failures != 1 or
             outcome_stats.abandoned != 0):
         raise AssertionError("connection setup failures must not inflate abandoned")
+    original_connect_worker = connect_worker
+    setup_calls = 0
+
+    def wire_error_connect_worker(_args):
+        nonlocal setup_calls
+        setup_calls += 1
+        raise WireProtocolError("forced PREPARE_SET decode failure")
+
+    try:
+        globals()["connect_worker"] = wire_error_connect_worker
+        setup_args = argparse.Namespace(seed=71, startup_timeout=0.1,
+                                        timeout=0.1, clients=1, warehouses=1)
+        setup_stats = phase_worker(
+            0, 0, setup_args, threading.Barrier(1),
+            {"deadline": time.monotonic() + 0.02})
+    finally:
+        globals()["connect_worker"] = original_connect_worker
+    if (setup_calls < 2 or setup_stats.connection_setup_failures < 2 or
+            sum(setup_stats.attempts.values()) != 0 or setup_stats.abandoned != 0):
+        raise AssertionError("Wire setup failures must be counted without attempts")
     if client.stream_calls != 0:
         raise AssertionError("ranked workload used a stream call")
     print("self-test PASS: decoded five transaction shapes, 5- and 15-line "
