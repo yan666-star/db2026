@@ -347,6 +347,7 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
         if ((commit_count & 0x00FFu) == 0) {
             garbage_collect_incremental();
         }
+        maybe_fail_commit(CommitFailurePoint::BEFORE_ACK);
     }
 
     if (!txn->uses_mvcc() && log_manager != nullptr) {
@@ -793,6 +794,34 @@ bool TransactionManager::mvcc_txn_aborted(txn_id_t txn_id) const {
     return control != nullptr &&
            control->state.load(std::memory_order_acquire) ==
                TxnVisibilityState::ABORTED;
+}
+
+CommitFailurePoint TransactionManager::configured_commit_failure_point() {
+    const char *value = std::getenv("RMDB_COMMIT_FAILURE_POINT");
+    if (value == nullptr) {
+        return CommitFailurePoint::NONE;
+    }
+    static const std::pair<const char *, CommitFailurePoint> points[] = {
+        {"BEFORE_HEAP", CommitFailurePoint::BEFORE_HEAP},
+        {"AFTER_HEAP", CommitFailurePoint::AFTER_HEAP},
+        {"AFTER_INDEX", CommitFailurePoint::AFTER_INDEX},
+        {"AFTER_COMMIT_WRITE", CommitFailurePoint::AFTER_COMMIT_WRITE},
+        {"AFTER_COMMIT_SYNC", CommitFailurePoint::AFTER_COMMIT_SYNC},
+        {"AFTER_PUBLISH", CommitFailurePoint::AFTER_PUBLISH},
+        {"BEFORE_ACK", CommitFailurePoint::BEFORE_ACK},
+    };
+    for (const auto &[name, point] : points) {
+        if (std::strcmp(value, name) == 0) {
+            return point;
+        }
+    }
+    return CommitFailurePoint::NONE;
+}
+
+void TransactionManager::maybe_fail_commit(CommitFailurePoint point) const {
+    if (commit_failure_point_ == point) {
+        std::_Exit(86);
+    }
 }
 
 void TransactionManager::mark_mvcc_txn_aborted_under_latch(txn_id_t txn_id) {
@@ -1637,8 +1666,18 @@ void TransactionManager::commit_mvcc(Transaction *txn,
             CommitLogRecord commit_log(txn->get_transaction_id());
             commit_log.prev_lsn_ = txn->get_prev_lsn();
             lsn_t lsn = log_manager->add_log_to_buffer(&commit_log);
+            if (lsn == INVALID_LSN ||
+                (!prepared.writes.empty() &&
+                 prepared.greatest_row_lsn == INVALID_LSN)) {
+                throw InternalError("Commit is missing positive row/COMMIT WAL");
+            }
             txn->set_prev_lsn(lsn);
+            maybe_fail_commit(CommitFailurePoint::AFTER_COMMIT_WRITE);
             log_manager->force_flush_up_to(lsn);
+            if (log_manager->durable_lsn() < lsn) {
+                throw InternalError("Commit WAL is not durably covered");
+            }
+            maybe_fail_commit(CommitFailurePoint::AFTER_COMMIT_SYNC);
         }
 
         if (txn->get_control()->state.load(std::memory_order_acquire) !=
@@ -1648,6 +1687,7 @@ void TransactionManager::commit_mvcc(Transaction *txn,
         const timestamp_t commit_ts = txn_registry_.next_commit_ts();
         index_versions_.finalize(txn->get_control(), commit_ts);
         mvcc_store_.publish(txn->get_control(), commit_ts);
+        maybe_fail_commit(CommitFailurePoint::AFTER_PUBLISH);
         if (txn->get_isolation_level() == IsolationLevel::SERIALIZABLE) {
             std::lock_guard<std::mutex> lock(serializable_state_latch_);
             auto state_it = mvcc_txns_.find(txn->get_transaction_id());

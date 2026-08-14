@@ -184,6 +184,10 @@ void StorageCommitExecutor::apply(PreparedStorageCommit *commit,
         if (commit->row_lsns.size() != commit->writes.size()) {
             throw InternalError("Row WAL batch returned the wrong LSN count");
         }
+        if (std::any_of(commit->row_lsns.begin(), commit->row_lsns.end(),
+                        [](lsn_t lsn) { return lsn == INVALID_LSN; })) {
+            throw InternalError("Row WAL batch returned an invalid LSN");
+        }
         commit->greatest_row_lsn = commit->row_lsns.back();
         txn->set_prev_lsn(commit->greatest_row_lsn);
     }
@@ -194,6 +198,7 @@ void StorageCommitExecutor::apply(PreparedStorageCommit *commit,
         return;
     }
     commit->physical_apply_started = true;
+    transaction_manager_->maybe_fail_commit(CommitFailurePoint::BEFORE_HEAP);
 
     struct HeapPageKey {
         int fd;
@@ -301,6 +306,7 @@ void StorageCommitExecutor::apply(PreparedStorageCommit *commit,
             applied.insert(applied.end(), page.write_indexes.begin(),
                            page.write_indexes.end());
         }
+        transaction_manager_->maybe_fail_commit(CommitFailurePoint::AFTER_HEAP);
         for (auto &[index_fd, work] : indexes) {
             (void)index_fd;
             if (!work.mutations.empty()) {
@@ -308,6 +314,7 @@ void StorageCommitExecutor::apply(PreparedStorageCommit *commit,
                                                 txn);
             }
         }
+        transaction_manager_->maybe_fail_commit(CommitFailurePoint::AFTER_INDEX);
         for (auto &reservation : reservations_) {
             reservation->consume();
         }

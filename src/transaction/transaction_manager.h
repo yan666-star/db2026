@@ -38,6 +38,17 @@ See the Mulan PSL v2 for more details. */
 /* 系统采用的并发控制算法，当前题目中要求两阶段封锁并发控制算法 */
 enum class ConcurrencyMode { TWO_PHASE_LOCKING = 0, BASIC_TO, MVCC };
 
+enum class CommitFailurePoint {
+    NONE,
+    BEFORE_HEAP,
+    AFTER_HEAP,
+    AFTER_INDEX,
+    AFTER_COMMIT_WRITE,
+    AFTER_COMMIT_SYNC,
+    AFTER_PUBLISH,
+    BEFORE_ACK
+};
+
 class StorageCommitExecutor;
 
 /// 版本链中的第一个撤销链接，将表堆元组链接到撤销日志。
@@ -67,6 +78,7 @@ public:
         sm_manager_ = sm_manager;
         lock_manager_ = lock_manager;
         concurrency_mode_ = concurrency_mode;
+        commit_failure_point_ = configured_commit_failure_point();
     }
     
     ~TransactionManager() = default;
@@ -328,12 +340,15 @@ private:
 
     bool mvcc_txn_entered_apply(Transaction *txn);
     void begin_storage_apply(Transaction *txn, bool physical_apply);
+    static CommitFailurePoint configured_commit_failure_point();
+    void maybe_fail_commit(CommitFailurePoint point) const;
 
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL
     std::atomic<txn_id_t> next_txn_id_{0};  // 用于分发事务ID
     std::mutex latch_;  // 用于txn_map的并发
     SmManager *sm_manager_;
     LockManager *lock_manager_;
+    CommitFailurePoint commit_failure_point_{CommitFailurePoint::NONE};
 
     std::mutex checkpoint_latch_;
     std::mutex checkpoint_serial_latch_;
