@@ -76,9 +76,9 @@ class DiskManager {
 
     void truncate_log(int64_t size);
 
-    void sync_all_open_files();
+    virtual void sync_all_open_files();
 
-    void sync_file(const std::string &path);
+    virtual void sync_file(const std::string &path);
 
     void write_restart_offset(int64_t offset);
 

@@ -263,9 +263,15 @@ class UpdateExecutor : public AbstractExecutor {
             }
 
             if (mvcc) {
-                context_->txn_mgr_->prepare_update(
-                    context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
-                    *rec_new, tab_name_);
+                context_->txn_->write_batch().stage_update(
+                    tab_name_, fh_->GetMvccFileId(), rid,
+                    std::vector<char>(old_rec.data,
+                                      old_rec.data + old_rec.size),
+                    std::vector<char>(rec_new->data,
+                                      rec_new->data + rec_new->size));
+                delete[] old_key;
+                delete[] new_key;
+                continue;
             }
             if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
                 UpdateLogRecord log_record(
@@ -279,29 +285,27 @@ class UpdateExecutor : public AbstractExecutor {
                     new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rid, old_rec));
             }
 
-            if (!mvcc) {
-                fh_->update_record(rid, rec_new->data, context_);
+            fh_->update_record(rid, rec_new->data, context_);
 
-                for (size_t index_pos : affected_index_positions_) {
-                    const auto &index = tab_.indexes[index_pos];
-                    auto ih =
-                        sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-                    int offset = 0;
-                    for (int i = 0; i < index.col_num; ++i) {
-                        memcpy(old_key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
-                        memcpy(new_key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
-                        offset += index.cols[i].len;
-                    }
-                    if (memcmp(old_key, new_key, index.col_tot_len) == 0) {
-                        continue;
-                    }
-                    std::vector<Rid> old_rids;
-                    if (ih->get_value(old_key, &old_rids, context_->txn_) && !old_rids.empty() &&
-                        old_rids[0] == rid) {
-                        ih->delete_entry(old_key, context_->txn_);
-                    }
-                    ih->insert_entry(new_key, rid, context_->txn_);
+            for (size_t index_pos : affected_index_positions_) {
+                const auto &index = tab_.indexes[index_pos];
+                auto ih =
+                    sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                int offset = 0;
+                for (int i = 0; i < index.col_num; ++i) {
+                    memcpy(old_key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                    memcpy(new_key + offset, rec_new->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
                 }
+                if (memcmp(old_key, new_key, index.col_tot_len) == 0) {
+                    continue;
+                }
+                std::vector<Rid> old_rids;
+                if (ih->get_value(old_key, &old_rids, context_->txn_) && !old_rids.empty() &&
+                    old_rids[0] == rid) {
+                    ih->delete_entry(old_key, context_->txn_);
+                }
+                ih->insert_entry(new_key, rid, context_->txn_);
             }
             delete[] old_key;
             delete[] new_key;

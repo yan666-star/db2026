@@ -36,6 +36,8 @@ See the Mulan PSL v2 for more details. */
 /* 系统采用的并发控制算法，当前题目中要求两阶段封锁并发控制算法 */
 enum class ConcurrencyMode { TWO_PHASE_LOCKING = 0, BASIC_TO, MVCC };
 
+class StorageCommitExecutor;
+
 /// 版本链中的第一个撤销链接，将表堆元组链接到撤销日志。
 struct VersionUndoLink {
     /** 版本链中的下一个版本。 */
@@ -244,6 +246,8 @@ public:
 
 
 private:
+    friend class StorageCommitExecutor;
+
     void finish_transaction(Transaction *txn);
     bool admit_snapshot_transaction(txn_id_t txn_id,
                                     IsolationLevel isolation_level);
@@ -354,6 +358,7 @@ private:
     void remove_dependencies(txn_id_t txn_id);
 
     bool mvcc_txn_entered_apply(Transaction *txn);
+    void begin_storage_apply(Transaction *txn, bool physical_apply);
 
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL
     std::atomic<txn_id_t> next_txn_id_{0};  // 用于分发事务ID

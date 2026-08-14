@@ -6,6 +6,7 @@ RMDB is licensed under Mulan PSL v2. */
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <map>
 #include <shared_mutex>
 #include <stdexcept>
 #include <unordered_set>
@@ -23,6 +24,11 @@ int read_int_key(const char *record, int offset) {
 }
 
 }  // namespace
+
+uint64_t RmFileHandle::encode_reserved_slot(const Rid &rid) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(rid.page_no)) << 32) |
+           static_cast<uint32_t>(rid.slot_no);
+}
 
 RmFileHandle::RmFileHandle(DiskManager *disk_manager,
                            BufferPoolManager *buffer_pool_manager, int fd)
@@ -338,64 +344,77 @@ Rid RmFileHandle::insert_record(char *buf, Context *context,
 Rid RmFileHandle::insert_record_internal(
     char *buf, Context *context, const std::string *table_name) {
     std::shared_lock<std::shared_mutex> lifecycle(lifecycle_latch_);
-    RmPageWriteHandle page = acquire_insert_page();
-    const int page_no = page.page_no();
-    bool reusable = true;
-    lsn_t change_lsn = INVALID_LSN;
-    try {
-        const int slot_no = Bitmap::first_bit(
-            false, page.bitmap, file_hdr_.num_records_per_page);
-        if (slot_no >= file_hdr_.num_records_per_page) {
-            page.page_hdr->next_free_page_no = RM_NO_PAGE;
+    for (;;) {
+        RmPageWriteHandle page = acquire_insert_page();
+        const int page_no = page.page_no();
+        bool reusable = true;
+        lsn_t change_lsn = INVALID_LSN;
+        try {
+            int slot_no = -1;
+            {
+                std::lock_guard<std::mutex> reservations(reservation_latch_);
+                while ((slot_no = Bitmap::next_bit(
+                            false, page.bitmap,
+                            file_hdr_.num_records_per_page, slot_no)) <
+                       file_hdr_.num_records_per_page) {
+                    if (reserved_insert_slots_.count(encode_reserved_slot(
+                            Rid{page_no, slot_no})) == 0) {
+                        break;
+                    }
+                }
+            }
+            if (slot_no >= file_hdr_.num_records_per_page) {
+                page.drop();
+                remove_free_page_candidate(page_no);
+                continue;
+            }
+            const Rid rid{page_no, slot_no};
+
+            if (context != nullptr && context->txn_mgr_ != nullptr &&
+                context->txn_mgr_->uses_mvcc(context->txn_) &&
+                table_name != nullptr) {
+                RmRecord record(file_hdr_.record_size, buf);
+                context->txn_mgr_->prepare_insert(
+                    context->txn_, mvcc_file_id_, rid, record);
+            }
+
+            if (context != nullptr && context->txn_ != nullptr &&
+                context->log_mgr_ != nullptr && table_name != nullptr) {
+                RmRecord record(file_hdr_.record_size, buf);
+                InsertLogRecord log_record(context->txn_->get_transaction_id(),
+                                           record, rid, *table_name);
+                log_record.prev_lsn_ = context->txn_->get_prev_lsn();
+                change_lsn = context->log_mgr_->add_log_to_buffer(&log_record);
+                context->txn_->set_prev_lsn(change_lsn);
+            }
+
+            Bitmap::set(page.bitmap, slot_no);
+            std::memcpy(page.get_slot(slot_no), buf, file_hdr_.record_size);
+            page.page_hdr->num_records++;
+            reusable =
+                page.page_hdr->num_records < file_hdr_.num_records_per_page;
+            if (!reusable) {
+                page.page_hdr->next_free_page_no = RM_NO_PAGE;
+            }
+            if (change_lsn != INVALID_LSN) {
+                page.set_page_lsn(change_lsn);
+            }
             page.mark_dirty();
-            throw InternalError("Heap page header and bitmap disagree");
+            page.drop();
+            if (reusable) {
+                add_free_page_candidate(page_no);
+            }
+            return rid;
+        } catch (...) {
+            reusable = page.page_hdr != nullptr &&
+                       page.page_hdr->num_records <
+                           file_hdr_.num_records_per_page;
+            page.drop();
+            if (reusable) {
+                add_free_page_candidate(page_no);
+            }
+            throw;
         }
-        const Rid rid{page_no, slot_no};
-
-        if (context != nullptr && context->txn_mgr_ != nullptr &&
-            context->txn_mgr_->uses_mvcc(context->txn_) &&
-            table_name != nullptr) {
-            RmRecord record(file_hdr_.record_size, buf);
-            context->txn_mgr_->prepare_insert(
-                context->txn_, mvcc_file_id_, rid, record);
-        }
-
-        if (context != nullptr && context->txn_ != nullptr &&
-            context->log_mgr_ != nullptr && table_name != nullptr) {
-            RmRecord record(file_hdr_.record_size, buf);
-            InsertLogRecord log_record(context->txn_->get_transaction_id(),
-                                       record, rid, *table_name);
-            log_record.prev_lsn_ = context->txn_->get_prev_lsn();
-            change_lsn = context->log_mgr_->add_log_to_buffer(&log_record);
-            context->txn_->set_prev_lsn(change_lsn);
-        }
-
-        Bitmap::set(page.bitmap, slot_no);
-        std::memcpy(page.get_slot(slot_no), buf, file_hdr_.record_size);
-        page.page_hdr->num_records++;
-        reusable =
-            page.page_hdr->num_records < file_hdr_.num_records_per_page;
-        if (!reusable) {
-            page.page_hdr->next_free_page_no = RM_NO_PAGE;
-        }
-        if (change_lsn != INVALID_LSN) {
-            page.set_page_lsn(change_lsn);
-        }
-        page.mark_dirty();
-        page.drop();
-        if (reusable) {
-            add_free_page_candidate(page_no);
-        }
-        return rid;
-    } catch (...) {
-        reusable = page.page_hdr != nullptr &&
-                   page.page_hdr->num_records <
-                       file_hdr_.num_records_per_page;
-        page.drop();
-        if (reusable) {
-            add_free_page_candidate(page_no);
-        }
-        throw;
     }
 }
 
@@ -423,16 +442,25 @@ std::vector<Rid> RmFileHandle::insert_records(
             page_rids.reserve(static_cast<size_t>(
                 file_hdr_.num_records_per_page -
                 page.page_hdr->num_records));
-            int slot_no = -1;
-            while (record_index + page_rids.size() < records.size() &&
-                   (slot_no = Bitmap::next_bit(
-                        false, page.bitmap,
-                        file_hdr_.num_records_per_page, slot_no)) <
-                       file_hdr_.num_records_per_page) {
-                page_rids.push_back(Rid{page_no, slot_no});
+            {
+                std::lock_guard<std::mutex> reservations(reservation_latch_);
+                int slot_no = -1;
+                while (record_index + page_rids.size() < records.size() &&
+                       (slot_no = Bitmap::next_bit(
+                            false, page.bitmap,
+                            file_hdr_.num_records_per_page, slot_no)) <
+                           file_hdr_.num_records_per_page) {
+                    Rid candidate{page_no, slot_no};
+                    if (reserved_insert_slots_.count(
+                            encode_reserved_slot(candidate)) == 0) {
+                        page_rids.push_back(candidate);
+                    }
+                }
             }
             if (page_rids.empty()) {
-                throw InternalError("Heap page header and bitmap disagree");
+                page.drop();
+                remove_free_page_candidate(page_no);
+                continue;
             }
 
             if (context != nullptr && context->txn_mgr_ != nullptr &&
@@ -537,6 +565,136 @@ std::vector<Rid> RmFileHandle::insert_records(
         }
     }
     return result;
+}
+
+std::vector<Rid> RmFileHandle::reserve_insert_slots(size_t count) {
+    std::shared_lock<std::shared_mutex> lifecycle(lifecycle_latch_);
+    std::vector<Rid> reserved;
+    reserved.reserve(count);
+    try {
+        const int existing_pages = page_count();
+        for (int page_no = RM_FIRST_RECORD_PAGE;
+             page_no < existing_pages && reserved.size() < count; ++page_no) {
+            RmPageReadHandle page = fetch_page_read(page_no);
+            std::lock_guard<std::mutex> reservation_guard(reservation_latch_);
+            int slot_no = -1;
+            while (reserved.size() < count &&
+                   (slot_no = Bitmap::next_bit(
+                        false, page.bitmap, file_hdr_.num_records_per_page,
+                        slot_no)) < file_hdr_.num_records_per_page) {
+                Rid rid{page_no, slot_no};
+                if (reserved_insert_slots_.insert(
+                        encode_reserved_slot(rid)).second) {
+                    reserved.push_back(rid);
+                }
+            }
+        }
+
+        // Future page identities are reservation metadata only. Holding the
+        // allocation latch prevents a direct inserter from materializing the
+        // candidate page before its reserved slots are registered.
+        {
+            std::scoped_lock future_slots(allocation_latch_,
+                                          reservation_latch_);
+            int page_no = file_hdr_.num_pages;
+            while (reserved.size() < count) {
+                for (int slot_no = 0;
+                     slot_no < file_hdr_.num_records_per_page &&
+                     reserved.size() < count;
+                     ++slot_no) {
+                    Rid rid{page_no, slot_no};
+                    if (reserved_insert_slots_.insert(
+                            encode_reserved_slot(rid)).second) {
+                        reserved.push_back(rid);
+                    }
+                }
+                ++page_no;
+            }
+        }
+        return reserved;
+    } catch (...) {
+        release_reserved_slots(reserved);
+        throw;
+    }
+}
+
+void RmFileHandle::apply_reserved_inserts(
+    const std::vector<std::pair<Rid, std::vector<char>>> &records,
+    lsn_t page_lsn) {
+    std::map<page_id_t,
+             std::vector<const std::pair<Rid, std::vector<char>> *>>
+        by_page;
+    for (const auto &record : records) {
+        if (record.second.size() !=
+            static_cast<size_t>(file_hdr_.record_size)) {
+            throw InvalidRecordSizeError(
+                static_cast<int>(record.second.size()));
+        }
+        by_page[record.first.page_no].push_back(&record);
+    }
+
+    std::shared_lock<std::shared_mutex> lifecycle(lifecycle_latch_);
+    if (!by_page.empty()) {
+        ensure_page_exists(by_page.rbegin()->first);
+    }
+    for (auto &[page_no, page_records] : by_page) {
+        RmPageWriteHandle page = fetch_page_write(page_no);
+        bool reusable = true;
+        {
+            std::lock_guard<std::mutex> reservation_guard(reservation_latch_);
+            for (const auto *record : page_records) {
+                const Rid &rid = record->first;
+                if (rid.slot_no < 0 ||
+                    rid.slot_no >= file_hdr_.num_records_per_page ||
+                    Bitmap::is_set(page.bitmap, rid.slot_no) ||
+                    reserved_insert_slots_.count(
+                        encode_reserved_slot(rid)) == 0) {
+                    throw InternalError("Reserved Heap slot was reused");
+                }
+            }
+            for (const auto *record : page_records) {
+                const Rid &rid = record->first;
+                Bitmap::set(page.bitmap, rid.slot_no);
+                std::memcpy(page.get_slot(rid.slot_no),
+                            record->second.data(), file_hdr_.record_size);
+                page.page_hdr->num_records++;
+                reserved_insert_slots_.erase(encode_reserved_slot(rid));
+            }
+            reusable = page.page_hdr->num_records <
+                       file_hdr_.num_records_per_page;
+        }
+        if (!reusable) {
+            page.page_hdr->next_free_page_no = RM_NO_PAGE;
+        }
+        if (page_lsn != INVALID_LSN) {
+            page.set_page_lsn(page_lsn);
+        }
+        page.mark_dirty();
+        page.drop();
+        if (reusable) {
+            add_free_page_candidate(page_no);
+        } else {
+            remove_free_page_candidate(page_no);
+        }
+    }
+}
+
+void RmFileHandle::release_reserved_slots(
+    const std::vector<Rid> &rids) noexcept {
+    {
+        std::lock_guard<std::mutex> reservation_guard(reservation_latch_);
+        for (const Rid &rid : rids) {
+            reserved_insert_slots_.erase(encode_reserved_slot(rid));
+        }
+    }
+    try {
+        for (const Rid &rid : rids) {
+            add_free_page_candidate(rid.page_no);
+        }
+    } catch (...) {
+        // Reservation release is best-effort during stack unwinding. The
+        // persisted free list is rebuilt at the next checkpoint/open.
+    }
 }
 
 void RmFileHandle::ensure_page_exists(int page_no) {

@@ -53,6 +53,8 @@ class IndexScanExecutor : public AbstractExecutor {
     bool track_serializable_reads_ = true;
     bool bulk_read_requested_ = false;
     bool bulk_table_locked_ = false;
+    bool staged_writes_loaded_ = false;
+    size_t lookup_prefix_len_ = 0;
 
     bool uses_mvcc() const {
         return context_ != nullptr && context_->txn_mgr_ != nullptr &&
@@ -150,6 +152,7 @@ class IndexScanExecutor : public AbstractExecutor {
         batch_rids_.clear();
         batch_rids_map_.clear();
         candidate_rids_.clear();
+        staged_writes_loaded_ = false;
         batch_index_ = 0;
         rid_ = {-1, -1};
         bulk_table_locked_ = false;
@@ -241,7 +244,7 @@ class IndexScanExecutor : public AbstractExecutor {
 
     void enable_bulk_read() override { bulk_read_requested_ = true; }
 
-    bool is_end() const override { return is_end_ || (scan_ && scan_->is_end() && rid_.slot_no == -1); }
+    bool is_end() const override { return is_end_; }
 
     size_t tupleLen() const override { return len_; }
 
@@ -253,6 +256,7 @@ class IndexScanExecutor : public AbstractExecutor {
     bool set_index_lookup(const TabCol &target, const char *data, ColType type, int len) override {
         has_lookup_key_ = false;
         lookup_key_.clear();
+        lookup_prefix_len_ = 0;
         if (target.tab_name != tab_name_ || data == nullptr) {
             return false;
         }
@@ -288,6 +292,7 @@ class IndexScanExecutor : public AbstractExecutor {
         }
         lookup_key_ = std::move(key);
         has_lookup_key_ = true;
+        lookup_prefix_len_ = static_cast<size_t>(index_meta_.col_tot_len);
         return true;
     }
 
@@ -298,6 +303,7 @@ class IndexScanExecutor : public AbstractExecutor {
     bool set_index_lookup(const std::vector<IndexLookupBinding> &bindings) override {
         has_lookup_key_ = false;
         lookup_key_.clear();
+        lookup_prefix_len_ = 0;
         if (bindings.empty()) {
             return false;
         }
@@ -351,6 +357,8 @@ class IndexScanExecutor : public AbstractExecutor {
         if (bound_count == static_cast<int>(index_meta_.cols.size())) {
             lookup_key_ = std::move(key);
             has_lookup_key_ = true;
+            lookup_prefix_len_ =
+                static_cast<size_t>(index_meta_.col_tot_len);
             return true;
         }
 
@@ -364,6 +372,7 @@ class IndexScanExecutor : public AbstractExecutor {
                static_cast<size_t>(index_meta_.col_tot_len) - partial_len);
         lookup_key_ = std::move(key);
         has_lookup_key_ = true;
+        lookup_prefix_len_ = static_cast<size_t>(partial_len);
         return true;
     }
 
@@ -379,6 +388,60 @@ class IndexScanExecutor : public AbstractExecutor {
             static_cast<uint32_t>(candidate.slot_no);
         if (candidate_rids_.insert(encoded).second) {
             batch_rids_map_[candidate.page_no].push_back(candidate);
+        }
+    }
+
+    bool matches_lookup_prefix(const RmRecord &record) const {
+        if (!has_lookup_key_ || lookup_prefix_len_ == 0) {
+            return true;
+        }
+        std::vector<char> record_key(index_meta_.col_tot_len);
+        int offset = 0;
+        for (const ColMeta &column : index_meta_.cols) {
+            memcpy(record_key.data() + offset,
+                   record.data + column.offset, column.len);
+            offset += column.len;
+        }
+        return memcmp(record_key.data(), lookup_key_.data(),
+                      lookup_prefix_len_) == 0;
+    }
+
+    void append_staged_writes() {
+        if (staged_writes_loaded_ || !uses_mvcc()) {
+            return;
+        }
+        staged_writes_loaded_ = true;
+        for (const StagedWrite &write :
+             context_->txn_->write_batch().writes()) {
+            if (write.file_id != fh_->GetMvccFileId() ||
+                write.kind == LogicalWriteKind::DELETE ||
+                write.after.empty()) {
+                continue;
+            }
+            Rid visible_rid{-1, -1};
+            if (write.kind == LogicalWriteKind::UPDATE) {
+                visible_rid = *write.rid;
+                const uint64_t encoded =
+                    (static_cast<uint64_t>(static_cast<uint32_t>(
+                         visible_rid.page_no))
+                     << 32) |
+                    static_cast<uint32_t>(visible_rid.slot_no);
+                if (candidate_rids_.count(encoded) != 0) {
+                    continue;
+                }
+            }
+            auto record = std::make_unique<RmRecord>(
+                static_cast<int>(write.after.size()),
+                const_cast<char *>(write.after.data()));
+            if (!matches_lookup_prefix(*record) ||
+                !eval_conditions(*record, conds_, cols_)) {
+                continue;
+            }
+            if (scan_plan_ != nullptr) {
+                scan_plan_->rows_++;
+            }
+            batch_recs_.push_back(std::move(record));
+            batch_rids_.push_back(visible_rid);
         }
     }
 
@@ -432,6 +495,7 @@ class IndexScanExecutor : public AbstractExecutor {
             }
 
             if (batch_rids_map_.empty()) {
+                append_staged_writes();
                 break;
             }
 

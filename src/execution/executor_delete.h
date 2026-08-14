@@ -96,9 +96,11 @@ class DeleteExecutor : public AbstractExecutor {
             }
             RmRecord old_rec(*rec);
             if (uses_mvcc) {
-                context_->txn_mgr_->prepare_delete(
-                    context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
-                    tab_name_);
+                context_->txn_->write_batch().stage_delete(
+                    tab_name_, fh_->GetMvccFileId(), rid,
+                    std::vector<char>(old_rec.data,
+                                      old_rec.data + old_rec.size));
+                continue;
             }
             if (context_->txn_ != nullptr && context_->log_mgr_ != nullptr) {
                 DeleteLogRecord log_record(
@@ -111,21 +113,19 @@ class DeleteExecutor : public AbstractExecutor {
                 context_->txn_->append_write_record(
                     new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, old_rec));
             }
-            if (!uses_mvcc) {
-                for (auto &index : tab_.indexes) {
-                    auto ih =
-                        sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-                    char *key = new char[index.col_tot_len];
-                    int offset = 0;
-                    for (int j = 0; j < index.col_num; ++j) {
-                        memcpy(key + offset, rec->data + index.cols[j].offset, index.cols[j].len);
-                        offset += index.cols[j].len;
-                    }
-                    ih->delete_entry(key, context_->txn_);
-                    delete[] key;
+            for (auto &index : tab_.indexes) {
+                auto ih =
+                    sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                char *key = new char[index.col_tot_len];
+                int offset = 0;
+                for (int j = 0; j < index.col_num; ++j) {
+                    memcpy(key + offset, rec->data + index.cols[j].offset, index.cols[j].len);
+                    offset += index.cols[j].len;
                 }
-                fh_->delete_record(rid, context_);
+                ih->delete_entry(key, context_->txn_);
+                delete[] key;
             }
+            fh_->delete_record(rid, context_);
         }
         return nullptr;
     }

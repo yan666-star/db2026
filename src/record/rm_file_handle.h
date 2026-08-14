@@ -9,6 +9,7 @@ RMDB is licensed under Mulan PSL v2. */
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <utility>
 #include <unordered_set>
 #include <vector>
 
@@ -131,6 +132,8 @@ class RmFileHandle {
     std::vector<page_id_t> free_page_candidates_;
     std::unordered_set<page_id_t> free_page_candidate_set_;
     std::mutex logical_update_latch_;
+    mutable std::mutex reservation_latch_;
+    std::unordered_set<uint64_t> reserved_insert_slots_;
 
    public:
     RmFileHandle(DiskManager *disk_manager,
@@ -163,6 +166,11 @@ class RmFileHandle {
     std::vector<Rid> insert_records(
         const std::vector<PendingInsert> &records, Context *context,
         const std::string &table_name);
+    std::vector<Rid> reserve_insert_slots(size_t count);
+    void apply_reserved_inserts(
+        const std::vector<std::pair<Rid, std::vector<char>>> &records,
+        lsn_t page_lsn = INVALID_LSN);
+    void release_reserved_slots(const std::vector<Rid> &rids) noexcept;
     void insert_record(const Rid &rid, char *buf);
     void delete_record(const Rid &rid, Context *context,
                        lsn_t page_lsn = INVALID_LSN);
@@ -191,4 +199,5 @@ class RmFileHandle {
     void add_free_page_candidate(page_id_t page_no);
     void remove_free_page_candidate(page_id_t page_no);
     void rebuild_persisted_free_list_locked();
+    static uint64_t encode_reserved_slot(const Rid &rid);
 };

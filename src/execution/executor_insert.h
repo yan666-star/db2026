@@ -130,6 +130,35 @@ class InsertExecutor : public AbstractExecutor {
             }
         }
 
+        if (uses_mvcc) {
+            for (const StagedWrite &write :
+                 context_->txn_->write_batch().writes()) {
+                if (write.table_name != tab_name_ || write.after.empty() ||
+                    write.kind == LogicalWriteKind::DELETE) {
+                    continue;
+                }
+                for (size_t i = 0; i < tab_.indexes.size(); ++i) {
+                    const auto &index = tab_.indexes[i];
+                    std::vector<char> staged_key(index.col_tot_len);
+                    int offset = 0;
+                    for (const ColMeta &column : index.cols) {
+                        memcpy(staged_key.data() + offset,
+                               write.after.data() + column.offset,
+                               column.len);
+                        offset += column.len;
+                    }
+                    if (staged_key == index_keys[i]) {
+                        throw RMDBError("failure");
+                    }
+                }
+            }
+            context_->txn_->write_batch().stage_insert(
+                tab_name_, fh_->GetMvccFileId(),
+                std::vector<char>(rec.data, rec.data + rec.size));
+            rid_ = Rid{-1, -1};
+            return nullptr;
+        }
+
         rid_ = fh_->insert_record(rec.data, context_, tab_name_);
         if (context_->txn_ != nullptr) {
             if (bulk_insert_record_ != nullptr) {

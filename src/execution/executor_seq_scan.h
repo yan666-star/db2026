@@ -45,8 +45,14 @@ class SeqScanExecutor : public AbstractExecutor {
     size_t batch_index_ = 0;
     std::unique_ptr<RmRecord> current_rec_;
     bool is_end_ = true;
+    bool staged_inserts_loaded_ = false;
 
     SmManager *sm_manager_;
+
+    bool uses_mvcc() const {
+        return context_ != nullptr && context_->txn_mgr_ != nullptr &&
+               context_->txn_mgr_->uses_mvcc(context_->txn_);
+    }
 
     void recycle_record(std::unique_ptr<RmRecord> &record) {
         record_pool_.release(std::move(record));
@@ -208,6 +214,31 @@ class SeqScanExecutor : public AbstractExecutor {
             }
         }
 
+        if (batch_recs_.empty() && !staged_inserts_loaded_ && uses_mvcc()) {
+            staged_inserts_loaded_ = true;
+            for (const StagedWrite &write :
+                 context_->txn_->write_batch().writes()) {
+                if (write.kind != LogicalWriteKind::INSERT ||
+                    write.file_id != fh_->GetMvccFileId()) {
+                    continue;
+                }
+                auto record = std::make_unique<RmRecord>(
+                    static_cast<int>(write.after.size()),
+                    const_cast<char *>(write.after.data()));
+                if (scan_plan_ != nullptr) {
+                    scan_plan_->rows_++;
+                }
+                if (fed_conds_.empty() ||
+                    eval_conditions(*record, fed_conds_, cols_)) {
+                    if (filter_plan_ != nullptr) {
+                        filter_plan_->rows_++;
+                    }
+                    batch_recs_.push_back(std::move(record));
+                    batch_rids_.push_back(Rid{-1, -1});
+                }
+            }
+        }
+
         if (batch_recs_.empty()) {
             current_rec_.reset();
             is_end_ = true;
@@ -258,6 +289,7 @@ class SeqScanExecutor : public AbstractExecutor {
     void beginTuple() override {
         recycle_batch_records();
         scan_.reset();
+        staged_inserts_loaded_ = false;
         bulk_table_locked_ = false;
         if (bulk_read_requested_ &&
             lock_reads_for_committed_visibility() &&

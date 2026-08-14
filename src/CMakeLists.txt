@@ -110,6 +110,24 @@ add_executable(test_transaction_write_batch test/transaction_write_batch_test.cp
 target_link_libraries(test_transaction_write_batch transaction pthread)
 add_test(NAME test_transaction_write_batch COMMAND test_transaction_write_batch)
 
+add_executable(test_staged_write_visibility test/staged_write_visibility_test.cpp)
+target_link_libraries(
+    test_staged_write_visibility
+    -Wl,--start-group
+    execution record system transaction recovery index storage
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_staged_write_visibility COMMAND test_staged_write_visibility)
+
+add_executable(test_abort_without_checkpoint test/abort_without_checkpoint_test.cpp)
+target_link_libraries(
+    test_abort_without_checkpoint
+    -Wl,--start-group
+    execution record system transaction recovery index storage
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_abort_without_checkpoint COMMAND test_abort_without_checkpoint)
+
 add_executable(test_record_buffer_reuse test/record_buffer_reuse_test.cpp)
 # record, system and transaction form a static-library dependency cycle.
 # Keep them in one GNU ld rescan group so symbols first referenced by a later
