@@ -151,3 +151,10 @@ add_test(NAME test_perf_counters COMMAND test_perf_counters)
 
 add_executable(test_projection_alias test/projection_alias_test.cpp)
 add_test(NAME test_projection_alias COMMAND test_projection_alias)
+
+add_executable(test_finals_workload_contract
+    test/finals_workload_contract_test.cpp)
+add_test(
+    NAME test_finals_workload_contract
+    COMMAND test_finals_workload_contract ${CMAKE_SOURCE_DIR}
+)
