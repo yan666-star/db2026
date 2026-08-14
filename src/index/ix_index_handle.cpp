@@ -748,6 +748,7 @@ void IxIndexHandle::apply_sorted_batch(
         const size_t group_begin = begin;
         bool structural_insert = false;
         bool retry = false;
+        bool single_fallback = false;
         size_t end = begin;
         {
             auto located = find_leaf_read(mutations[begin].key.data());
@@ -777,7 +778,15 @@ void IxIndexHandle::apply_sorted_batch(
                            next_page != INVALID_PAGE_ID &&
                            next_page != IX_NO_PAGE) {
                         if (next_page <= leaf.node.get_page_no()) {
-                            retry = true;
+                            // Non-rightmost splits allocate a new right leaf
+                            // whose logical successor can have a smaller page
+                            // number.  Waiting for that successor while the
+                            // current leaf is write-latched would invert the
+                            // page-number latch order.  This relationship is
+                            // stable, so retrying the same batch group spins
+                            // forever.  Drop this guard and make progress via
+                            // the ordinary one-key path instead.
+                            single_fallback = true;
                             break;
                         }
                         IxReadNode next = fetch_node_read(next_page);
@@ -792,7 +801,8 @@ void IxIndexHandle::apply_sorted_batch(
                     }
 
                     bool changed = false;
-                    while (!retry && end < mutations.size()) {
+                    while (!retry && !single_fallback &&
+                           end < mutations.size()) {
                         const IndexMutation &mutation = mutations[end];
                         if (!upper_boundary.empty() &&
                             ix_compare(mutation.key.data(),
@@ -848,6 +858,23 @@ void IxIndexHandle::apply_sorted_batch(
             }
         }
         if (retry) {
+            continue;
+        }
+        if (single_fallback) {
+            const IndexMutation &mutation = mutations[begin];
+            if (mutation.kind == IndexMutationKind::INSERT) {
+                bool inserted = false;
+                insert_with_structural_path(mutation.key.data(),
+                                            mutation.rid, transaction,
+                                            &inserted);
+                if (!inserted) {
+                    throw InternalError(
+                        "Duplicate key in B+Tree mutation batch");
+                }
+            } else {
+                delete_entry(mutation.key.data(), transaction);
+            }
+            ++begin;
             continue;
         }
         begin = end;
