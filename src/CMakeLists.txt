@@ -128,6 +128,15 @@ target_link_libraries(
     pthread)
 add_test(NAME test_staged_write_visibility COMMAND test_staged_write_visibility)
 
+add_executable(test_storage_commit_batch test/storage_commit_batch_test.cpp)
+target_link_libraries(
+    test_storage_commit_batch
+    -Wl,--start-group
+    execution record system transaction recovery index storage
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_storage_commit_batch COMMAND test_storage_commit_batch)
+
 add_executable(test_abort_without_checkpoint test/abort_without_checkpoint_test.cpp)
 target_link_libraries(
     test_abort_without_checkpoint

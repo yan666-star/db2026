@@ -111,6 +111,21 @@ struct PendingInsert {
     size_t size;
 };
 
+enum class HeapMutationKind { INSERT, UPDATE, DELETE };
+
+struct HeapMutation {
+    HeapMutationKind kind;
+    Rid rid;
+    std::vector<char> before;
+    std::vector<char> after;
+};
+
+struct HeapPageMutationBatch {
+    int fd;
+    page_id_t page_no;
+    std::vector<HeapMutation> mutations;
+};
+
 class RmFileHandle {
     friend class RmScan;
     friend class RmManager;
@@ -170,6 +185,8 @@ class RmFileHandle {
     void apply_reserved_inserts(
         const std::vector<std::pair<Rid, std::vector<char>>> &records,
         lsn_t page_lsn = INVALID_LSN);
+    void apply_page_batch(const HeapPageMutationBatch &batch,
+                          lsn_t page_lsn);
     void release_reserved_slots(const std::vector<Rid> &rids) noexcept;
     void insert_record(const Rid &rid, char *buf);
     void delete_record(const Rid &rid, Context *context,

@@ -24,6 +24,7 @@ struct PreparedStorageCommit {
     std::vector<StagedWrite> writes;
     std::vector<ReservedInsert> inserts;
     std::unordered_map<TempRowId, Rid> resolved_insert_rids;
+    std::vector<lsn_t> row_lsns;
     lsn_t greatest_row_lsn = INVALID_LSN;
     bool physical_apply_started = false;
 };

@@ -53,6 +53,13 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
         throw InternalError("Log record is larger than the log buffer");
     }
 
+    if (rmdb_perf::enabled() &&
+        (log_record->log_type_ == LogType::INSERT ||
+         log_record->log_type_ == LogType::UPDATE ||
+         log_record->log_type_ == LogType::DELETE)) {
+        rmdb_perf::shared_counters().wal_row_append_latch_acquires.fetch_add(
+            1, std::memory_order_relaxed);
+    }
     std::lock_guard<std::mutex> lock(latch_);
     if (log_buffer_.is_full(log_record->log_tot_len_)) {
         flush_log_to_disk_locked();
@@ -75,6 +82,10 @@ std::vector<lsn_t> LogManager::add_logs_to_buffer(
         }
     }
 
+    if (rmdb_perf::enabled() && !log_records.empty()) {
+        rmdb_perf::shared_counters().wal_row_append_latch_acquires.fetch_add(
+            1, std::memory_order_relaxed);
+    }
     std::vector<lsn_t> lsns;
     lsns.reserve(log_records.size());
     std::lock_guard<std::mutex> lock(latch_);

@@ -722,6 +722,153 @@ void IxIndexHandle::insert_entries_batch(
     }
 }
 
+void IxIndexHandle::apply_sorted_batch(
+    std::vector<IndexMutation> mutations, Transaction *transaction) {
+    for (const IndexMutation &mutation : mutations) {
+        if (mutation.key.size() !=
+            static_cast<size_t>(file_hdr_->col_tot_len_)) {
+            throw InvalidColLengthError(
+                static_cast<int>(mutation.key.size()));
+        }
+    }
+    std::sort(mutations.begin(), mutations.end(), [&](const auto &left,
+                                                       const auto &right) {
+        const int compared = ix_compare(
+            left.key.data(), right.key.data(), file_hdr_->col_types_,
+            file_hdr_->col_lens_);
+        if (compared != 0) {
+            return compared < 0;
+        }
+        return left.kind == IndexMutationKind::DELETE &&
+               right.kind == IndexMutationKind::INSERT;
+    });
+
+    size_t begin = 0;
+    while (begin < mutations.size()) {
+        const size_t group_begin = begin;
+        bool structural_insert = false;
+        bool retry = false;
+        size_t end = begin;
+        {
+            auto located = find_leaf_read(mutations[begin].key.data());
+            if (!located.has_value()) {
+                structural_insert =
+                    mutations[begin].kind == IndexMutationKind::INSERT;
+            } else {
+                const page_id_t page_no = located->node.get_page_no();
+                const uint64_t generation = located->guard.generation();
+                located.reset();
+
+                IxWriteNode leaf = fetch_node_write(page_no);
+                record_insert_write_guard(leaf.node);
+                if (leaf.guard.generation() != generation ||
+                    !leaf.node.is_leaf_page() ||
+                    (leaf.node.get_size() > 0 &&
+                     leaf.node.get_prev_leaf() != IX_LEAF_HEADER_PAGE &&
+                     ix_compare(mutations[begin].key.data(),
+                                leaf.node.get_key(0),
+                                file_hdr_->col_types_,
+                                file_hdr_->col_lens_) < 0)) {
+                    retry = true;
+                } else {
+                    std::vector<char> upper_boundary;
+                    page_id_t next_page = leaf.node.get_next_leaf();
+                    while (next_page != IX_LEAF_HEADER_PAGE &&
+                           next_page != INVALID_PAGE_ID &&
+                           next_page != IX_NO_PAGE) {
+                        if (next_page <= leaf.node.get_page_no()) {
+                            retry = true;
+                            break;
+                        }
+                        IxReadNode next = fetch_node_read(next_page);
+                        if (next.node.get_size() > 0) {
+                            upper_boundary.resize(file_hdr_->col_tot_len_);
+                            std::memcpy(upper_boundary.data(),
+                                        next.node.get_key(0),
+                                        file_hdr_->col_tot_len_);
+                            break;
+                        }
+                        next_page = next.node.get_next_leaf();
+                    }
+
+                    bool changed = false;
+                    while (!retry && end < mutations.size()) {
+                        const IndexMutation &mutation = mutations[end];
+                        if (!upper_boundary.empty() &&
+                            ix_compare(mutation.key.data(),
+                                       upper_boundary.data(),
+                                       file_hdr_->col_types_,
+                                       file_hdr_->col_lens_) >= 0) {
+                            break;
+                        }
+                        const int pos =
+                            leaf.node.lower_bound(mutation.key.data());
+                        const bool exists =
+                            pos < leaf.node.get_size() &&
+                            ix_compare(leaf.node.get_key(pos),
+                                       mutation.key.data(),
+                                       file_hdr_->col_types_,
+                                       file_hdr_->col_lens_) == 0;
+                        if (mutation.kind == IndexMutationKind::DELETE) {
+                            if (exists &&
+                                *leaf.node.get_rid(pos) == mutation.rid) {
+                                leaf.node.erase_pair(pos);
+                                changed = true;
+                            }
+                            ++end;
+                            continue;
+                        }
+                        if (exists) {
+                            throw InternalError(
+                                "Duplicate key in B+Tree mutation batch");
+                        }
+                        if (!leaf.node.is_safe(Operation::INSERT)) {
+                            structural_insert = true;
+                            break;
+                        }
+                        leaf.node.insert(mutation.key.data(), mutation.rid);
+                        changed = true;
+                        ++end;
+                    }
+                    if (changed) {
+                        const lsn_t change_lsn =
+                            transaction == nullptr
+                                ? INVALID_LSN
+                                : transaction->get_prev_lsn();
+                        leaf.mark_dirty(change_lsn);
+                        if (rmdb_perf::enabled()) {
+                            auto &counters = rmdb_perf::shared_counters();
+                            counters.ix_batch_leaf_groups.fetch_add(
+                                1, std::memory_order_relaxed);
+                            counters.ix_batch_leaf_rows.fetch_add(
+                                end - begin, std::memory_order_relaxed);
+                        }
+                    }
+                }
+            }
+        }
+        if (retry) {
+            continue;
+        }
+        begin = end;
+        if (structural_insert) {
+            bool inserted = false;
+            insert_with_structural_path(mutations[begin].key.data(),
+                                        mutations[begin].rid, transaction,
+                                        &inserted);
+            if (!inserted) {
+                throw InternalError(
+                    "Duplicate key in B+Tree mutation batch");
+            }
+            ++begin;
+        } else if (end == group_begin && begin < mutations.size()) {
+            // An empty tree can only make progress through structural insert;
+            // deleting from it is a successful no-op.
+            ++begin;
+        }
+    }
+}
+
 size_t IxIndexHandle::try_insert_leaf_batch(
     const std::vector<std::pair<std::vector<char>, Rid>> &entries,
     size_t begin, Transaction *transaction, bool *first_overflow) {

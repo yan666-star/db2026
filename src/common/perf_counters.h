@@ -181,6 +181,9 @@ struct SharedCounters {
     std::atomic<uint64_t> ix_ancestor_write_guards{0};
     std::atomic<uint64_t> ix_batch_leaf_groups{0};
     std::atomic<uint64_t> ix_batch_leaf_rows{0};
+    std::atomic<uint64_t> heap_page_write_guards{0};
+    std::atomic<uint64_t> wal_row_append_latch_acquires{0};
+    std::atomic<uint64_t> transaction_row_wal_sets{0};
     // One-shot diagnostics gate for deterministic structural-concurrency
     // tests. A zero target (the production default) is a no-op.
     std::atomic<uint64_t> ix_structural_test_gate_target{0};

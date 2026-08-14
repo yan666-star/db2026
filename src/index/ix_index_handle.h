@@ -15,6 +15,18 @@ RMDB is licensed under Mulan PSL v2. */
 #include "transaction/transaction.h"
 
 enum class Operation { FIND = 0, INSERT, DELETE };
+enum class IndexMutationKind { INSERT, DELETE };
+
+struct IndexMutation {
+    IndexMutationKind kind;
+    std::vector<char> key;
+    Rid rid;
+};
+
+struct IndexLeafMutationBatch {
+    int index_fd;
+    std::vector<IndexMutation> mutations;
+};
 
 inline int ix_compare(const char *a, const char *b, ColType type,
                       int col_len) {
@@ -213,6 +225,8 @@ class IxIndexHandle {
     void insert_entries_batch(
         std::vector<std::pair<std::vector<char>, Rid>> entries,
         Transaction *transaction);
+    void apply_sorted_batch(std::vector<IndexMutation> mutations,
+                            Transaction *transaction);
     bool contains_any_entries_batch(
         std::vector<std::vector<char>> keys) const;
     bool delete_entry(const char *key, Transaction *transaction);

@@ -11,6 +11,7 @@ RMDB is licensed under Mulan PSL v2. */
 #include <stdexcept>
 #include <unordered_set>
 
+#include "common/perf_counters.h"
 #include "errors.h"
 #include "recovery/log_manager.h"
 #include "transaction/transaction_manager.h"
@@ -130,6 +131,10 @@ RmPageReadHandle RmFileHandle::fetch_page_read(int page_no) const {
 RmPageWriteHandle RmFileHandle::fetch_page_write(int page_no) const {
     if (page_no < RM_FIRST_RECORD_PAGE || page_no >= page_count()) {
         throw PageNotExistError(std::to_string(fd_), page_no);
+    }
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::shared_counters().heap_page_write_guards.fetch_add(
+            1, std::memory_order_relaxed);
     }
     WritePageGuard guard =
         buffer_pool_manager_->fetch_page_write(PageId{fd_, page_no});
@@ -666,6 +671,95 @@ void RmFileHandle::apply_reserved_inserts(
         } else {
             remove_free_page_candidate(page_no);
         }
+    }
+}
+
+void RmFileHandle::apply_page_batch(const HeapPageMutationBatch &batch,
+                                    lsn_t page_lsn) {
+    if (batch.fd != fd_ || batch.page_no < RM_FIRST_RECORD_PAGE) {
+        throw InternalError("Heap page batch targets the wrong file or page");
+    }
+    if (batch.mutations.empty()) {
+        return;
+    }
+    for (const HeapMutation &mutation : batch.mutations) {
+        if (mutation.rid.page_no != batch.page_no ||
+            mutation.rid.slot_no < 0 ||
+            mutation.rid.slot_no >= file_hdr_.num_records_per_page) {
+            throw InternalError("Heap page batch contains an invalid RID");
+        }
+        if ((mutation.kind == HeapMutationKind::INSERT ||
+             mutation.kind == HeapMutationKind::UPDATE) &&
+            mutation.after.size() !=
+                static_cast<size_t>(file_hdr_.record_size)) {
+            throw InvalidRecordSizeError(
+                static_cast<int>(mutation.after.size()));
+        }
+        if (mutation.kind != HeapMutationKind::INSERT &&
+            mutation.before.size() !=
+                static_cast<size_t>(file_hdr_.record_size)) {
+            throw InvalidRecordSizeError(
+                static_cast<int>(mutation.before.size()));
+        }
+    }
+
+    std::shared_lock<std::shared_mutex> lifecycle(lifecycle_latch_);
+    ensure_page_exists(batch.page_no);
+    RmPageWriteHandle page = fetch_page_write(batch.page_no);
+    bool reusable = true;
+    {
+        std::lock_guard<std::mutex> reservations(reservation_latch_);
+        std::unordered_set<int> slots;
+        for (const HeapMutation &mutation : batch.mutations) {
+            if (!slots.insert(mutation.rid.slot_no).second) {
+                throw InternalError("Heap page batch repeats a slot");
+            }
+            const bool exists =
+                Bitmap::is_set(page.bitmap, mutation.rid.slot_no);
+            if (mutation.kind == HeapMutationKind::INSERT) {
+                if (exists || reserved_insert_slots_.count(
+                                  encode_reserved_slot(mutation.rid)) == 0) {
+                    throw InternalError("Reserved Heap slot was reused");
+                }
+            } else if (!exists ||
+                       std::memcmp(page.get_slot(mutation.rid.slot_no),
+                                   mutation.before.data(),
+                                   file_hdr_.record_size) != 0) {
+                throw InternalError("Heap page batch before image changed");
+            }
+        }
+
+        // No page byte is changed until every mutation above is validated.
+        for (const HeapMutation &mutation : batch.mutations) {
+            char *slot = page.get_slot(mutation.rid.slot_no);
+            if (mutation.kind == HeapMutationKind::INSERT) {
+                Bitmap::set(page.bitmap, mutation.rid.slot_no);
+                std::memcpy(slot, mutation.after.data(), file_hdr_.record_size);
+                ++page.page_hdr->num_records;
+                reserved_insert_slots_.erase(
+                    encode_reserved_slot(mutation.rid));
+            } else if (mutation.kind == HeapMutationKind::UPDATE) {
+                std::memcpy(slot, mutation.after.data(), file_hdr_.record_size);
+            } else {
+                Bitmap::reset(page.bitmap, mutation.rid.slot_no);
+                --page.page_hdr->num_records;
+            }
+        }
+        reusable = page.page_hdr->num_records <
+                   file_hdr_.num_records_per_page;
+        if (!reusable) {
+            page.page_hdr->next_free_page_no = RM_NO_PAGE;
+        }
+    }
+    if (page_lsn != INVALID_LSN) {
+        page.set_page_lsn(page_lsn);
+    }
+    page.mark_dirty();
+    page.drop();
+    if (reusable) {
+        add_free_page_candidate(batch.page_no);
+    } else {
+        remove_free_page_candidate(batch.page_no);
     }
 }
 

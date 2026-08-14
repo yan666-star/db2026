@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <unordered_map>
 #include <utility>
 
+#include "common/perf_counters.h"
 #include "common/context.h"
 #include "errors.h"
 #include "index/ix.h"
@@ -26,67 +28,6 @@ std::vector<char> index_key(const RmRecord &record,
         offset += column.len;
     }
     return key;
-}
-
-void insert_indexes(SmManager *sm_manager, const std::string &table_name,
-                    const RmRecord &record, const Rid &rid,
-                    Transaction *txn) {
-    const TabMeta &table = sm_manager->db_.get_table(table_name);
-    for (const IndexMeta &index : table.indexes) {
-        const std::string name =
-            sm_manager->get_ix_manager()->get_index_name(table_name,
-                                                         index.cols);
-        std::vector<char> key = index_key(record, index);
-        sm_manager->ihs_.at(name)->insert_entry(key.data(), rid, txn);
-    }
-}
-
-void update_indexes(SmManager *sm_manager, TransactionManager *txn_manager,
-                    IndexVersionStore *index_versions,
-                    const std::string &table_name,
-                    const RmRecord &before, const RmRecord &after,
-                    const Rid &rid, Transaction *txn) {
-    const TabMeta &table = sm_manager->db_.get_table(table_name);
-    for (const IndexMeta &index : table.indexes) {
-        std::vector<char> old_key = index_key(before, index);
-        std::vector<char> new_key = index_key(after, index);
-        if (old_key == new_key) {
-            continue;
-        }
-        const std::string name =
-            sm_manager->get_ix_manager()->get_index_name(table_name,
-                                                         index.cols);
-        IxIndexHandle *handle = sm_manager->ihs_.at(name).get();
-        txn_manager->acquire_unique_key_intent(txn, handle->GetFd(), old_key);
-        index_versions->retain(handle->GetFd(), old_key, rid,
-                               txn->get_control());
-        handle->delete_entry(old_key.data(), txn);
-        handle->insert_entry(new_key.data(), rid, txn);
-    }
-}
-
-void delete_indexes(SmManager *sm_manager, TransactionManager *txn_manager,
-                    IndexVersionStore *index_versions,
-                    const std::string &table_name,
-                    const RmRecord &record, const Rid &rid,
-                    Transaction *txn) {
-    const TabMeta &table = sm_manager->db_.get_table(table_name);
-    for (const IndexMeta &index : table.indexes) {
-        const std::string name =
-            sm_manager->get_ix_manager()->get_index_name(table_name,
-                                                         index.cols);
-        IxIndexHandle *handle = sm_manager->ihs_.at(name).get();
-        std::vector<char> key = index_key(record, index);
-        std::vector<Rid> indexed;
-        if (!handle->get_value(key.data(), &indexed, txn) ||
-            std::find(indexed.begin(), indexed.end(), rid) == indexed.end()) {
-            continue;
-        }
-        txn_manager->acquire_unique_key_intent(txn, handle->GetFd(), key);
-        index_versions->retain(handle->GetFd(), key, rid,
-                               txn->get_control());
-        handle->delete_entry(key.data(), txn);
-    }
 }
 
 Rid resolve_rid(const PreparedStorageCommit &commit,
@@ -206,33 +147,45 @@ void StorageCommitExecutor::apply(PreparedStorageCommit *commit,
     }
     Transaction *txn = context->txn_;
 
-    if (context->log_mgr_ != nullptr) {
+    commit->row_lsns.assign(commit->writes.size(), INVALID_LSN);
+    if (context->log_mgr_ != nullptr && !commit->writes.empty()) {
+        std::vector<std::unique_ptr<LogRecord>> owned_logs;
+        std::vector<LogRecord *> logs;
+        owned_logs.reserve(commit->writes.size());
+        logs.reserve(commit->writes.size());
         for (const StagedWrite &write : commit->writes) {
             const Rid rid = resolve_rid(*commit, write);
-            lsn_t lsn = INVALID_LSN;
+            std::unique_ptr<LogRecord> log;
             if (write.kind == LogicalWriteKind::INSERT) {
                 RmRecord after = record_view(write.after);
-                InsertLogRecord log(txn->get_transaction_id(), after, rid,
-                                    write.table_name);
-                log.prev_lsn_ = txn->get_prev_lsn();
-                lsn = context->log_mgr_->add_log_to_buffer(&log);
+                log = std::make_unique<InsertLogRecord>(
+                    txn->get_transaction_id(), after, rid, write.table_name);
             } else if (write.kind == LogicalWriteKind::UPDATE) {
                 RmRecord before = record_view(write.before);
                 RmRecord after = record_view(write.after);
-                UpdateLogRecord log(txn->get_transaction_id(), before, after,
-                                    rid, write.table_name);
-                log.prev_lsn_ = txn->get_prev_lsn();
-                lsn = context->log_mgr_->add_log_to_buffer(&log);
+                log = std::make_unique<UpdateLogRecord>(
+                    txn->get_transaction_id(), before, after, rid,
+                    write.table_name);
             } else {
                 RmRecord before = record_view(write.before);
-                DeleteLogRecord log(txn->get_transaction_id(), before, rid,
-                                    write.table_name);
-                log.prev_lsn_ = txn->get_prev_lsn();
-                lsn = context->log_mgr_->add_log_to_buffer(&log);
+                log = std::make_unique<DeleteLogRecord>(
+                    txn->get_transaction_id(), before, rid,
+                    write.table_name);
             }
-            txn->set_prev_lsn(lsn);
-            commit->greatest_row_lsn = lsn;
+            log->prev_lsn_ = logs.empty() ? txn->get_prev_lsn() : INVALID_LSN;
+            logs.push_back(log.get());
+            owned_logs.push_back(std::move(log));
         }
+        if (rmdb_perf::enabled()) {
+            rmdb_perf::shared_counters().transaction_row_wal_sets.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+        commit->row_lsns = context->log_mgr_->add_logs_to_buffer(logs);
+        if (commit->row_lsns.size() != commit->writes.size()) {
+            throw InternalError("Row WAL batch returned the wrong LSN count");
+        }
+        commit->greatest_row_lsn = commit->row_lsns.back();
+        txn->set_prev_lsn(commit->greatest_row_lsn);
     }
 
     const bool has_physical_writes = !commit->writes.empty();
@@ -242,59 +195,118 @@ void StorageCommitExecutor::apply(PreparedStorageCommit *commit,
     }
     commit->physical_apply_started = true;
 
+    struct HeapPageKey {
+        int fd;
+        page_id_t page_no;
+        bool operator<(const HeapPageKey &other) const {
+            return fd < other.fd ||
+                   (fd == other.fd && page_no < other.page_no);
+        }
+    };
+    struct HeapPageWork {
+        RmFileHandle *file = nullptr;
+        HeapPageMutationBatch batch;
+        lsn_t page_lsn = INVALID_LSN;
+        std::vector<size_t> write_indexes;
+    };
+    struct IndexWork {
+        IxIndexHandle *handle = nullptr;
+        std::vector<IndexMutation> mutations;
+    };
+
+    std::map<HeapPageKey, HeapPageWork> heap_pages;
+    std::map<int, IndexWork> indexes;
+    for (size_t index = 0; index < commit->writes.size(); ++index) {
+        const StagedWrite &write = commit->writes[index];
+        const Rid rid = resolve_rid(*commit, write);
+        RmFileHandle *file = sm_manager_->fhs_.at(write.table_name).get();
+        HeapPageKey page_key{file->GetFd(), rid.page_no};
+        HeapPageWork &page = heap_pages[page_key];
+        page.file = file;
+        page.batch.fd = file->GetFd();
+        page.batch.page_no = rid.page_no;
+        HeapMutationKind heap_kind = HeapMutationKind::DELETE;
+        if (write.kind == LogicalWriteKind::INSERT) {
+            heap_kind = HeapMutationKind::INSERT;
+        } else if (write.kind == LogicalWriteKind::UPDATE) {
+            heap_kind = HeapMutationKind::UPDATE;
+        }
+        page.batch.mutations.push_back(
+            HeapMutation{heap_kind, rid, write.before, write.after});
+        page.write_indexes.push_back(index);
+        page.page_lsn = std::max(page.page_lsn, commit->row_lsns[index]);
+
+        const TabMeta &table = sm_manager_->db_.get_table(write.table_name);
+        for (const IndexMeta &meta : table.indexes) {
+            const std::string name =
+                sm_manager_->get_ix_manager()->get_index_name(
+                    write.table_name, meta.cols);
+            IxIndexHandle *handle = sm_manager_->ihs_.at(name).get();
+            IndexWork &work = indexes[handle->GetFd()];
+            work.handle = handle;
+            if (write.kind == LogicalWriteKind::INSERT) {
+                RmRecord after = record_view(write.after);
+                work.mutations.push_back(IndexMutation{
+                    IndexMutationKind::INSERT, index_key(after, meta), rid});
+                continue;
+            }
+
+            RmRecord before = record_view(write.before);
+            std::vector<char> old_key = index_key(before, meta);
+            if (write.kind == LogicalWriteKind::DELETE) {
+                std::vector<Rid> indexed;
+                if (!handle->get_value(old_key.data(), &indexed, txn) ||
+                    std::find(indexed.begin(), indexed.end(), rid) ==
+                        indexed.end()) {
+                    continue;
+                }
+                transaction_manager_->acquire_unique_key_intent(
+                    txn, handle->GetFd(), old_key);
+                transaction_manager_->index_versions_.retain(
+                    handle->GetFd(), old_key, rid, txn->get_control());
+                work.mutations.push_back(IndexMutation{
+                    IndexMutationKind::DELETE, std::move(old_key), rid});
+                continue;
+            }
+
+            RmRecord after = record_view(write.after);
+            std::vector<char> new_key = index_key(after, meta);
+            if (old_key != new_key) {
+                transaction_manager_->acquire_unique_key_intent(
+                    txn, handle->GetFd(), old_key);
+                transaction_manager_->index_versions_.retain(
+                    handle->GetFd(), old_key, rid, txn->get_control());
+                work.mutations.push_back(IndexMutation{
+                    IndexMutationKind::DELETE, std::move(old_key), rid});
+                work.mutations.push_back(IndexMutation{
+                    IndexMutationKind::INSERT, std::move(new_key), rid});
+            }
+        }
+    }
+    for (auto &[key, page] : heap_pages) {
+        (void)key;
+        std::sort(page.batch.mutations.begin(), page.batch.mutations.end(),
+                  [](const HeapMutation &left, const HeapMutation &right) {
+                      return left.rid.slot_no < right.rid.slot_no;
+                  });
+    }
+
     std::vector<size_t> applied;
     Context rollback_context(context->lock_mgr_, nullptr, txn,
                              transaction_manager_);
     try {
-        for (size_t index = 0; index < commit->writes.size(); ++index) {
-            const StagedWrite &write = commit->writes[index];
-            if (write.kind == LogicalWriteKind::INSERT) {
-                continue;
-            }
-            const Rid rid = *write.rid;
-            RmFileHandle *file =
-                sm_manager_->fhs_.at(write.table_name).get();
-            RmRecord before = record_view(write.before);
-            applied.push_back(index);
-            if (write.kind == LogicalWriteKind::UPDATE) {
-                RmRecord after = record_view(write.after);
-                file->update_record(rid, after.data, nullptr,
-                                    commit->greatest_row_lsn);
-                update_indexes(sm_manager_, transaction_manager_,
-                               &transaction_manager_->index_versions_,
-                               write.table_name, before, after, rid, txn);
-            } else {
-                delete_indexes(sm_manager_, transaction_manager_,
-                               &transaction_manager_->index_versions_,
-                               write.table_name, before, rid, txn);
-                file->delete_record(rid, nullptr,
-                                    commit->greatest_row_lsn);
-            }
+        for (auto &[key, page] : heap_pages) {
+            (void)key;
+            page.file->apply_page_batch(page.batch, page.page_lsn);
+            applied.insert(applied.end(), page.write_indexes.begin(),
+                           page.write_indexes.end());
         }
-
-        std::unordered_map<std::string,
-                           std::vector<std::pair<Rid, std::vector<char>>>>
-            inserts_by_table;
-        for (size_t index = 0; index < commit->writes.size(); ++index) {
-            const StagedWrite &write = commit->writes[index];
-            if (write.kind != LogicalWriteKind::INSERT) {
-                continue;
+        for (auto &[index_fd, work] : indexes) {
+            (void)index_fd;
+            if (!work.mutations.empty()) {
+                work.handle->apply_sorted_batch(std::move(work.mutations),
+                                                txn);
             }
-            applied.push_back(index);
-            inserts_by_table[write.table_name].push_back(
-                {resolve_rid(*commit, write), write.after});
-        }
-        for (auto &[table_name, inserts] : inserts_by_table) {
-            sm_manager_->fhs_.at(table_name)->apply_reserved_inserts(
-                inserts, commit->greatest_row_lsn);
-        }
-        for (const StagedWrite &write : commit->writes) {
-            if (write.kind != LogicalWriteKind::INSERT) {
-                continue;
-            }
-            RmRecord after = record_view(write.after);
-            insert_indexes(sm_manager_, write.table_name, after,
-                           resolve_rid(*commit, write), txn);
         }
         for (auto &reservation : reservations_) {
             reservation->consume();
