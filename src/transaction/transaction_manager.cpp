@@ -405,19 +405,20 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         delete write_record;
     }
 
-    // UPDATE/DELETE are only pending versions before MVCC commit. If this
-    // transaction never entered commit application and had no physical work
-    // to roll back, the table and indexes still contain the pre-transaction
-    // state. The ABORT record remains ordered in the log buffer, but it does
-    // not need an individual fsync: if it is lost in a crash, recovery treats
-    // the transaction as a loser and the already-correct physical state is
-    // unchanged. INSERT/non-MVCC/commit-apply aborts retain the durable path.
-    bool volatile_only_mvcc_abort =
-        txn->uses_mvcc() && !did_physical_rollback && !entered_mvcc_commit;
+    // If the transaction never entered commit application and had no physical
+    // work to roll back, the table and indexes still contain the
+    // pre-transaction state. This includes staged MVCC writes and legacy
+    // transactions that abort before their first physical write. The ABORT
+    // record remains ordered in the log buffer, but it does not need an
+    // individual fsync: if it is lost in a crash, recovery treats the
+    // transaction as a loser and the already-correct physical state is
+    // unchanged. Physical rollback and partial commit-apply aborts retain the
+    // durable path.
+    bool volatile_only_abort =
+        !did_physical_rollback && !entered_mvcc_commit;
 
     if (log_manager != nullptr) {
-        if (!txn->uses_mvcc() || did_physical_rollback ||
-            entered_mvcc_commit) {
+        if (!volatile_only_abort) {
             // Rollback operations are not represented by compensation log
             // records in this framework. Make the restored table/index state
             // durable before the ABORT record says recovery may skip this txn.
@@ -441,7 +442,7 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
         abort_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&abort_log);
         txn->set_prev_lsn(lsn);
-        if (volatile_only_mvcc_abort) {
+        if (volatile_only_abort) {
             if (perf_diag_enabled()) {
                 perf_diag_stats().abort_log_force_flush_skipped.fetch_add(
                     1, std::memory_order_relaxed);

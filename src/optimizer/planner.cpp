@@ -11,8 +11,12 @@ See the Mulan PSL v2 for more details. */
 #include "planner.h"
 
 #include <algorithm>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "execution/executor_delete.h"
 #include "execution/executor_index_scan.h"
@@ -23,31 +27,369 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_update.h"
 #include "index/ix.h"
 
+namespace {
+
+CompOp swap_comparison(CompOp op) {
+    switch (op) {
+        case OP_LT:
+            return OP_GT;
+        case OP_GT:
+            return OP_LT;
+        case OP_LE:
+            return OP_GE;
+        case OP_GE:
+            return OP_LE;
+        default:
+            return op;
+    }
+}
+
+bool same_column(const TabCol &left, const TabCol &right) {
+    return left.tab_name == right.tab_name &&
+           left.col_name == right.col_name;
+}
+
+std::string column_identity(const TabCol &column) {
+    return column.tab_name + "\x1f" + column.col_name;
+}
+
+void append_number(std::string *key, uint64_t value) {
+    key->append(reinterpret_cast<const char *>(&value), sizeof(value));
+}
+
+std::string value_identity(const Value &value) {
+    std::string key;
+    append_number(&key, static_cast<uint64_t>(value.type));
+    append_number(&key, value.is_param ? 1 : 0);
+    if (value.is_param) {
+        append_number(&key, value.param_index);
+        append_number(&key,
+                      static_cast<uint64_t>(value.parameter_declared_type));
+        return key;
+    }
+    if (value.raw != nullptr) {
+        append_number(&key, static_cast<uint64_t>(value.raw->size));
+        key.append(value.raw->data, static_cast<size_t>(value.raw->size));
+        return key;
+    }
+    switch (value.type) {
+        case TYPE_INT:
+            key.append(reinterpret_cast<const char *>(&value.int_val),
+                       sizeof(value.int_val));
+            break;
+        case TYPE_FLOAT:
+            key.append(reinterpret_cast<const char *>(&value.float_val),
+                       sizeof(value.float_val));
+            break;
+        case TYPE_STRING:
+            append_number(&key, value.str_val.size());
+            key.append(value.str_val);
+            break;
+        default:
+            break;
+    }
+    return key;
+}
+
+std::string condition_identity(const Condition &condition) {
+    std::string key = column_identity(condition.lhs_col);
+    key.push_back(static_cast<char>(condition.op));
+    key.push_back(condition.is_rhs_val ? '\x01' : '\x00');
+    if (condition.is_rhs_val) {
+        key.append(value_identity(condition.rhs_val));
+    } else {
+        key.append(column_identity(condition.rhs_col));
+    }
+    return key;
+}
+
+void normalize_and_deduplicate(std::vector<Condition> *conditions) {
+    std::unordered_set<std::string> seen;
+    std::vector<Condition> normalized;
+    normalized.reserve(conditions->size());
+    for (Condition condition : *conditions) {
+        if (!condition.is_rhs_val &&
+            condition.rhs_col < condition.lhs_col) {
+            std::swap(condition.lhs_col, condition.rhs_col);
+            condition.op = swap_comparison(condition.op);
+        }
+        if (seen.insert(condition_identity(condition)).second) {
+            normalized.push_back(std::move(condition));
+        }
+    }
+    *conditions = std::move(normalized);
+}
+
+const ColMeta *find_query_column(SmManager *sm_manager, const Query &query,
+                                 const TabCol &column) {
+    auto derived = query.derived_tables.find(column.tab_name);
+    if (derived != query.derived_tables.end()) {
+        auto found = std::find_if(
+            derived->second.cols.begin(), derived->second.cols.end(),
+            [&](const ColMeta &meta) { return meta.name == column.col_name; });
+        return found == derived->second.cols.end() ? nullptr : &*found;
+    }
+    if (!sm_manager->db_.is_table(column.tab_name)) {
+        return nullptr;
+    }
+    const TabMeta &table = sm_manager->db_.get_table(column.tab_name);
+    auto found = std::find_if(
+        table.cols.begin(), table.cols.end(),
+        [&](const ColMeta &meta) { return meta.name == column.col_name; });
+    return found == table.cols.end() ? nullptr : &*found;
+}
+
+class EqualityClasses {
+   public:
+    void unite(const TabCol &left, const TabCol &right) {
+        const std::string left_key = column_identity(left);
+        const std::string right_key = column_identity(right);
+        columns_.emplace(left_key, left);
+        columns_.emplace(right_key, right);
+        const std::string left_root = find(left_key);
+        const std::string right_root = find(right_key);
+        if (left_root != right_root) {
+            parent_[right_root] = left_root;
+        }
+    }
+
+    std::string root(const TabCol &column) {
+        const std::string key = column_identity(column);
+        columns_.emplace(key, column);
+        return find(key);
+    }
+
+    std::vector<TabCol> members(const std::string &root_key) {
+        std::vector<TabCol> result;
+        for (const auto &[key, column] : columns_) {
+            if (find(key) == root_key) {
+                result.push_back(column);
+            }
+        }
+        return result;
+    }
+
+   private:
+    std::string find(const std::string &key) {
+        auto [it, inserted] = parent_.emplace(key, key);
+        if (inserted || it->second == key) {
+            return key;
+        }
+        it->second = find(it->second);
+        return it->second;
+    }
+
+    std::unordered_map<std::string, std::string> parent_;
+    std::unordered_map<std::string, TabCol> columns_;
+};
+
+void propagate_equal_literals(SmManager *sm_manager, Query *query) {
+    EqualityClasses classes;
+    for (const Condition &condition : query->conds) {
+        if (!condition.is_rhs_val && condition.op == OP_EQ) {
+            classes.unite(condition.lhs_col, condition.rhs_col);
+        }
+    }
+
+    const std::vector<Condition> original = query->conds;
+    for (const Condition &literal : original) {
+        if (!literal.is_rhs_val || literal.op != OP_EQ) {
+            continue;
+        }
+        const ColMeta *source =
+            find_query_column(sm_manager, *query, literal.lhs_col);
+        if (source == nullptr) {
+            continue;
+        }
+        const std::string root = classes.root(literal.lhs_col);
+        for (const TabCol &target : classes.members(root)) {
+            if (same_column(target, literal.lhs_col)) {
+                continue;
+            }
+            const ColMeta *target_meta =
+                find_query_column(sm_manager, *query, target);
+            if (target_meta == nullptr || target_meta->type != source->type ||
+                target_meta->len != source->len) {
+                continue;
+            }
+            Condition inferred = literal;
+            inferred.lhs_col = target;
+            query->conds.push_back(std::move(inferred));
+        }
+    }
+    normalize_and_deduplicate(&query->conds);
+}
+
+bool literal_condition_on(const Condition &condition,
+                          const std::string &table,
+                          const std::string &column,
+                          bool equality_only) {
+    if (!condition.is_rhs_val || condition.lhs_col.tab_name != table ||
+        condition.lhs_col.col_name != column || condition.op == OP_NE) {
+        return false;
+    }
+    return !equality_only || condition.op == OP_EQ;
+}
+
+bool join_binds_column(const Condition &condition,
+                       const std::string &table,
+                       const std::string &column,
+                       const std::set<std::string> &joined) {
+    if (condition.is_rhs_val || condition.op != OP_EQ) {
+        return false;
+    }
+    if (condition.lhs_col.tab_name == table &&
+        condition.lhs_col.col_name == column) {
+        return joined.count(condition.rhs_col.tab_name) != 0;
+    }
+    if (condition.rhs_col.tab_name == table &&
+        condition.rhs_col.col_name == column) {
+        return joined.count(condition.lhs_col.tab_name) != 0;
+    }
+    return false;
+}
+
+int best_index_prefix(SmManager *sm_manager, const Query &query,
+                      const std::string &table,
+                      const std::set<std::string> &joined) {
+    if (!sm_manager->db_.is_table(table)) {
+        return 0;
+    }
+    const TabMeta &meta = sm_manager->db_.get_table(table);
+    int best = 0;
+    for (const IndexMeta &index : meta.indexes) {
+        int prefix = 0;
+        for (const ColMeta &column : index.cols) {
+            const bool equality = std::any_of(
+                query.conds.begin(), query.conds.end(),
+                [&](const Condition &condition) {
+                    return literal_condition_on(condition, table, column.name,
+                                                true) ||
+                           join_binds_column(condition, table, column.name,
+                                             joined);
+                });
+            if (equality) {
+                ++prefix;
+                continue;
+            }
+            const bool range = std::any_of(
+                query.conds.begin(), query.conds.end(),
+                [&](const Condition &condition) {
+                    return literal_condition_on(condition, table, column.name,
+                                                false);
+                });
+            if (range) {
+                ++prefix;
+            }
+            break;
+        }
+        best = std::max(best, prefix);
+    }
+    return best;
+}
+
+int local_predicate_count(const Query &query, const std::string &table) {
+    return static_cast<int>(std::count_if(
+        query.conds.begin(), query.conds.end(),
+        [&](const Condition &condition) {
+            return condition.lhs_col.tab_name == table &&
+                   (condition.is_rhs_val ||
+                    condition.rhs_col.tab_name == table);
+        }));
+}
+
+bool connected_to_joined(const Query &query, const std::string &table,
+                         const std::set<std::string> &joined) {
+    return std::any_of(
+        query.conds.begin(), query.conds.end(),
+        [&](const Condition &condition) {
+            if (condition.is_rhs_val) {
+                return false;
+            }
+            return (condition.lhs_col.tab_name == table &&
+                    joined.count(condition.rhs_col.tab_name) != 0) ||
+                   (condition.rhs_col.tab_name == table &&
+                    joined.count(condition.lhs_col.tab_name) != 0);
+        });
+}
+
+void reorder_inner_joins(SmManager *sm_manager, Query *query) {
+    if (query->tables.size() < 2) {
+        return;
+    }
+    const std::vector<std::string> original = query->tables;
+    std::vector<bool> used(original.size(), false);
+    std::vector<std::string> ordered;
+    std::set<std::string> joined;
+    ordered.reserve(original.size());
+
+    while (ordered.size() < original.size()) {
+        size_t best_index = original.size();
+        int best_score = std::numeric_limits<int>::min();
+        for (size_t index = 0; index < original.size(); ++index) {
+            if (used[index]) {
+                continue;
+            }
+            const std::string &table = original[index];
+            const bool connected =
+                ordered.empty() || connected_to_joined(*query, table, joined);
+            const int score =
+                (connected ? 100000 : 0) +
+                best_index_prefix(sm_manager, *query, table, joined) * 1000 +
+                local_predicate_count(*query, table) * 10 -
+                static_cast<int>(index);
+            if (score > best_score) {
+                best_score = score;
+                best_index = index;
+            }
+        }
+        if (best_index == original.size()) {
+            break;
+        }
+        used[best_index] = true;
+        ordered.push_back(original[best_index]);
+        joined.insert(original[best_index]);
+    }
+    if (ordered.size() == original.size()) {
+        query->tables = std::move(ordered);
+    }
+}
+
+}  // namespace
+
 // 最左前缀匹配：选择能连续匹配最多索引列的索引
 bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_conds, std::vector<std::string>& index_col_names) {
     index_col_names.clear();
-    std::set<std::string> available_cols;
-    for (auto& cond : curr_conds) {
-        if (cond.is_rhs_val && cond.op != OP_NE && cond.lhs_col.tab_name == tab_name) {
-            available_cols.insert(cond.lhs_col.col_name);
-        }
-    }
-    if (available_cols.empty()) {
-        return false;
-    }
-
     TabMeta& tab = sm_manager_->db_.get_table(tab_name);
     const IndexMeta* best_index = nullptr;
     int best_score = 0;
     for (const auto& index : tab.indexes) {
-        int score = 0;
+        int prefix = 0;
+        int equality_prefix = 0;
         for (const auto& index_col : index.cols) {
-            if (available_cols.count(index_col.name)) {
-                score++;
-            } else {
-                break;
+            const bool has_equality = std::any_of(
+                curr_conds.begin(), curr_conds.end(),
+                [&](const Condition &condition) {
+                    return literal_condition_on(condition, tab_name,
+                                                index_col.name, true);
+                });
+            if (has_equality) {
+                ++prefix;
+                ++equality_prefix;
+                continue;
             }
+            const bool has_range = std::any_of(
+                curr_conds.begin(), curr_conds.end(),
+                [&](const Condition &condition) {
+                    return literal_condition_on(condition, tab_name,
+                                                index_col.name, false);
+                });
+            if (has_range) {
+                ++prefix;
+            }
+            break;
         }
+        const int score = equality_prefix * 100 + prefix;
         if (score > best_score) {
             best_score = score;
             best_index = &index;
@@ -57,11 +399,7 @@ bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_c
         return false;
     }
     for (const auto& col : best_index->cols) {
-        if (available_cols.count(col.name)) {
-            index_col_names.push_back(col.name);
-        } else {
-            break;
-        }
+        index_col_names.push_back(col.name);
     }
     return true;
 }
@@ -291,9 +629,13 @@ std::shared_ptr<Plan> pop_scan(int *scantbl,
 
 std::shared_ptr<Query> Planner::logical_optimization(std::shared_ptr<Query> query, Context *context)
 {
-    
-    //TODO 实现逻辑优化规则
-
+    (void)context;
+    if (query == nullptr) {
+        throw InternalError("Cannot optimize a null query");
+    }
+    normalize_and_deduplicate(&query->conds);
+    propagate_equal_literals(sm_manager_, query.get());
+    reorder_inner_joins(sm_manager_, query.get());
     return query;
 }
 

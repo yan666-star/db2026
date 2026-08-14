@@ -100,6 +100,17 @@ void test_pre_apply_abort_does_not_checkpoint_or_fsync_database_files() {
             "pre-apply abort fsynced a database file");
 
     transaction_manager.release_transaction(writer);
+
+    Transaction *legacy_read_only = transaction_manager.begin(
+        nullptr, &log_manager, IsolationLevel::READ_COMMITTED);
+    disk.reset_counts();
+    transaction_manager.abort(legacy_read_only, &log_manager);
+    require(disk.sync_all_calls() == 0,
+            "read-only legacy abort synchronized all database files");
+    require(disk.database_fsync_calls() == 0,
+            "read-only legacy abort fsynced a database file");
+    transaction_manager.release_transaction(legacy_read_only);
+
     system_manager.close_db();
     const int log_fd = disk.GetLogFd();
     if (log_fd >= 0) {

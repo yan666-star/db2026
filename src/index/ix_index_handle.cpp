@@ -750,6 +750,58 @@ void IxIndexHandle::apply_sorted_batch(
         bool retry = false;
         bool single_fallback = false;
         size_t end = begin;
+        auto apply_group = [&](IxWriteNode &leaf,
+                               const std::vector<char> &upper_boundary) {
+            bool changed = false;
+            while (!retry && end < mutations.size()) {
+                const IndexMutation &mutation = mutations[end];
+                if (!upper_boundary.empty() &&
+                    ix_compare(mutation.key.data(), upper_boundary.data(),
+                               file_hdr_->col_types_,
+                               file_hdr_->col_lens_) >= 0) {
+                    break;
+                }
+                const int pos = leaf.node.lower_bound(mutation.key.data());
+                const bool exists =
+                    pos < leaf.node.get_size() &&
+                    ix_compare(leaf.node.get_key(pos), mutation.key.data(),
+                               file_hdr_->col_types_,
+                               file_hdr_->col_lens_) == 0;
+                if (mutation.kind == IndexMutationKind::DELETE) {
+                    if (exists && *leaf.node.get_rid(pos) == mutation.rid) {
+                        leaf.node.erase_pair(pos);
+                        changed = true;
+                    }
+                    ++end;
+                    continue;
+                }
+                if (exists) {
+                    throw InternalError(
+                        "Duplicate key in B+Tree mutation batch");
+                }
+                if (!leaf.node.is_safe(Operation::INSERT)) {
+                    structural_insert = true;
+                    break;
+                }
+                leaf.node.insert(mutation.key.data(), mutation.rid);
+                changed = true;
+                ++end;
+            }
+            if (!changed) {
+                return;
+            }
+            const lsn_t change_lsn =
+                transaction == nullptr ? INVALID_LSN
+                                       : transaction->get_prev_lsn();
+            leaf.mark_dirty(change_lsn);
+            if (rmdb_perf::enabled()) {
+                auto &counters = rmdb_perf::shared_counters();
+                counters.ix_batch_leaf_groups.fetch_add(
+                    1, std::memory_order_relaxed);
+                counters.ix_batch_leaf_rows.fetch_add(
+                    end - begin, std::memory_order_relaxed);
+            }
+        };
         {
             auto located = find_leaf_read(mutations[begin].key.data());
             if (!located.has_value()) {
@@ -758,101 +810,73 @@ void IxIndexHandle::apply_sorted_batch(
             } else {
                 const page_id_t page_no = located->node.get_page_no();
                 const uint64_t generation = located->guard.generation();
+                const page_id_t observed_next =
+                    located->node.get_next_leaf();
                 located.reset();
 
-                IxWriteNode leaf = fetch_node_write(page_no);
-                record_insert_write_guard(leaf.node);
-                if (leaf.guard.generation() != generation ||
-                    !leaf.node.is_leaf_page() ||
-                    (leaf.node.get_size() > 0 &&
-                     leaf.node.get_prev_leaf() != IX_LEAF_HEADER_PAGE &&
-                     ix_compare(mutations[begin].key.data(),
-                                leaf.node.get_key(0),
-                                file_hdr_->col_types_,
-                                file_hdr_->col_lens_) < 0)) {
-                    retry = true;
+                const bool has_successor =
+                    observed_next != IX_LEAF_HEADER_PAGE &&
+                    observed_next != INVALID_PAGE_ID &&
+                    observed_next != IX_NO_PAGE;
+                std::vector<char> upper_boundary;
+                if (has_successor && observed_next < page_no) {
+                    // Acquire the two adjacent leaves by physical page id,
+                    // while still applying mutations in logical key order.
+                    // Non-rightmost splits commonly create page N -> page M
+                    // with M < N; taking M first avoids both latch inversion
+                    // and the former per-key root-path fallback.
+                    IxReadNode next = fetch_node_read(observed_next);
+                    IxWriteNode leaf = fetch_node_write(page_no);
+                    record_insert_write_guard(leaf.node);
+                    if (leaf.guard.generation() != generation ||
+                        !leaf.node.is_leaf_page() ||
+                        !next.node.is_leaf_page() ||
+                        leaf.node.get_next_leaf() != observed_next ||
+                        next.node.get_prev_leaf() != page_no ||
+                        next.node.get_size() == 0 ||
+                        (leaf.node.get_size() > 0 &&
+                         leaf.node.get_prev_leaf() != IX_LEAF_HEADER_PAGE &&
+                         ix_compare(mutations[begin].key.data(),
+                                    leaf.node.get_key(0),
+                                    file_hdr_->col_types_,
+                                    file_hdr_->col_lens_) < 0)) {
+                        retry = true;
+                    } else {
+                        upper_boundary.resize(file_hdr_->col_tot_len_);
+                        std::memcpy(upper_boundary.data(),
+                                    next.node.get_key(0),
+                                    file_hdr_->col_tot_len_);
+                        apply_group(leaf, upper_boundary);
+                    }
                 } else {
-                    std::vector<char> upper_boundary;
-                    page_id_t next_page = leaf.node.get_next_leaf();
-                    while (next_page != IX_LEAF_HEADER_PAGE &&
-                           next_page != INVALID_PAGE_ID &&
-                           next_page != IX_NO_PAGE) {
-                        if (next_page <= leaf.node.get_page_no()) {
-                            // Non-rightmost splits allocate a new right leaf
-                            // whose logical successor can have a smaller page
-                            // number.  Waiting for that successor while the
-                            // current leaf is write-latched would invert the
-                            // page-number latch order.  This relationship is
-                            // stable, so retrying the same batch group spins
-                            // forever.  Drop this guard and make progress via
-                            // the ordinary one-key path instead.
+                    IxWriteNode leaf = fetch_node_write(page_no);
+                    record_insert_write_guard(leaf.node);
+                    if (leaf.guard.generation() != generation ||
+                        !leaf.node.is_leaf_page() ||
+                        leaf.node.get_next_leaf() != observed_next ||
+                        (leaf.node.get_size() > 0 &&
+                         leaf.node.get_prev_leaf() != IX_LEAF_HEADER_PAGE &&
+                         ix_compare(mutations[begin].key.data(),
+                                    leaf.node.get_key(0),
+                                    file_hdr_->col_types_,
+                                    file_hdr_->col_lens_) < 0)) {
+                        retry = true;
+                    } else if (has_successor) {
+                        IxReadNode next = fetch_node_read(observed_next);
+                        if (!next.node.is_leaf_page() ||
+                            next.node.get_prev_leaf() != page_no) {
+                            retry = true;
+                        } else if (next.node.get_size() == 0) {
                             single_fallback = true;
-                            break;
-                        }
-                        IxReadNode next = fetch_node_read(next_page);
-                        if (next.node.get_size() > 0) {
+                        } else {
                             upper_boundary.resize(file_hdr_->col_tot_len_);
                             std::memcpy(upper_boundary.data(),
                                         next.node.get_key(0),
                                         file_hdr_->col_tot_len_);
-                            break;
+                            apply_group(leaf, upper_boundary);
                         }
-                        next_page = next.node.get_next_leaf();
-                    }
-
-                    bool changed = false;
-                    while (!retry && !single_fallback &&
-                           end < mutations.size()) {
-                        const IndexMutation &mutation = mutations[end];
-                        if (!upper_boundary.empty() &&
-                            ix_compare(mutation.key.data(),
-                                       upper_boundary.data(),
-                                       file_hdr_->col_types_,
-                                       file_hdr_->col_lens_) >= 0) {
-                            break;
-                        }
-                        const int pos =
-                            leaf.node.lower_bound(mutation.key.data());
-                        const bool exists =
-                            pos < leaf.node.get_size() &&
-                            ix_compare(leaf.node.get_key(pos),
-                                       mutation.key.data(),
-                                       file_hdr_->col_types_,
-                                       file_hdr_->col_lens_) == 0;
-                        if (mutation.kind == IndexMutationKind::DELETE) {
-                            if (exists &&
-                                *leaf.node.get_rid(pos) == mutation.rid) {
-                                leaf.node.erase_pair(pos);
-                                changed = true;
-                            }
-                            ++end;
-                            continue;
-                        }
-                        if (exists) {
-                            throw InternalError(
-                                "Duplicate key in B+Tree mutation batch");
-                        }
-                        if (!leaf.node.is_safe(Operation::INSERT)) {
-                            structural_insert = true;
-                            break;
-                        }
-                        leaf.node.insert(mutation.key.data(), mutation.rid);
-                        changed = true;
-                        ++end;
-                    }
-                    if (changed) {
-                        const lsn_t change_lsn =
-                            transaction == nullptr
-                                ? INVALID_LSN
-                                : transaction->get_prev_lsn();
-                        leaf.mark_dirty(change_lsn);
-                        if (rmdb_perf::enabled()) {
-                            auto &counters = rmdb_perf::shared_counters();
-                            counters.ix_batch_leaf_groups.fetch_add(
-                                1, std::memory_order_relaxed);
-                            counters.ix_batch_leaf_rows.fetch_add(
-                                end - begin, std::memory_order_relaxed);
-                        }
+                    } else {
+                        apply_group(leaf, upper_boundary);
                     }
                 }
             }
