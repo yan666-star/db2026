@@ -111,7 +111,7 @@ void test_commit_is_hidden_until_wal_is_durable() {
     std::filesystem::remove_all(directory);
 }
 
-void test_wait_die_keeps_older_transaction_waiting() {
+void test_record_intent_conflicts_fail_fast() {
     TransactionManager manager(nullptr, nullptr);
     Transaction *older = manager.begin(
         nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
@@ -120,8 +120,6 @@ void test_wait_die_keeps_older_transaction_waiting() {
     Rid rid{7, 9};
     auto younger_record = make_int_record(81);
     manager.prepare_insert(younger, 0, rid, *younger_record);
-    younger->append_write_record(
-        new WriteRecord(WType::INSERT_TUPLE, "probe", rid));
 
     auto older_attempt = std::async(std::launch::async, [&] {
         auto older_record = make_int_record(82);
@@ -132,19 +130,24 @@ void test_wait_die_keeps_older_transaction_waiting() {
             return true;
         }
     });
-    require(older_attempt.wait_for(5ms) == std::future_status::timeout,
-            "older transaction timed out instead of waiting for younger owner");
-
-    manager.commit(younger, nullptr);
-    require(older_attempt.wait_for(2s) == std::future_status::ready &&
-                older_attempt.get(),
-            "older waiter did not recheck the committed write conflict");
+    const auto status = older_attempt.wait_for(50ms);
+    if (status != std::future_status::ready) {
+        manager.abort(younger, nullptr);
+        older_attempt.wait();
+        manager.abort(older, nullptr);
+        manager.release_transaction(younger);
+        manager.release_transaction(older);
+        require(false, "older transaction waited behind a record intent");
+    }
+    require(older_attempt.get(),
+            "record-intent contender did not receive WRITE_CONFLICT");
+    manager.abort(younger, nullptr);
     manager.abort(older, nullptr);
     manager.release_transaction(younger);
     manager.release_transaction(older);
 }
 
-void test_unique_key_intent_uses_wait_die_and_wakes_on_abort() {
+void test_unique_key_intent_conflicts_fail_fast() {
     TransactionManager manager(nullptr, nullptr);
     Transaction *older = manager.begin(
         nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
@@ -154,16 +157,25 @@ void test_unique_key_intent_uses_wait_die_and_wakes_on_abort() {
     manager.acquire_unique_key_intent(younger, 17, key);
 
     auto older_attempt = std::async(std::launch::async, [&] {
-        manager.acquire_unique_key_intent(older, 17, key);
-        return true;
+        try {
+            manager.acquire_unique_key_intent(older, 17, key);
+        } catch (TransactionAbortException &error) {
+            return error.GetAbortReason() == AbortReason::WRITE_CONFLICT;
+        }
+        return false;
     });
-    require(older_attempt.wait_for(5ms) == std::future_status::timeout,
-            "older unique-key writer did not wait for younger owner");
-
+    const auto status = older_attempt.wait_for(50ms);
+    if (status != std::future_status::ready) {
+        manager.abort(younger, nullptr);
+        older_attempt.wait();
+        manager.abort(older, nullptr);
+        manager.release_transaction(younger);
+        manager.release_transaction(older);
+        require(false, "older transaction waited behind a unique intent");
+    }
+    require(older_attempt.get(),
+            "unique-intent contender did not receive WRITE_CONFLICT");
     manager.abort(younger, nullptr);
-    require(older_attempt.wait_for(2s) == std::future_status::ready &&
-                older_attempt.get(),
-            "unique-key waiter was not woken when owner aborted");
     manager.abort(older, nullptr);
     manager.release_transaction(younger);
     manager.release_transaction(older);
@@ -191,8 +203,8 @@ void test_unique_key_intent_uses_wait_die_and_wakes_on_abort() {
 
 int main() {
     test_commit_is_hidden_until_wal_is_durable();
-    test_wait_die_keeps_older_transaction_waiting();
-    test_unique_key_intent_uses_wait_die_and_wakes_on_abort();
+    test_record_intent_conflicts_fail_fast();
+    test_unique_key_intent_conflicts_fail_fast();
     std::cout << "MVCC commit visibility tests passed\n";
     return 0;
 }

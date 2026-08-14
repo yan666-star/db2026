@@ -106,6 +106,15 @@ add_executable(test_mvcc_index_visibility test/mvcc_index_visibility_test.cpp)
 target_link_libraries(test_mvcc_index_visibility transaction pthread)
 add_test(NAME test_mvcc_index_visibility COMMAND test_mvcc_index_visibility)
 
+add_executable(test_mvcc_fail_fast test/mvcc_fail_fast_test.cpp)
+target_link_libraries(test_mvcc_fail_fast transaction record system recovery pthread)
+add_test(NAME test_mvcc_fail_fast
+         COMMAND test_mvcc_fail_fast ${CMAKE_SOURCE_DIR})
+
+add_executable(test_mvcc_disjoint_progress test/mvcc_disjoint_progress_test.cpp)
+target_link_libraries(test_mvcc_disjoint_progress transaction record system recovery pthread)
+add_test(NAME test_mvcc_disjoint_progress COMMAND test_mvcc_disjoint_progress)
+
 add_executable(test_transaction_write_batch test/transaction_write_batch_test.cpp)
 target_link_libraries(test_transaction_write_batch transaction pthread)
 add_test(NAME test_transaction_write_batch COMMAND test_transaction_write_batch)

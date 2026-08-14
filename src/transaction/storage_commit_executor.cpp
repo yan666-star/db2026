@@ -59,7 +59,7 @@ void update_indexes(SmManager *sm_manager, TransactionManager *txn_manager,
         IxIndexHandle *handle = sm_manager->ihs_.at(name).get();
         txn_manager->acquire_unique_key_intent(txn, handle->GetFd(), old_key);
         index_versions->retain(handle->GetFd(), old_key, rid,
-                               txn->get_transaction_id());
+                               txn->get_control());
         handle->delete_entry(old_key.data(), txn);
         handle->insert_entry(new_key.data(), rid, txn);
     }
@@ -84,7 +84,7 @@ void delete_indexes(SmManager *sm_manager, TransactionManager *txn_manager,
         }
         txn_manager->acquire_unique_key_intent(txn, handle->GetFd(), key);
         index_versions->retain(handle->GetFd(), key, rid,
-                               txn->get_transaction_id());
+                               txn->get_control());
         handle->delete_entry(key.data(), txn);
     }
 }

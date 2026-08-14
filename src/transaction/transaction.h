@@ -20,6 +20,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "common/common.h"
 #include "transaction/txn_defs.h"
+#include "transaction/txn_registry.h"
 #include "transaction/transaction_write_batch.h"
 #include "record/rm_defs.h"
 
@@ -62,7 +63,7 @@ class Transaction {
           state_(TransactionState::DEFAULT),
           isolation_level_(isolation_level),
           txn_id_(txn_id),
-          start_ts_(0) {
+          control_(std::make_shared<TxnControl>(txn_id, isolation_level)) {
         write_set_ = std::make_shared<std::deque<WriteRecord *>>();
         lock_set_ = std::make_shared<std::unordered_set<LockDataId>>();
         index_latch_page_set_ = std::make_shared<std::deque<Page *>>();
@@ -80,8 +81,12 @@ class Transaction {
     inline void set_txn_mode(bool txn_mode) { txn_mode_ = txn_mode; }
     inline bool get_txn_mode() { return txn_mode_; }
 
-    inline void set_start_ts(timestamp_t start_ts) { start_ts_ = start_ts; }
-    inline timestamp_t get_start_ts() { return start_ts_; }
+    inline void set_start_ts(timestamp_t start_ts) { control_->start_ts = start_ts; }
+    inline timestamp_t get_start_ts() { return control_->start_ts; }
+
+    const std::shared_ptr<TxnControl> &get_control() const noexcept {
+        return control_;
+    }
 
     inline IsolationLevel get_isolation_level() { return isolation_level_; }
     inline bool uses_mvcc() const {
@@ -119,9 +124,13 @@ class Transaction {
     inline void clear_unique_intents() { unique_intents_.clear(); }
 
     inline timestamp_t get_read_ts() const { return read_ts_; }
-    inline timestamp_t get_commit_ts() const { return commit_ts_; }
+    inline timestamp_t get_commit_ts() const {
+        return control_->commit_ts.load(std::memory_order_acquire);
+    }
     inline void set_read_ts(timestamp_t read_ts) { read_ts_ = read_ts; }
-    inline void set_commit_ts(timestamp_t commit_ts) { commit_ts_ = commit_ts; }
+    inline void set_commit_ts(timestamp_t commit_ts) {
+        control_->commit_ts.store(commit_ts, std::memory_order_release);
+    }
 
     /** 修改现有的撤销日志 */
     inline auto ModifyUndoLog(int log_idx, UndoLog new_log) {
@@ -154,7 +163,7 @@ class Transaction {
     std::thread::id thread_id_;       // 当前事务对应的线程id
     lsn_t prev_lsn_;                  // 当前事务执行的最后一条操作对应的lsn，用于系统故障恢复
     txn_id_t txn_id_;                 // 事务的ID，唯一标识符
-    timestamp_t start_ts_;            // 事务的开始时间戳
+    std::shared_ptr<TxnControl> control_;  // shared MVCC publication state
 
     std::shared_ptr<std::deque<WriteRecord *>> write_set_;  // 事务包含的所有写操作
     TransactionWriteBatch write_batch_;
@@ -164,8 +173,6 @@ class Transaction {
     std::vector<std::pair<int, std::string>> unique_intents_;
 
   std::atomic<timestamp_t> read_ts_{0};
-  /** 提交时间戳 */
-  std::atomic<timestamp_t> commit_ts_{INVALID_TS};
   /**
   * @brief 存储撤销日志。
   * 其他撤销日志/表堆将存储 (txn_id, index) 对，因此只能向此vector中追加内容或就地更新内容，而不能删除任何内容。

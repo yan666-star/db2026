@@ -10,6 +10,7 @@
 
 #include "common/config.h"
 #include "record/rm_defs.h"
+#include "transaction/txn_registry.h"
 
 /**
  * Runtime-only history for physical index mappings removed by a key-changing
@@ -22,17 +23,19 @@ class IndexVersionStore {
         std::vector<char> old_key;
         Rid rid;
         txn_id_t owner = INVALID_TXN_ID;
+        std::shared_ptr<TxnControl> owner_control;
         timestamp_t valid_until = INVALID_TS;
     };
 
     void retain(int index_id, std::vector<char> old_key, const Rid &rid,
-                txn_id_t owner);
+                const std::shared_ptr<TxnControl> &owner);
     std::vector<Entry> snapshot(int index_id) const;
     bool conflicts_with_snapshot(int index_id, const std::vector<char> &key,
                                  const Rid &target_rid, txn_id_t txn_id,
                                  timestamp_t start_ts) const;
-    void finalize(txn_id_t owner, timestamp_t commit_ts);
-    void discard(txn_id_t owner);
+    void finalize(const std::shared_ptr<TxnControl> &owner,
+                  timestamp_t commit_ts);
+    void discard(const std::shared_ptr<TxnControl> &owner);
     void garbage_collect(timestamp_t watermark);
 
    private:
@@ -42,8 +45,6 @@ class IndexVersionStore {
         std::unordered_map<int, std::vector<Entry>> by_index;
     };
     std::array<Shard, kShardCount> shards_;
-    mutable std::mutex owners_latch_;
-    std::unordered_set<txn_id_t> provisional_owners_;
     std::atomic<size_t> entry_count_{0};
 
     static size_t shard_index(int index_id) {

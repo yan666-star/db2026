@@ -145,11 +145,6 @@ bool RmFileHandle::is_record(const Rid &rid) const {
 
 std::unique_ptr<RmRecord> RmFileHandle::get_record(
     const Rid &rid, Context *context) const {
-    std::shared_lock<std::shared_mutex> commit_apply_guard;
-    if (context != nullptr && context->txn_mgr_ != nullptr) {
-        commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
-    }
-
     RmPageReadHandle page = fetch_page_read(rid.page_no);
     bool exists = rid.slot_no >= 0 &&
                   rid.slot_no < file_hdr_.num_records_per_page &&
@@ -183,11 +178,6 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
     std::vector<std::unique_ptr<RmRecord>> records;
     if (rids.empty()) {
         return records;
-    }
-
-    std::shared_lock<std::shared_mutex> commit_apply_guard;
-    if (context != nullptr && context->txn_mgr_ != nullptr) {
-        commit_apply_guard = context->txn_mgr_->acquire_commit_apply_latch();
     }
 
     RmPageReadHandle page = fetch_page_read(page_no);

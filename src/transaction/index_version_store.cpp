@@ -3,7 +3,11 @@
 #include <algorithm>
 
 void IndexVersionStore::retain(int index_id, std::vector<char> old_key,
-                               const Rid &rid, txn_id_t owner) {
+                               const Rid &rid,
+                               const std::shared_ptr<TxnControl> &owner) {
+    if (owner == nullptr) {
+        return;
+    }
     Shard &shard = shards_[shard_index(index_id)];
     bool inserted = false;
     {
@@ -11,19 +15,17 @@ void IndexVersionStore::retain(int index_id, std::vector<char> old_key,
         auto &entries = shard.by_index[index_id];
         auto duplicate = std::find_if(
             entries.begin(), entries.end(), [&](const Entry &entry) {
-                return entry.owner == owner && entry.rid == rid &&
+                return entry.owner_control == owner && entry.rid == rid &&
                        entry.old_key == old_key;
             });
         if (duplicate == entries.end()) {
             entries.push_back(
-                Entry{std::move(old_key), rid, owner, INVALID_TS});
+                Entry{std::move(old_key), rid, owner->id, owner, INVALID_TS});
             inserted = true;
         }
     }
     if (inserted) {
         entry_count_.fetch_add(1, std::memory_order_relaxed);
-        std::lock_guard<std::mutex> owners_lock(owners_latch_);
-        provisional_owners_.insert(owner);
     }
 }
 
@@ -60,19 +62,17 @@ bool IndexVersionStore::conflicts_with_snapshot(
                        });
 }
 
-void IndexVersionStore::finalize(txn_id_t owner, timestamp_t commit_ts) {
-    {
-        std::lock_guard<std::mutex> owners_lock(owners_latch_);
-        if (provisional_owners_.erase(owner) == 0) {
-            return;
-        }
+void IndexVersionStore::finalize(
+    const std::shared_ptr<TxnControl> &owner, timestamp_t commit_ts) {
+    if (owner == nullptr) {
+        return;
     }
     for (Shard &shard : shards_) {
         std::lock_guard<std::mutex> lock(shard.latch);
         for (auto &[index_id, entries] : shard.by_index) {
             static_cast<void>(index_id);
             for (Entry &entry : entries) {
-                if (entry.owner == owner &&
+                if (entry.owner_control == owner &&
                     entry.valid_until == INVALID_TS) {
                     entry.valid_until = commit_ts;
                 }
@@ -81,12 +81,9 @@ void IndexVersionStore::finalize(txn_id_t owner, timestamp_t commit_ts) {
     }
 }
 
-void IndexVersionStore::discard(txn_id_t owner) {
-    {
-        std::lock_guard<std::mutex> owners_lock(owners_latch_);
-        if (provisional_owners_.erase(owner) == 0) {
-            return;
-        }
+void IndexVersionStore::discard(const std::shared_ptr<TxnControl> &owner) {
+    if (owner == nullptr) {
+        return;
     }
     size_t removed = 0;
     for (Shard &shard : shards_) {
@@ -98,7 +95,7 @@ void IndexVersionStore::discard(txn_id_t owner) {
             entries.erase(
                 std::remove_if(entries.begin(), entries.end(),
                                [&](const Entry &entry) {
-                                   return entry.owner == owner &&
+                                   return entry.owner_control == owner &&
                                           entry.valid_until == INVALID_TS;
                                }),
                 entries.end());
