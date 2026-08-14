@@ -299,7 +299,8 @@ def _order_id(rng: random.Random) -> int:
     return rng.randint(1_000_000, 2_000_000_000)
 
 
-def build_new_order(rng: random.Random, args, warehouse: int):
+def build_new_order(rng: random.Random, args, warehouse: int,
+                    force_business_rollback: bool | None = None):
     district = _district(rng, args)
     customer = _customer(rng, args)
     order_id = _order_id(rng)
@@ -325,7 +326,9 @@ def build_new_order(rng: random.Random, args, warehouse: int):
                                      warehouse, line_number, item, supply, "",
                                      quantity, float(quantity * 10),
                                      f"line-{line_number}")))
-    operations.append(operation("commit"))
+    business_rollback = (rng.randrange(100) == 0 if force_business_rollback is None
+                         else force_business_rollback)
+    operations.append(operation("rollback" if business_rollback else "commit"))
     return operations
 
 
@@ -431,6 +434,7 @@ class WorkerStats:
         default_factory=lambda: {name: 0 for name in TXN_NAMES})
     expected_business_rollbacks: int = 0
     abandoned: int = 0
+    connection_setup_failures: int = 0
     latency_ms: list[float] = field(default_factory=list)
     warehouse_ids: set[int] = field(default_factory=set)
 
@@ -441,14 +445,39 @@ class WorkerStats:
             self.conflicts[name] += other.conflicts[name]
         self.expected_business_rollbacks += other.expected_business_rollbacks
         self.abandoned += other.abandoned
+        self.connection_setup_failures += other.connection_setup_failures
         self.latency_ms.extend(other.latency_ms)
         self.warehouse_ids.update(other.warehouse_ids)
+
+
+def is_expected_business_rollback(operations) -> bool:
+    return (operations[-1][0] == STATEMENT_IDS["rollback"])
+
+
+def record_batch_outcome(stats: WorkerStats, name: str, status: int,
+                         expected_business_rollback: bool) -> None:
+    if status == BATCH_OK:
+        if expected_business_rollback:
+            stats.expected_business_rollbacks += 1
+        else:
+            stats.commits[name] += 1
+    elif status == BATCH_TRANSACTION_ABORT:
+        stats.conflicts[name] += 1
+    elif status == BATCH_ERROR:
+        stats.abandoned += 1
+    else:
+        raise WireProtocolError(f"unknown batch status {status}")
+
+
+def record_connection_setup_failure(stats: WorkerStats) -> None:
+    stats.connection_setup_failures += 1
 
 
 def execute_transaction(client: FinalsWireClient, name: str,
                         rng: random.Random, args, warehouse: int):
     operations = BUILDERS[name](rng, args, warehouse)
-    return client.execute_batch(operations, auto_abort=True)
+    return (client.execute_batch(operations, auto_abort=True),
+            is_expected_business_rollback(operations))
 
 
 def phase_worker(worker_id: int, round_id: int, args, barrier, clock):
@@ -460,14 +489,14 @@ def phase_worker(worker_id: int, round_id: int, args, barrier, clock):
         try:
             client = connect_worker(args)
         except (ConnectionError, OSError, TimeoutError, RuntimeError):
-            stats.abandoned += 1
+            record_connection_setup_failure(stats)
         barrier.wait(timeout=args.startup_timeout + args.timeout + 5)
         while time.monotonic() < clock["deadline"]:
             if client is None:
                 try:
                     client = connect_worker(args)
                 except (ConnectionError, OSError, TimeoutError, RuntimeError):
-                    stats.abandoned += 1
+                    record_connection_setup_failure(stats)
                     time.sleep(0.05)
                     continue
             warehouse = (worker_id + sequence * args.clients) % args.warehouses + 1
@@ -477,15 +506,10 @@ def phase_worker(worker_id: int, round_id: int, args, barrier, clock):
             stats.attempts[name] += 1
             started = time.monotonic()
             try:
-                result = execute_transaction(client, name, rng, args, warehouse)
-                if result.status == BATCH_OK:
-                    stats.commits[name] += 1
-                elif result.status == BATCH_TRANSACTION_ABORT:
-                    stats.conflicts[name] += 1
-                elif result.status == BATCH_ERROR:
-                    stats.abandoned += 1
-                else:
-                    raise WireProtocolError(f"unknown batch status {result.status}")
+                result, expected_business_rollback = execute_transaction(
+                    client, name, rng, args, warehouse)
+                record_batch_outcome(stats, name, result.status,
+                                     expected_business_rollback)
             except (ConnectionError, OSError, TimeoutError, WireProtocolError):
                 stats.abandoned += 1
                 client.close()
@@ -596,6 +620,7 @@ def run_phase(args, round_id: int, label: str, seconds: float, server_pid):
             "count": combined.abandoned,
             "rate": combined.abandoned / attempts if attempts else 0.0,
         },
+        "connection_setup_failures": combined.connection_setup_failures,
         "latency_ms": latency,
         "warehouse_coverage": {
             "required_ids": list(range(1, args.warehouses + 1)),
@@ -754,6 +779,21 @@ def run_self_test() -> int:
 
     five_line = new_order_with_line_count(5)
     fifteen_line = new_order_with_line_count(15)
+    business_rollback = build_new_order(
+        random.Random(17), args, 1, force_business_rollback=True)
+    if business_rollback[-1][0] != STATEMENT_IDS["rollback"]:
+        raise AssertionError("expected NewOrder business abort must ROLLBACK")
+    outcome_stats = WorkerStats()
+    record_batch_outcome(outcome_stats, "new_order", BATCH_OK,
+                         is_expected_business_rollback(business_rollback))
+    if (outcome_stats.expected_business_rollbacks != 1 or
+            outcome_stats.commits["new_order"] != 0 or
+            outcome_stats.abandoned != 0):
+        raise AssertionError("business rollback must be separate from commit and abandoned")
+    record_connection_setup_failure(outcome_stats)
+    if (outcome_stats.connection_setup_failures != 1 or
+            outcome_stats.abandoned != 0):
+        raise AssertionError("connection setup failures must not inflate abandoned")
     if client.stream_calls != 0:
         raise AssertionError("ranked workload used a stream call")
     print("self-test PASS: decoded five transaction shapes, 5- and 15-line "
@@ -796,6 +836,9 @@ def main() -> int:
                                             for round_result in measured)},
             "abandoned": sum(round_result["abandoned"]["count"]
                              for round_result in measured),
+            "connection_setup_failures": sum(
+                round_result["connection_setup_failures"]
+                for round_result in measured),
             "latency_ms": {"p95": max((round_result["latency_ms"]["p95"]
                                         for round_result in measured), default=0.0)},
             "warehouse_coverage": [round_result["warehouse_coverage"]
