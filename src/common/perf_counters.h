@@ -169,6 +169,23 @@ struct SharedCounters {
     std::atomic<uint64_t> commit_apply_write_wait_us{0};
     std::atomic<uint64_t> mvcc_latch_acquires{0};
     std::atomic<uint64_t> mvcc_latch_wait_us{0};
+    std::atomic<uint64_t> ix_leaf_fast_insert{0};
+    std::atomic<uint64_t> ix_structural_restart{0};
+    std::atomic<uint64_t> ix_split{0};
+    std::atomic<uint64_t> ix_structural_active{0};
+    std::atomic<uint64_t> ix_structural_max_active{0};
+    std::atomic<uint64_t> page_content_latch_wait_us{0};
+    // Diagnostic-only path-shape counters used by the index concurrency
+    // tests. They count guards acquired by insertion, not all page guards.
+    std::atomic<uint64_t> ix_leaf_write_guards{0};
+    std::atomic<uint64_t> ix_ancestor_write_guards{0};
+    std::atomic<uint64_t> ix_batch_leaf_groups{0};
+    std::atomic<uint64_t> ix_batch_leaf_rows{0};
+    // One-shot diagnostics gate for deterministic structural-concurrency
+    // tests. A zero target (the production default) is a no-op.
+    std::atomic<uint64_t> ix_structural_test_gate_target{0};
+    std::atomic<uint64_t> ix_structural_test_gate_arrived{0};
+    std::atomic<bool> ix_structural_test_gate_open{false};
 };
 
 inline SharedCounters &shared_counters() {

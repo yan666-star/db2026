@@ -11,6 +11,26 @@ See the Mulan PSL v2 for more details. */
 #include "page_guard.h"
 
 #include "buffer_pool_manager.h"
+#include "common/perf_counters.h"
+
+namespace {
+
+template <typename Lock>
+void lock_page_content(Lock *lock) {
+    if (!rmdb_perf::enabled()) {
+        lock->lock();
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    lock->lock();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+    rmdb_perf::shared_counters().page_content_latch_wait_us.fetch_add(
+        static_cast<uint64_t>(elapsed), std::memory_order_relaxed);
+}
+
+}  // namespace
 
 BasicPageGuard::BasicPageGuard(BasicPageGuard &&other) noexcept
     : bpm_(std::exchange(other.bpm_, nullptr)),
@@ -49,7 +69,10 @@ void BasicPageGuard::drop() noexcept {
 
 ReadPageGuard::ReadPageGuard(BasicPageGuard &&basic,
                              std::shared_mutex &content_latch)
-    : BasicPageGuard(std::move(basic)), content_lock_(content_latch) {}
+    : BasicPageGuard(std::move(basic)),
+      content_lock_(content_latch, std::defer_lock) {
+    lock_page_content(&content_lock_);
+}
 
 ReadPageGuard::ReadPageGuard(ReadPageGuard &&other) noexcept
     : BasicPageGuard(std::move(other)),
@@ -75,7 +98,10 @@ void ReadPageGuard::drop() noexcept {
 
 WritePageGuard::WritePageGuard(BasicPageGuard &&basic,
                                std::shared_mutex &content_latch)
-    : BasicPageGuard(std::move(basic)), content_lock_(content_latch) {}
+    : BasicPageGuard(std::move(basic)),
+      content_lock_(content_latch, std::defer_lock) {
+    lock_page_content(&content_lock_);
+}
 
 WritePageGuard::WritePageGuard(WritePageGuard &&other) noexcept
     : BasicPageGuard(std::move(other)),

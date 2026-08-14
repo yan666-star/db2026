@@ -200,7 +200,6 @@ class IxIndexHandle {
     mutable std::shared_mutex root_latch_;
     mutable std::mutex header_latch_;
     mutable std::mutex allocation_latch_;
-    std::mutex split_latch_;
 
    public:
     IxIndexHandle(DiskManager *disk_manager,
@@ -234,14 +233,18 @@ class IxIndexHandle {
     IxWriteNode create_node_write();
     std::optional<IxReadNode> find_leaf_read(const char *key) const;
 
-    page_id_t insert_entry_impl(const char *key, const Rid &value,
-                                Transaction *transaction,
-                                std::unique_lock<std::mutex> *split_lock,
-                                bool *inserted = nullptr);
+    std::optional<page_id_t> try_insert_leaf_optimistic(
+        const char *key, const Rid &rid, Transaction *txn);
+    page_id_t insert_with_structural_path(const char *key, const Rid &rid,
+                                          Transaction *txn,
+                                          bool *inserted = nullptr);
+    bool leaf_still_owns_key(const IxNodeHandle &leaf,
+                             const char *key) const;
     size_t try_insert_leaf_batch(
         const std::vector<std::pair<std::vector<char>, Rid>> &entries,
-        size_t begin, Transaction *transaction);
-    IxWriteNode split_leaf(IxWriteNode &leaf, lsn_t page_lsn);
+        size_t begin, Transaction *transaction, bool *first_overflow);
+    IxWriteNode split_leaf(IxWriteNode &leaf, IxWriteNode *next_sibling,
+                           lsn_t page_lsn);
     IxWriteNode split_internal(IxWriteNode &node,
                                std::vector<char> *promote_key,
                                lsn_t page_lsn);

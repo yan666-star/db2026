@@ -176,6 +176,15 @@ target_link_libraries(
     pthread)
 add_test(NAME test_ix_concurrency COMMAND test_ix_concurrency)
 
+add_executable(test_ix_disjoint_split test/ix_disjoint_split_test.cpp)
+target_link_libraries(
+    test_ix_disjoint_split
+    -Wl,--start-group
+    index storage system transaction recovery record
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_ix_disjoint_split COMMAND test_ix_disjoint_split)
+
 add_executable(test_perf_counters test/perf_counters_test.cpp)
 target_link_libraries(test_perf_counters pthread)
 add_test(NAME test_perf_counters COMMAND test_perf_counters)

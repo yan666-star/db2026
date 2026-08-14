@@ -5,9 +5,73 @@ RMDB is licensed under Mulan PSL v2. */
 
 #include <algorithm>
 #include <cstring>
+#include <thread>
 #include <tuple>
 
 #include "errors.h"
+#include "common/perf_counters.h"
+
+namespace {
+
+class StructuralActivityGuard {
+   public:
+    StructuralActivityGuard() {
+        if (!rmdb_perf::enabled()) {
+            return;
+        }
+        active_ = true;
+        auto &counters = rmdb_perf::shared_counters();
+        const uint64_t active =
+            counters.ix_structural_active.fetch_add(
+                1, std::memory_order_relaxed) +
+            1;
+        rmdb_perf::update_max(counters.ix_structural_max_active, active);
+        const uint64_t gate_target =
+            counters.ix_structural_test_gate_target.load(
+                std::memory_order_acquire);
+        if (gate_target != 0) {
+            const uint64_t arrived =
+                counters.ix_structural_test_gate_arrived.fetch_add(
+                    1, std::memory_order_acq_rel) +
+                1;
+            if (arrived >= gate_target) {
+                counters.ix_structural_test_gate_open.store(
+                    true, std::memory_order_release);
+            } else {
+                while (!counters.ix_structural_test_gate_open.load(
+                    std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+            }
+        }
+    }
+
+    ~StructuralActivityGuard() {
+        if (active_) {
+            rmdb_perf::shared_counters().ix_structural_active.fetch_sub(
+                1, std::memory_order_relaxed);
+        }
+    }
+
+   private:
+    bool active_ = false;
+};
+
+void record_insert_write_guard(const IxNodeHandle &node) {
+    if (!rmdb_perf::enabled()) {
+        return;
+    }
+    auto &counters = rmdb_perf::shared_counters();
+    if (node.is_leaf_page()) {
+        counters.ix_leaf_write_guards.fetch_add(1,
+                                                std::memory_order_relaxed);
+    } else {
+        counters.ix_ancestor_write_guards.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+}
+
+}  // namespace
 
 int IxNodeHandle::lower_bound(const char *target) const {
     int left = 0;
@@ -240,7 +304,12 @@ void IxIndexHandle::set_children_parent(IxWriteNode &node,
 }
 
 IxWriteNode IxIndexHandle::split_leaf(IxWriteNode &leaf,
+                                      IxWriteNode *next_sibling,
                                       lsn_t page_lsn) {
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::shared_counters().ix_split.fetch_add(
+            1, std::memory_order_relaxed);
+    }
     IxWriteNode right = create_node_write();
     right.node.page_hdr->is_leaf = true;
     right.node.page_hdr->parent = leaf.node.get_parent_page_no();
@@ -252,16 +321,19 @@ IxWriteNode IxIndexHandle::split_leaf(IxWriteNode &leaf,
                             leaf.node.get_rid(mid), move_count);
     leaf.node.set_size(mid);
 
-    const page_id_t old_next = leaf.node.get_next_leaf();
+    const page_id_t old_next_page = leaf.node.get_next_leaf();
     right.node.set_prev_leaf(leaf.node.get_page_no());
-    right.node.set_next_leaf(old_next);
+    right.node.set_next_leaf(old_next_page);
     leaf.node.set_next_leaf(right.node.get_page_no());
 
-    if (old_next != IX_LEAF_HEADER_PAGE &&
-        old_next != INVALID_PAGE_ID && old_next != IX_NO_PAGE) {
-        IxWriteNode next = fetch_node_write(old_next);
-        next.node.set_prev_leaf(right.node.get_page_no());
-        next.mark_dirty(page_lsn);
+    if (old_next_page != IX_LEAF_HEADER_PAGE &&
+        old_next_page != INVALID_PAGE_ID && old_next_page != IX_NO_PAGE) {
+        if (next_sibling == nullptr ||
+            next_sibling->node.get_page_no() != old_next_page) {
+            throw InternalError("B+Tree split missing its locked sibling");
+        }
+        next_sibling->node.set_prev_leaf(right.node.get_page_no());
+        next_sibling->mark_dirty(page_lsn);
     } else {
         std::lock_guard<std::mutex> header(header_latch_);
         file_hdr_->last_leaf_ = right.node.get_page_no();
@@ -274,6 +346,10 @@ IxWriteNode IxIndexHandle::split_leaf(IxWriteNode &leaf,
 IxWriteNode IxIndexHandle::split_internal(
     IxWriteNode &node, std::vector<char> *promote_key,
     lsn_t page_lsn) {
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::shared_counters().ix_split.fetch_add(
+            1, std::memory_order_relaxed);
+    }
     IxWriteNode right = create_node_write();
     right.node.page_hdr->is_leaf = false;
     right.node.page_hdr->parent = node.node.get_parent_page_no();
@@ -319,15 +395,96 @@ void IxIndexHandle::initialize_new_root(IxWriteNode &root, page_id_t left,
 
 page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value,
                                       Transaction *transaction) {
-    return insert_entry_impl(key, value, transaction, nullptr, nullptr);
+    if (auto inserted =
+            try_insert_leaf_optimistic(key, value, transaction);
+        inserted.has_value()) {
+        return *inserted;
+    }
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::shared_counters().ix_structural_restart.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+    return insert_with_structural_path(key, value, transaction);
 }
 
-page_id_t IxIndexHandle::insert_entry_impl(
-    const char *key, const Rid &value, Transaction *transaction,
-    std::unique_lock<std::mutex> *split_lock, bool *inserted) {
-    static_cast<void>(transaction);
+bool IxIndexHandle::leaf_still_owns_key(const IxNodeHandle &leaf,
+                                        const char *key) const {
+    if (!leaf.is_leaf_page()) {
+        return false;
+    }
+    if (leaf.get_size() > 0 &&
+        leaf.get_prev_leaf() != IX_LEAF_HEADER_PAGE &&
+        ix_compare(key, leaf.get_key(0), file_hdr_->col_types_,
+                   file_hdr_->col_lens_) < 0) {
+        return false;
+    }
+
+    page_id_t next_page = leaf.get_next_leaf();
+    while (next_page != IX_LEAF_HEADER_PAGE &&
+           next_page != INVALID_PAGE_ID && next_page != IX_NO_PAGE) {
+        // The caller owns the target leaf exclusively. Never wait for a
+        // sibling with a smaller page number while retaining that guard.
+        if (next_page <= leaf.get_page_no()) {
+            return false;
+        }
+        IxReadNode next = fetch_node_read(next_page);
+        if (!next.node.is_leaf_page()) {
+            return false;
+        }
+        if (next.node.get_size() > 0) {
+            return ix_compare(key, next.node.get_key(0),
+                              file_hdr_->col_types_,
+                              file_hdr_->col_lens_) < 0;
+        }
+        next_page = next.node.get_next_leaf();
+    }
+    return true;
+}
+
+std::optional<page_id_t> IxIndexHandle::try_insert_leaf_optimistic(
+    const char *key, const Rid &value, Transaction *transaction) {
+    auto located = find_leaf_read(key);
+    if (!located.has_value()) {
+        return std::nullopt;
+    }
+    const page_id_t page_no = located->node.get_page_no();
+    const uint64_t generation = located->guard.generation();
+    located.reset();
+
+    IxWriteNode leaf = fetch_node_write(page_no);
+    record_insert_write_guard(leaf.node);
+    if (leaf.guard.generation() != generation ||
+        !leaf_still_owns_key(leaf.node, key)) {
+        return std::nullopt;
+    }
+
+    const int pos = leaf.node.lower_bound(key);
+    if (pos < leaf.node.get_size() &&
+        ix_compare(leaf.node.get_key(pos), key, file_hdr_->col_types_,
+                   file_hdr_->col_lens_) == 0) {
+        return page_no;
+    }
+    if (!leaf.node.is_safe(Operation::INSERT)) {
+        return std::nullopt;
+    }
+
+    leaf.node.insert(key, value);
     const lsn_t change_lsn =
         transaction == nullptr ? INVALID_LSN : transaction->get_prev_lsn();
+    leaf.mark_dirty(change_lsn);
+    if (rmdb_perf::enabled()) {
+        rmdb_perf::shared_counters().ix_leaf_fast_insert.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+    return page_no;
+}
+
+page_id_t IxIndexHandle::insert_with_structural_path(
+    const char *key, const Rid &value, Transaction *transaction,
+    bool *inserted) {
+    const lsn_t change_lsn =
+        transaction == nullptr ? INVALID_LSN : transaction->get_prev_lsn();
+    StructuralActivityGuard activity;
     for (;;) {
         page_id_t root_page = root_page_snapshot();
         if (root_page == IX_NO_PAGE || root_page == INVALID_PAGE_ID) {
@@ -353,6 +510,7 @@ page_id_t IxIndexHandle::insert_entry_impl(
         std::vector<IxWriteNode> path;
         path.reserve(8);
         path.emplace_back(fetch_node_write(root_page));
+        record_insert_write_guard(path.back().node);
         if (root_page_snapshot() != root_page) {
             continue;
         }
@@ -361,6 +519,7 @@ page_id_t IxIndexHandle::insert_entry_impl(
             const page_id_t child_page =
                 path.back().node.internal_lookup(key);
             IxWriteNode child = fetch_node_write(child_page);
+            record_insert_write_guard(child.node);
             if (child.node.is_safe(Operation::INSERT)) {
                 path.clear();
             }
@@ -378,29 +537,91 @@ page_id_t IxIndexHandle::insert_entry_impl(
             return leaf.node.get_page_no();
         }
 
-        if (leaf.node.get_size() >= leaf.node.get_max_size() - 1 &&
-            split_lock == nullptr) {
-            path.clear();
-            std::unique_lock<std::mutex> structural(split_latch_);
-            return insert_entry_impl(key, value, transaction, &structural,
-                                     inserted);
-        }
-
         const page_id_t inserted_page = leaf.node.get_page_no();
-        leaf.node.insert(key, value);
-        if (inserted != nullptr) {
-            *inserted = true;
-        }
-        leaf.mark_dirty(change_lsn);
-        if (leaf.node.get_size() < leaf.node.get_max_size()) {
+        if (leaf.node.is_safe(Operation::INSERT)) {
+            leaf.node.insert(key, value);
+            if (inserted != nullptr) {
+                *inserted = true;
+            }
+            leaf.mark_dirty(change_lsn);
             return inserted_page;
         }
 
-        if (split_lock == nullptr || !split_lock->owns_lock()) {
-            throw InternalError("B+Tree split requires the split latch");
+        // Lock the existing sibling before publishing any leaf-chain change.
+        // Page numbers along the logical leaf chain are not monotonic, so if
+        // the sibling sorts before the target, release/reacquire the target
+        // while retaining its already-latched unsafe ancestors.
+        const page_id_t leaf_page = leaf.node.get_page_no();
+        const page_id_t old_next_page = leaf.node.get_next_leaf();
+        const bool has_next =
+            old_next_page != IX_LEAF_HEADER_PAGE &&
+            old_next_page != INVALID_PAGE_ID && old_next_page != IX_NO_PAGE;
+        std::optional<IxWriteNode> next_sibling;
+        if (has_next && old_next_page < leaf_page) {
+            path.pop_back();
+            next_sibling.emplace(fetch_node_write(old_next_page));
+            path.emplace_back(fetch_node_write(leaf_page));
+            record_insert_write_guard(path.back().node);
+        } else if (has_next) {
+            next_sibling.emplace(fetch_node_write(old_next_page));
         }
 
-        IxWriteNode right = split_leaf(leaf, change_lsn);
+        IxWriteNode &validated_leaf = path.back();
+        bool valid = validated_leaf.node.is_leaf_page() &&
+                     validated_leaf.node.get_page_no() == leaf_page &&
+                     validated_leaf.node.get_next_leaf() == old_next_page;
+        if (valid && path.size() > 1) {
+            IxWriteNode &parent = path[path.size() - 2];
+            valid = !parent.node.is_leaf_page() &&
+                    parent.node.internal_lookup(key) == leaf_page;
+        }
+        if (valid && next_sibling.has_value()) {
+            valid = next_sibling->node.is_leaf_page() &&
+                    next_sibling->node.get_prev_leaf() == leaf_page &&
+                    (next_sibling->node.get_size() == 0 ||
+                     ix_compare(key, next_sibling->node.get_key(0),
+                                file_hdr_->col_types_,
+                                file_hdr_->col_lens_) < 0);
+        }
+        if (!valid) {
+            continue;
+        }
+
+        const int validated_pos = validated_leaf.node.lower_bound(key);
+        if (validated_pos < validated_leaf.node.get_size() &&
+            ix_compare(validated_leaf.node.get_key(validated_pos), key,
+                       file_hdr_->col_types_, file_hdr_->col_lens_) == 0) {
+            if (inserted != nullptr) {
+                *inserted = false;
+            }
+            return leaf_page;
+        }
+        if (validated_leaf.node.is_safe(Operation::INSERT)) {
+            validated_leaf.node.insert(key, value);
+            validated_leaf.mark_dirty(change_lsn);
+            if (inserted != nullptr) {
+                *inserted = true;
+            }
+            return leaf_page;
+        }
+        if (validated_leaf.node.get_size() !=
+            validated_leaf.node.get_max_size() - 1) {
+            // A concurrent lazy delete can make the pre-split state safe.
+            // Restart so insertion happens through the ordinary safe path.
+            continue;
+        }
+
+        validated_leaf.node.insert(key, value);
+        validated_leaf.mark_dirty(change_lsn);
+        if (inserted != nullptr) {
+            *inserted = true;
+        }
+
+        IxWriteNode right = split_leaf(
+            validated_leaf,
+            next_sibling.has_value() ? &*next_sibling : nullptr,
+            change_lsn);
+        next_sibling.reset();
         std::vector<char> separator(file_hdr_->col_tot_len_);
         std::memcpy(separator.data(), right.node.get_key(0),
                     file_hdr_->col_tot_len_);
@@ -474,29 +695,37 @@ void IxIndexHandle::insert_entries_batch(
 
     size_t begin = 0;
     while (begin < entries.size()) {
-        const size_t inserted =
-            try_insert_leaf_batch(entries, begin, transaction);
-        if (inserted == 0) {
+        bool first_overflow = false;
+        const size_t inserted = try_insert_leaf_batch(
+            entries, begin, transaction, &first_overflow);
+        begin += inserted;
+        if (begin == entries.size()) {
+            break;
+        }
+        if (inserted == 0 || first_overflow) {
             // A full target leaf needs the normal crabbing/split path. After
             // that one structural insertion, retry the remaining sorted keys;
             // they will normally fit in one of the two resulting leaves.
             bool inserted_one = false;
-            insert_entry_impl(entries[begin].first.data(),
-                              entries[begin].second, transaction, nullptr,
-                              &inserted_one);
+            if (rmdb_perf::enabled()) {
+                rmdb_perf::shared_counters().ix_structural_restart.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            insert_with_structural_path(entries[begin].first.data(),
+                                        entries[begin].second, transaction,
+                                        &inserted_one);
             if (!inserted_one) {
                 throw InternalError("Duplicate key in B+Tree insert batch");
             }
             ++begin;
-        } else {
-            begin += inserted;
         }
     }
 }
 
 size_t IxIndexHandle::try_insert_leaf_batch(
     const std::vector<std::pair<std::vector<char>, Rid>> &entries,
-    size_t begin, Transaction *transaction) {
+    size_t begin, Transaction *transaction, bool *first_overflow) {
+    *first_overflow = false;
     if (begin >= entries.size()) {
         return 0;
     }
@@ -506,10 +735,17 @@ size_t IxIndexHandle::try_insert_leaf_batch(
         return 0;
     }
     const page_id_t page_no = located->node.get_page_no();
+    const uint64_t generation = located->guard.generation();
     located.reset();
 
     IxWriteNode leaf = fetch_node_write(page_no);
-    if (!leaf.node.is_leaf_page()) {
+    record_insert_write_guard(leaf.node);
+    if (leaf.guard.generation() != generation ||
+        !leaf.node.is_leaf_page() ||
+        (leaf.node.get_size() > 0 &&
+         leaf.node.get_prev_leaf() != IX_LEAF_HEADER_PAGE &&
+         ix_compare(entries[begin].first.data(), leaf.node.get_key(0),
+                    file_hdr_->col_types_, file_hdr_->col_lens_) < 0)) {
         return 0;
     }
 
@@ -521,6 +757,9 @@ size_t IxIndexHandle::try_insert_leaf_batch(
     page_id_t next_page = leaf.node.get_next_leaf();
     while (next_page != IX_LEAF_HEADER_PAGE &&
            next_page != INVALID_PAGE_ID && next_page != IX_NO_PAGE) {
+        if (next_page <= leaf.node.get_page_no()) {
+            return 0;
+        }
         IxReadNode next = fetch_node_read(next_page);
         if (next.node.get_size() > 0) {
             upper_boundary.resize(file_hdr_->col_tot_len_);
@@ -536,8 +775,8 @@ size_t IxIndexHandle::try_insert_leaf_batch(
         return 0;
     }
 
+    bool changed = false;
     size_t end = begin;
-    size_t new_keys = 0;
     while (end < entries.size()) {
         const auto &entry = entries[end];
         if (!upper_boundary.empty() &&
@@ -546,43 +785,35 @@ size_t IxIndexHandle::try_insert_leaf_batch(
             break;
         }
         const int pos = leaf.node.lower_bound(entry.first.data());
-        const bool exists =
-            pos < leaf.node.get_size() &&
-            ix_compare(leaf.node.get_key(pos), entry.first.data(),
-                       file_hdr_->col_types_, file_hdr_->col_lens_) == 0;
-        if (!exists) {
-            ++new_keys;
-        }
-        ++end;
-    }
-    if (end == begin) {
-        return 0;
-    }
-
-    // Keep one overflow slot unused. The ordinary path owns all structural
-    // changes and will split a full leaf before retrying the remaining batch.
-    if (leaf.node.get_size() + static_cast<int>(new_keys) >=
-        leaf.node.get_max_size()) {
-        return 0;
-    }
-
-    bool changed = false;
-    for (size_t index = begin; index < end; ++index) {
-        const auto &entry = entries[index];
-        const int pos = leaf.node.lower_bound(entry.first.data());
         if (pos < leaf.node.get_size() &&
             ix_compare(leaf.node.get_key(pos), entry.first.data(),
                        file_hdr_->col_types_, file_hdr_->col_lens_) == 0) {
             throw InternalError("Duplicate key in B+Tree insert batch");
         }
+        // Keep the overflow slot unused. Return the prefix that fits so the
+        // caller structurally restarts only at the first overflowing key.
+        if (!leaf.node.is_safe(Operation::INSERT)) {
+            *first_overflow = true;
+            break;
+        }
         leaf.node.insert(entry.first.data(), entry.second);
         changed = true;
+        ++end;
     }
     if (changed) {
         const lsn_t change_lsn =
             transaction == nullptr ? INVALID_LSN
                                    : transaction->get_prev_lsn();
         leaf.mark_dirty(change_lsn);
+        if (rmdb_perf::enabled()) {
+            auto &counters = rmdb_perf::shared_counters();
+            counters.ix_leaf_fast_insert.fetch_add(
+                end - begin, std::memory_order_relaxed);
+            counters.ix_batch_leaf_groups.fetch_add(
+                1, std::memory_order_relaxed);
+            counters.ix_batch_leaf_rows.fetch_add(
+                end - begin, std::memory_order_relaxed);
+        }
     }
     return end - begin;
 }
@@ -648,26 +879,37 @@ bool IxIndexHandle::delete_entry(const char *key,
                                  Transaction *transaction) {
     const lsn_t change_lsn =
         transaction == nullptr ? INVALID_LSN : transaction->get_prev_lsn();
-    // Lazy deletion never merges pages. The split latch only prevents a leaf
-    // from moving the target key between the read traversal and write latch.
-    std::unique_lock<std::mutex> structural(split_latch_);
-    auto leaf = find_leaf_read(key);
-    if (!leaf.has_value()) {
-        return false;
-    }
-    const page_id_t page_no = leaf->node.get_page_no();
-    leaf.reset();
+    // Lazy deletion performs no structural change. If a split moved the key
+    // between the read traversal and leaf write acquisition, re-read the
+    // current tree and retry only when the key still exists.
+    for (;;) {
+        auto leaf = find_leaf_read(key);
+        if (!leaf.has_value()) {
+            return false;
+        }
+        const page_id_t page_no = leaf->node.get_page_no();
+        const uint64_t generation = leaf->guard.generation();
+        leaf.reset();
 
-    IxWriteNode write_leaf = fetch_node_write(page_no);
-    const int pos = write_leaf.node.lower_bound(key);
-    if (pos >= write_leaf.node.get_size() ||
-        ix_compare(write_leaf.node.get_key(pos), key,
-                   file_hdr_->col_types_, file_hdr_->col_lens_) != 0) {
-        return false;
+        IxWriteNode write_leaf = fetch_node_write(page_no);
+        if (write_leaf.guard.generation() != generation) {
+            continue;
+        }
+        const int pos = write_leaf.node.lower_bound(key);
+        if (pos >= write_leaf.node.get_size() ||
+            ix_compare(write_leaf.node.get_key(pos), key,
+                       file_hdr_->col_types_, file_hdr_->col_lens_) != 0) {
+            write_leaf.guard.drop();
+            std::vector<Rid> current;
+            if (get_value(key, &current, transaction)) {
+                continue;
+            }
+            return false;
+        }
+        write_leaf.node.erase_pair(pos);
+        write_leaf.mark_dirty(change_lsn);
+        return true;
     }
-    write_leaf.node.erase_pair(pos);
-    write_leaf.mark_dirty(change_lsn);
-    return true;
 }
 
 Iid IxIndexHandle::lower_bound(const char *key) {

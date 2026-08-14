@@ -75,6 +75,7 @@ class ReadPageGuard : private BasicPageGuard {
         return page_ == nullptr ? nullptr : page_->get_data();
     }
     bool is_valid() const { return BasicPageGuard::is_valid(); }
+    uint64_t generation() const { return generation_; }
     void drop() noexcept;
 
    private:
@@ -102,6 +103,7 @@ class WritePageGuard : private BasicPageGuard {
         return page_ == nullptr ? nullptr : page_->get_data();
     }
     bool is_valid() const { return BasicPageGuard::is_valid(); }
+    uint64_t generation() const { return generation_; }
     void mark_dirty() { BasicPageGuard::mark_dirty(); }
     void set_page_lsn(lsn_t page_lsn, bool persist_in_page = false) {
         BasicPageGuard::set_page_lsn(page_lsn);
