@@ -45,6 +45,8 @@ int main(int argc, char **argv) {
     const std::string portal = read_file(root / "src" / "portal.h");
     const std::string delete_executor = read_file(
         root / "src" / "execution" / "executor_delete.h");
+    const std::string update_executor = read_file(
+        root / "src" / "execution" / "executor_update.h");
 
     const size_t prepare_begin =
         manager.find("void TransactionManager::prepare_write(");
@@ -102,6 +104,24 @@ int main(int argc, char **argv) {
                 "context_->txn_mgr_->has_stale_write_target(") !=
                 std::string::npos,
             "MVCC DELETE must abort when a stale snapshot yields no writable RID");
+
+    const size_t delete_prepare =
+        delete_executor.find("context_->txn_mgr_->prepare_delete(");
+    const size_t delete_stage =
+        delete_executor.find("context_->txn_->write_batch().stage_delete(");
+    require(delete_prepare != std::string::npos &&
+                delete_stage != std::string::npos &&
+                delete_prepare < delete_stage,
+            "DELETE must check/install logical MVCC state before staging");
+
+    const size_t update_prepare =
+        update_executor.find("context_->txn_mgr_->prepare_update(");
+    const size_t update_stage =
+        update_executor.find("context_->txn_->write_batch().stage_update(");
+    require(update_prepare != std::string::npos &&
+                update_stage != std::string::npos &&
+                update_prepare < update_stage,
+            "UPDATE must check SSI and install logical MVCC state before staging");
 
     std::cout << "ssi source contract tests passed\n";
     return 0;

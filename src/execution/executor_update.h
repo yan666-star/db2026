@@ -212,8 +212,13 @@ class UpdateExecutor : public AbstractExecutor {
             }
 
             if (mvcc) {
-                context_->txn_mgr_->check_write_conflict(
-                    context_->txn_, fh_->GetMvccFileId(), rid);
+                // Install only the logical pending version here.  This keeps
+                // physical storage deferred while restoring the finals
+                // contract that a stale/active SI writer or the transaction
+                // completing an SSI dangerous structure aborts on UPDATE.
+                context_->txn_mgr_->prepare_update(
+                    context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
+                    *rec_new, tab_name_);
             }
 
             int max_key_len = 0;

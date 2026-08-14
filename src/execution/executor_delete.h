@@ -96,6 +96,14 @@ class DeleteExecutor : public AbstractExecutor {
             }
             RmRecord old_rec(*rec);
             if (uses_mvcc) {
+                // Establish the record intent and prospective MVCC version at
+                // the statement boundary.  Physical Heap/Index/WAL work is
+                // still deferred to StorageCommitExecutor, but SI conflicts
+                // and SSI dangerous structures must abort this DELETE now,
+                // not later at COMMIT.
+                context_->txn_mgr_->prepare_delete(
+                    context_->txn_, fh_->GetMvccFileId(), rid, old_rec,
+                    tab_name_);
                 context_->txn_->write_batch().stage_delete(
                     tab_name_, fh_->GetMvccFileId(), rid,
                     std::vector<char>(old_rec.data,
