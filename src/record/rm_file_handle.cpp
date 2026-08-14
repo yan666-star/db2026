@@ -567,21 +567,34 @@ std::vector<Rid> RmFileHandle::reserve_insert_slots(size_t count) {
     std::vector<Rid> reserved;
     reserved.reserve(count);
     try {
-        const int existing_pages = page_count();
-        for (int page_no = RM_FIRST_RECORD_PAGE;
-             page_no < existing_pages && reserved.size() < count; ++page_no) {
+        while (reserved.size() < count) {
+            const page_id_t page_no = pop_free_page_candidate();
+            if (page_no == RM_NO_PAGE) {
+                break;
+            }
             RmPageReadHandle page = fetch_page_read(page_no);
-            std::lock_guard<std::mutex> reservation_guard(reservation_latch_);
-            int slot_no = -1;
-            while (reserved.size() < count &&
-                   (slot_no = Bitmap::next_bit(
-                        false, page.bitmap, file_hdr_.num_records_per_page,
-                        slot_no)) < file_hdr_.num_records_per_page) {
-                Rid rid{page_no, slot_no};
-                if (reserved_insert_slots_.insert(
-                        encode_reserved_slot(rid)).second) {
-                    reserved.push_back(rid);
+            bool has_unreserved_slot = false;
+            {
+                std::lock_guard<std::mutex> reservation_guard(
+                    reservation_latch_);
+                int slot_no = -1;
+                while ((slot_no = Bitmap::next_bit(
+                            false, page.bitmap,
+                            file_hdr_.num_records_per_page,
+                            slot_no)) < file_hdr_.num_records_per_page) {
+                    Rid rid{page_no, slot_no};
+                    const uint64_t encoded = encode_reserved_slot(rid);
+                    if (reserved.size() < count &&
+                        reserved_insert_slots_.insert(encoded).second) {
+                        reserved.push_back(rid);
+                    } else if (reserved_insert_slots_.count(encoded) == 0) {
+                        has_unreserved_slot = true;
+                    }
                 }
+            }
+            page.drop();
+            if (has_unreserved_slot) {
+                add_free_page_candidate(page_no);
             }
         }
 
@@ -772,8 +785,15 @@ void RmFileHandle::release_reserved_slots(
         }
     }
     try {
+        const int existing_pages = page_count();
         for (const Rid &rid : rids) {
-            add_free_page_candidate(rid.page_no);
+            // A reservation may name a future page that has not been
+            // materialized yet.  Publishing that page as a fetchable free
+            // candidate makes the next reserver read a non-existent page.
+            if (rid.page_no >= RM_FIRST_RECORD_PAGE &&
+                rid.page_no < existing_pages) {
+                add_free_page_candidate(rid.page_no);
+            }
         }
     } catch (...) {
         // Reservation release is best-effort during stack unwinding. The

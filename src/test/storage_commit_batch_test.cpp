@@ -116,6 +116,27 @@ void require_one_commit_batches_each_storage_unit() {
                   1, "commit appended more than one transaction row-WAL set");
 
     transaction_manager.release_transaction(txn);
+
+    // Reservation must use the maintained free-page candidates.  Scanning
+    // from page 1 makes every append O(table size) on the official dataset.
+    Rid tail{};
+    int row = 1000;
+    while (tail.page_no < 40) {
+        std::vector<char> record = raw_row(row++);
+        tail = file->insert_record(record.data(), nullptr);
+    }
+    const uint64_t fetches_before_reserve =
+        counters.buffer_fetches.load(std::memory_order_relaxed);
+    std::vector<Rid> reservation = file->reserve_insert_slots(1);
+    const uint64_t reservation_fetches =
+        counters.buffer_fetches.load(std::memory_order_relaxed) -
+        fetches_before_reserve;
+    require(reservation.size() == 1,
+            "Heap reservation did not return one slot");
+    require(reservation_fetches <= 2,
+            "Heap reservation scanned historical table pages");
+    file->release_reserved_slots(reservation);
+
     system_manager.close_db();
     const int log_fd = disk.GetLogFd();
     if (log_fd >= 0) {
