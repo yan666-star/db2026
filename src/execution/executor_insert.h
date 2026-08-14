@@ -152,6 +152,8 @@ class InsertExecutor : public AbstractExecutor {
                     }
                 }
             }
+            context_->txn_mgr_->check_insert_conflict(
+                context_->txn_, fh_->GetMvccFileId(), rec);
             context_->txn_->write_batch().stage_insert(
                 tab_name_, fh_->GetMvccFileId(),
                 std::vector<char>(rec.data, rec.data + rec.size));

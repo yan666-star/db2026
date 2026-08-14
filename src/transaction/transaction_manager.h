@@ -151,6 +151,9 @@ public:
                          const std::vector<Rid> &rids,
                          const std::vector<RmRecord> &new_records);
 
+    void check_insert_conflict(Transaction *txn, uint64_t file_id,
+                               const RmRecord &new_record);
+
     void prepare_update(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &old_record,
                         const RmRecord &new_record,

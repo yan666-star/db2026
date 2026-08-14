@@ -47,6 +47,8 @@ int main(int argc, char **argv) {
         root / "src" / "execution" / "executor_delete.h");
     const std::string update_executor = read_file(
         root / "src" / "execution" / "executor_update.h");
+    const std::string insert_executor = read_file(
+        root / "src" / "execution" / "executor_insert.h");
 
     const size_t prepare_begin =
         manager.find("void TransactionManager::prepare_write(");
@@ -122,6 +124,15 @@ int main(int argc, char **argv) {
                 update_stage != std::string::npos &&
                 update_prepare < update_stage,
             "UPDATE must check SSI and install logical MVCC state before staging");
+
+    const size_t insert_check =
+        insert_executor.find("context_->txn_mgr_->check_insert_conflict(");
+    const size_t insert_stage =
+        insert_executor.find("context_->txn_->write_batch().stage_insert(");
+    require(insert_check != std::string::npos &&
+                insert_stage != std::string::npos &&
+                insert_check < insert_stage,
+            "INSERT must check prospective SSI dependencies before staging");
 
     std::cout << "ssi source contract tests passed\n";
     return 0;

@@ -1206,6 +1206,43 @@ void TransactionManager::prepare_inserts(
     }
 }
 
+void TransactionManager::check_insert_conflict(
+    Transaction *txn, uint64_t file_id, const RmRecord &new_record) {
+    if (!uses_mvcc(txn) ||
+        txn->get_isolation_level() != IsolationLevel::SERIALIZABLE) {
+        return;
+    }
+
+    // A staged INSERT has no physical RID until commit reservation, but its
+    // after-image is already sufficient to conflict with SERIALIZABLE
+    // predicate reads.  Add/check those rw edges at the statement boundary;
+    // prepare_insert() will attach the real RecordKey during commit.
+    MvccVersion prospective;
+    prospective.owner = txn->get_transaction_id();
+    prospective.owner_control = txn->get_control();
+    prospective.before_deleted = true;
+    prospective.deleted = false;
+    prospective.data = copy_record(&new_record);
+
+    std::lock_guard<std::mutex> serial_lock(serializable_state_latch_);
+    for (auto &[reader_id, reader] : mvcc_txns_) {
+        if (reader_id == txn->get_transaction_id() || reader.aborted ||
+            reader.isolation_level != IsolationLevel::SERIALIZABLE ||
+            (reader.commit_ts != INVALID_TS &&
+             reader.commit_ts <= txn->get_start_ts())) {
+            continue;
+        }
+        for (const auto &predicate : reader.predicates) {
+            if (predicate.file_id == file_id &&
+                predicate_affected(predicate, prospective)) {
+                check_new_rw_dependency_or_abort(
+                    txn, reader_id, txn->get_transaction_id());
+                break;
+            }
+        }
+    }
+}
+
 void TransactionManager::prepare_update(
     Transaction *txn, uint64_t file_id, const Rid &rid,
     const RmRecord &old_record, const RmRecord &new_record,

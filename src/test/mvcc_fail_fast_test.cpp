@@ -151,6 +151,78 @@ void test_pending_update_exposes_before_image_until_visible() {
     manager.release_transaction(writer);
 }
 
+void test_insert_closes_ssi_cycle_at_statement_boundary() {
+    TransactionManager manager(nullptr, nullptr);
+    Transaction *first = manager.begin(
+        nullptr, nullptr, IsolationLevel::SERIALIZABLE);
+    Transaction *current = manager.begin(
+        nullptr, nullptr, IsolationLevel::SERIALIZABLE);
+
+    const uint64_t record_file = 71;
+    const Rid written_rid{4, 2};
+    manager.prepare_insert(
+        first, record_file, written_rid, *make_int_record(10));
+    manager.register_record_read(current, record_file, written_rid);
+
+    const uint64_t predicate_file = 72;
+    manager.register_table_read(first, predicate_file, {}, {});
+
+    bool aborted_current = false;
+    try {
+        manager.check_insert_conflict(
+            current, predicate_file, *make_int_record(20));
+    } catch (TransactionAbortException &error) {
+        aborted_current =
+            error.GetAbortReason() == AbortReason::SERIALIZATION_FAILURE;
+    }
+    require(aborted_current,
+            "INSERT completing an SSI cycle did not abort its current transaction");
+
+    manager.abort(first, nullptr);
+    manager.abort(current, nullptr);
+    manager.release_transaction(first);
+    manager.release_transaction(current);
+}
+
+void test_insert_closes_three_transaction_dangerous_structure() {
+    TransactionManager manager(nullptr, nullptr);
+    Transaction *incoming = manager.begin(
+        nullptr, nullptr, IsolationLevel::SERIALIZABLE);
+    Transaction *current = manager.begin(
+        nullptr, nullptr, IsolationLevel::SERIALIZABLE);
+    Transaction *outgoing = manager.begin(
+        nullptr, nullptr, IsolationLevel::SERIALIZABLE);
+
+    const uint64_t incoming_predicate_file = 81;
+    const uint64_t outgoing_predicate_file = 82;
+    manager.register_table_read(incoming, incoming_predicate_file, {}, {});
+    manager.register_table_read(current, outgoing_predicate_file, {}, {});
+
+    // Establish current ->rw outgoing, then settle outgoing before the
+    // incoming transaction.  The next INSERT adds incoming ->rw current and
+    // must abort the current statement transaction under the finals rule.
+    manager.check_insert_conflict(
+        outgoing, outgoing_predicate_file, *make_int_record(30));
+    manager.commit(outgoing, nullptr);
+
+    bool aborted_current = false;
+    try {
+        manager.check_insert_conflict(
+            current, incoming_predicate_file, *make_int_record(40));
+    } catch (TransactionAbortException &error) {
+        aborted_current =
+            error.GetAbortReason() == AbortReason::SERIALIZATION_FAILURE;
+    }
+    require(aborted_current,
+            "three-transaction INSERT danger did not abort the current statement");
+
+    manager.abort(incoming, nullptr);
+    manager.abort(current, nullptr);
+    manager.release_transaction(incoming);
+    manager.release_transaction(current);
+    manager.release_transaction(outgoing);
+}
+
 void test_si_source_has_no_wait_or_global_publication_contract(
     const std::filesystem::path &root) {
     const std::string manager_h = read_file(
@@ -188,6 +260,8 @@ int main(int argc, char **argv) {
     test_same_record_conflict_returns_within_50ms();
     test_same_unique_key_conflict_returns_within_50ms();
     test_pending_update_exposes_before_image_until_visible();
+    test_insert_closes_ssi_cycle_at_statement_boundary();
+    test_insert_closes_three_transaction_dangerous_structure();
     test_si_source_has_no_wait_or_global_publication_contract(argv[1]);
     std::cout << "MVCC fail-fast tests passed\n";
     return 0;
