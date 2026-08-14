@@ -86,6 +86,9 @@ add_executable(test_buffer_pool_concurrency test/buffer_pool_concurrency_test.cp
 target_link_libraries(test_buffer_pool_concurrency recovery storage pthread)
 add_test(NAME test_buffer_pool_concurrency COMMAND test_buffer_pool_concurrency)
 
+add_executable(test_server_memory_budget test/server_memory_budget_test.cpp)
+add_test(NAME test_server_memory_budget COMMAND test_server_memory_budget)
+
 add_executable(test_aggregate_distinct test/aggregate_distinct_test.cpp)
 target_link_libraries(test_aggregate_distinct execution record system pthread)
 add_test(NAME test_aggregate_distinct

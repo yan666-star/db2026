@@ -15,9 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cerrno>
-#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -28,6 +26,7 @@ See the Mulan PSL v2 for more details. */
 #include "analyze/analyze.h"
 #include "common/config.h"
 #include "common/perf_counters.h"
+#include "common/server_memory_budget.h"
 #include "execution/execution_manager.h"
 #include "execution/sql_execution_service.h"
 #include "network/connection_session.h"
@@ -43,29 +42,17 @@ constexpr int kListenBacklog = 128;
 constexpr bool kVerboseServerLog = false;
 
 size_t server_buffer_pool_pages() {
-    constexpr size_t kMinimumPages = BUFFER_POOL_SIZE;
-    constexpr size_t kMaximumPages = 2U * 1024U * 1024U;  // 8 GiB
-    if (const char *raw = std::getenv("RMDB_BUFFER_POOL_PAGES");
-        raw != nullptr && raw[0] != '\0') {
-        char *end = nullptr;
-        const unsigned long long parsed = std::strtoull(raw, &end, 10);
-        if (end != raw && *end == '\0' && parsed >= 1024 &&
-            parsed <= kMaximumPages) {
-            return static_cast<size_t>(parsed);
-        }
-    }
-
     const long physical_pages = sysconf(_SC_PHYS_PAGES);
     const long system_page_size = sysconf(_SC_PAGE_SIZE);
     if (physical_pages <= 0 || system_page_size <= 0) {
-        return kMinimumPages;
+        return rmdb::memory::select_buffer_pool_pages(
+            0, std::getenv("RMDB_BUFFER_POOL_PAGES"));
     }
     const uint64_t physical_bytes =
         static_cast<uint64_t>(physical_pages) *
         static_cast<uint64_t>(system_page_size);
-    const uint64_t budget_bytes = physical_bytes / 4;
-    const size_t pages = static_cast<size_t>(budget_bytes / PAGE_SIZE);
-    return std::max(kMinimumPages, std::min(kMaximumPages, pages));
+    return rmdb::memory::select_buffer_pool_pages(
+        physical_bytes, std::getenv("RMDB_BUFFER_POOL_PAGES"));
 }
 
 volatile sig_atomic_t should_exit = 0;
