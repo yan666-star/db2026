@@ -64,6 +64,37 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
     return log_record->lsn_;
 }
 
+std::vector<lsn_t> LogManager::add_logs_to_buffer(
+    const std::vector<LogRecord *> &log_records) {
+    for (const LogRecord *record : log_records) {
+        if (record == nullptr) {
+            throw InternalError("Cannot append a null log record");
+        }
+        if (record->log_tot_len_ > LOG_BUFFER_SIZE) {
+            throw InternalError("Log record is larger than the log buffer");
+        }
+    }
+
+    std::vector<lsn_t> lsns;
+    lsns.reserve(log_records.size());
+    std::lock_guard<std::mutex> lock(latch_);
+    LogRecord *previous = nullptr;
+    for (LogRecord *record : log_records) {
+        if (log_buffer_.is_full(record->log_tot_len_)) {
+            flush_log_to_disk_locked();
+        }
+        record->lsn_ = global_lsn_.fetch_add(1);
+        if (previous != nullptr && previous->log_tid_ == record->log_tid_) {
+            record->prev_lsn_ = previous->lsn_;
+        }
+        record->serialize(log_buffer_.buffer_ + log_buffer_.offset_);
+        log_buffer_.offset_ += record->log_tot_len_;
+        lsns.push_back(record->lsn_);
+        previous = record;
+    }
+    return lsns;
+}
+
 /**
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */

@@ -475,6 +475,8 @@ public:
           disk_manager_(disk_manager) {}
 
     lsn_t add_log_to_buffer(LogRecord* log_record);
+    std::vector<lsn_t> add_logs_to_buffer(
+        const std::vector<LogRecord *> &log_records);
     void flush_log_to_disk(bool force_sync = false);
     void force_flush_up_to(lsn_t target_lsn);
     lsn_t durable_lsn();

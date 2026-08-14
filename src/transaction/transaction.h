@@ -105,6 +105,15 @@ class Transaction {
 
     inline std::shared_ptr<std::unordered_set<LockDataId>> get_lock_set() { return lock_set_; }
 
+    inline void append_unique_intent(int index_id, std::string key) {
+        unique_intents_.emplace_back(index_id, std::move(key));
+    }
+    inline const std::vector<std::pair<int, std::string>> &
+    get_unique_intents() const {
+        return unique_intents_;
+    }
+    inline void clear_unique_intents() { unique_intents_.clear(); }
+
     inline timestamp_t get_read_ts() const { return read_ts_; }
     inline timestamp_t get_commit_ts() const { return commit_ts_; }
     inline void set_read_ts(timestamp_t read_ts) { read_ts_ = read_ts; }
@@ -147,6 +156,7 @@ class Transaction {
     std::shared_ptr<std::unordered_set<LockDataId>> lock_set_;  // 事务申请的所有锁
     std::shared_ptr<std::deque<Page*>> index_latch_page_set_;          // 维护事务执行过程中加锁的索引页面
     std::shared_ptr<std::deque<Page*>> index_deleted_page_set_;    // 维护事务执行过程中删除的索引页面
+    std::vector<std::pair<int, std::string>> unique_intents_;
 
   std::atomic<timestamp_t> read_ts_{0};
   /** 提交时间戳 */

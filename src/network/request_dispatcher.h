@@ -34,8 +34,23 @@ class ExecutionService {
         const PreparedStatement &statement,
         const std::vector<execution::TypedValue> &parameters,
         execution::ResultSink &sink) = 0;
+    virtual bool supports_prepared_batch(
+        const PreparedStatement &statement) const {
+        static_cast<void>(statement);
+        return false;
+    }
+    virtual void execute_prepared_batch(
+        const PreparedStatement &statement,
+        const std::vector<std::vector<execution::TypedValue>> &parameter_rows,
+        execution::ResultSink &sink) {
+        static_cast<void>(statement);
+        static_cast<void>(parameter_rows);
+        static_cast<void>(sink);
+        throw std::logic_error("prepared batching is unsupported");
+    }
     virtual bool has_active_transaction() const = 0;
     virtual void abort_active_transaction() = 0;
+    virtual void reset_after_auto_abort() {}
 };
 
 using FrameEmitter =

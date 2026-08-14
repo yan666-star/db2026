@@ -18,11 +18,11 @@ void RmScan::load_page_rids(int page_no) {
     current_index_ = 0;
     rid_ = {RM_NO_PAGE, -1};
 
-    if (page_no >= file_handle_->file_hdr_.num_pages) {
+    if (page_no >= file_handle_->page_count()) {
         return;
     }
 
-    RmPageHandle page_handle = file_handle_->fetch_page_handle(page_no);
+    RmPageReadHandle page_handle = file_handle_->fetch_page_read(page_no);
     int slot_no = -1;
     while ((slot_no = Bitmap::next_bit(
                 true, page_handle.bitmap,
@@ -30,9 +30,6 @@ void RmScan::load_page_rids(int page_no) {
            file_handle_->file_hdr_.num_records_per_page) {
         rids_.push_back(Rid{page_no, slot_no});
     }
-    file_handle_->buffer_pool_manager_->unpin_page(
-        PageId{file_handle_->fd_, page_no}, false);
-
     if (!rids_.empty()) {
         rid_ = rids_[0];
     }
@@ -46,12 +43,12 @@ RmScan::RmScan(const RmFileHandle *file_handle) : file_handle_(file_handle) {
     rid_.page_no = RM_NO_PAGE;
     rid_.slot_no = -1;
 
-    if (file_handle_->file_hdr_.num_pages <= RM_FIRST_RECORD_PAGE) {
+    if (file_handle_->page_count() <= RM_FIRST_RECORD_PAGE) {
         return;
     }
 
     for (int page_no = RM_FIRST_RECORD_PAGE;
-         page_no < file_handle_->file_hdr_.num_pages; ++page_no) {
+         page_no < file_handle_->page_count(); ++page_no) {
         load_page_rids(page_no);
         if (!rids_.empty()) {
             return;
@@ -74,7 +71,7 @@ void RmScan::next() {
     }
 
     int next_page = rid_.page_no + 1;
-    while (next_page < file_handle_->file_hdr_.num_pages) {
+    while (next_page < file_handle_->page_count()) {
         load_page_rids(next_page);
         if (!rids_.empty()) {
             return;

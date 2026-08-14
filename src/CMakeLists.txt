@@ -70,6 +70,22 @@ add_executable(
 target_link_libraries(test_log_manager_durability recovery storage pthread)
 add_test(NAME test_log_manager_durability COMMAND test_log_manager_durability)
 
+add_executable(test_group_commit test/group_commit_test.cpp)
+target_link_libraries(test_group_commit recovery storage pthread)
+add_test(NAME test_group_commit COMMAND test_group_commit)
+
+add_executable(test_wal_page_lsn test/wal_page_lsn_test.cpp)
+target_link_libraries(test_wal_page_lsn recovery storage pthread)
+add_test(NAME test_wal_page_lsn COMMAND test_wal_page_lsn)
+
+add_executable(test_page_guard test/page_guard_test.cpp)
+target_link_libraries(test_page_guard recovery storage pthread)
+add_test(NAME test_page_guard COMMAND test_page_guard)
+
+add_executable(test_buffer_pool_concurrency test/buffer_pool_concurrency_test.cpp)
+target_link_libraries(test_buffer_pool_concurrency recovery storage pthread)
+add_test(NAME test_buffer_pool_concurrency COMMAND test_buffer_pool_concurrency)
+
 add_executable(test_aggregate_distinct test/aggregate_distinct_test.cpp)
 target_link_libraries(test_aggregate_distinct execution record system pthread)
 add_test(NAME test_aggregate_distinct
@@ -78,6 +94,14 @@ add_test(NAME test_aggregate_distinct
 add_executable(test_batch_visibility test/batch_visibility_test.cpp)
 target_link_libraries(test_batch_visibility transaction record system recovery pthread)
 add_test(NAME test_batch_visibility COMMAND test_batch_visibility)
+
+add_executable(test_mvcc_commit_visibility test/mvcc_commit_visibility_test.cpp)
+target_link_libraries(test_mvcc_commit_visibility transaction record system recovery pthread)
+add_test(NAME test_mvcc_commit_visibility COMMAND test_mvcc_commit_visibility)
+
+add_executable(test_mvcc_index_visibility test/mvcc_index_visibility_test.cpp)
+target_link_libraries(test_mvcc_index_visibility transaction pthread)
+add_test(NAME test_mvcc_index_visibility COMMAND test_mvcc_index_visibility)
 
 add_executable(test_record_buffer_reuse test/record_buffer_reuse_test.cpp)
 # record, system and transaction form a static-library dependency cycle.
@@ -90,6 +114,33 @@ target_link_libraries(
     -Wl,--end-group
     pthread)
 add_test(NAME test_record_buffer_reuse COMMAND test_record_buffer_reuse)
+
+add_executable(test_heap_page_concurrency test/heap_page_concurrency_test.cpp)
+target_link_libraries(
+    test_heap_page_concurrency
+    -Wl,--start-group
+    record system transaction recovery index storage
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_heap_page_concurrency COMMAND test_heap_page_concurrency)
+
+add_executable(test_batch_insert test/batch_insert_test.cpp)
+target_link_libraries(
+    test_batch_insert
+    -Wl,--start-group
+    record system transaction recovery index storage
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_batch_insert COMMAND test_batch_insert)
+
+add_executable(test_ix_concurrency test/ix_concurrency_test.cpp)
+target_link_libraries(
+    test_ix_concurrency
+    -Wl,--start-group
+    index storage system transaction recovery record
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_ix_concurrency COMMAND test_ix_concurrency)
 
 add_executable(test_perf_counters test/perf_counters_test.cpp)
 target_link_libraries(test_perf_counters pthread)

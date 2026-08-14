@@ -26,6 +26,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "transaction.h"
+#include "index_version_store.h"
 #include "watermark.h"
 #include "recovery/log_manager.h"
 #include "concurrency/lock_manager.h"
@@ -124,8 +125,15 @@ public:
     void register_record_read(Transaction *txn, uint64_t file_id,
                               const Rid &rid);
 
+    std::vector<Rid> get_historical_index_rids(Transaction *txn,
+                                                int index_id);
+
     void prepare_insert(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &new_record);
+
+    void prepare_inserts(Transaction *txn, uint64_t file_id,
+                         const std::vector<Rid> &rids,
+                         const std::vector<RmRecord> &new_records);
 
     void prepare_update(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &old_record,
@@ -144,8 +152,11 @@ public:
         const std::function<bool(const RmRecord &)> &matches);
 
     void check_unique_key_conflict(
-        Transaction *txn, uint64_t file_id, const Rid &target_rid,
+        Transaction *txn, int index_id, const Rid &target_rid,
         const RmRecord &new_record, const std::vector<ColMeta> &index_cols);
+
+    void acquire_unique_key_intent(Transaction *txn, int index_id,
+                                   const std::vector<char> &key);
 
     std::shared_lock<std::shared_mutex> acquire_commit_apply_latch();
 
@@ -239,8 +250,11 @@ private:
     void release_snapshot_admission(txn_id_t txn_id);
     void check_commit_conflict(Transaction *txn);
     void check_commit_conflict_under_latch(Transaction *txn);
-    void commit_mvcc(Transaction *txn);
+    void commit_mvcc(Transaction *txn, LogManager *log_manager);
     void abort_mvcc(Transaction *txn);
+    void garbage_collect_incremental();
+    void garbage_collect_shards(size_t first_shard, size_t shard_count);
+    void release_unique_key_intents(Transaction *txn);
 
     struct RecordKey {
         uint64_t file_id;
@@ -284,6 +298,8 @@ private:
         timestamp_t commit_ts = INVALID_TS;
         bool aborted = false;
         bool cleanup_done = false;
+        bool entered_apply = false;
+        MvccCommitState commit_state = MvccCommitState::ACTIVE;
         std::vector<ReadPredicate> predicates;
         std::unordered_set<RecordKey, RecordKeyHash> read_records;
         std::unordered_set<RecordKey, RecordKeyHash> write_records;
@@ -295,6 +311,11 @@ private:
                        const RmRecord *old_record,
                        const RmRecord *new_record, bool deleted,
                        const std::string &table_name = "");
+    void prepare_write_under_latch(
+        Transaction *txn, uint64_t file_id, const Rid &rid,
+        const RmRecord *old_record, const RmRecord *new_record, bool deleted,
+        const std::string &table_name,
+        std::unique_lock<std::mutex> &txn_lock);
     bool add_rw_dependency(txn_id_t reader, txn_id_t writer);
     void check_new_rw_dependency_or_abort(Transaction *current_txn,
                                           txn_id_t reader,
@@ -332,6 +353,8 @@ private:
                                  std::unique_lock<std::mutex> &lock);
     void remove_dependencies(txn_id_t txn_id);
 
+    bool mvcc_txn_entered_apply(Transaction *txn);
+
     ConcurrencyMode concurrency_mode_;      // 事务使用的并发控制算法，目前只需要考虑2PL
     std::atomic<txn_id_t> next_txn_id_{0};  // 用于分发事务ID
     std::atomic<timestamp_t> next_timestamp_{0};    // 用于分发事务时间戳
@@ -354,8 +377,9 @@ private:
     std::atomic<timestamp_t> last_commit_ts_{0};    // 最后提交的时间戳,仅用于MVCC
     Watermark running_txns_{0};             // 存储所有正在运行事务的读取时间戳，以便于垃圾回收，仅用于MVCC
     std::atomic<uint64_t> mvcc_commit_count_{0};    // 用于按周期触发MVCC垃圾回收
+    std::atomic<size_t> mvcc_gc_shard_cursor_{0};
 
-    // Lock ordering: commit_apply_latch_ → txn_state_latch_ →
+    // Lock ordering: txn_state_latch_ → commit_apply_latch_ →
     //   mvcc_shards_[sorted].latch → (file insert_latch_ / index latches).
     //
     // commit_apply_latch_ serializes version publication (timestamp assignment +
@@ -363,8 +387,8 @@ private:
     // semaphore (kMaxConcurrentPhase2 slots) so that at most a handful of
     // transactions apply heap/index changes concurrently, avoiding I/O overload.
     //
-    // txn_state_latch_ guards mvcc_txns_, mvcc_cv_, and the unique-conflict-key
-    // index.  It is taken before any shard latch so that commit's multi-shard
+    // txn_state_latch_ guards mvcc_txns_ and mvcc_cv_. It is taken before any
+    // shard latch so that commit's multi-shard
     // phase and prepare_write's single-shard path share a consistent order.
     //
     // Shard latches are LEAF locks with respect to txn_state: no txn_state
@@ -376,7 +400,6 @@ private:
     // Physical application (heap writes + index maintenance) runs outside
     // commit_apply_latch_ but is capped to prevent overwhelming the buffer
     // pool and disk subsystem with too many concurrent writers.
-    static constexpr int kMaxConcurrentPhase2 = 8;
     std::mutex phase2_latch_;
     std::condition_variable phase2_cv_;
     int phase2_active_count_ = 0;
@@ -392,6 +415,38 @@ private:
         std::unordered_set<RecordKey, RecordKeyHash> gc_dirty_keys;
     };
     std::array<MvccShard, kMvccShardCount> mvcc_shards_;
+    IndexVersionStore index_versions_;
+
+    struct UniqueIntentKey {
+        int index_id;
+        std::string key;
+
+        bool operator==(const UniqueIntentKey &other) const {
+            return index_id == other.index_id && key == other.key;
+        }
+    };
+    struct UniqueIntentKeyHash {
+        size_t operator()(const UniqueIntentKey &intent) const {
+            size_t seed = std::hash<int>{}(intent.index_id);
+            seed ^= std::hash<std::string>{}(intent.key) + 0x9e3779b9 +
+                    (seed << 6) + (seed >> 2);
+            return seed;
+        }
+    };
+    struct UniqueIntentShard {
+        std::mutex latch;
+        std::condition_variable cv;
+        std::unordered_map<UniqueIntentKey, txn_id_t, UniqueIntentKeyHash>
+            owners;
+    };
+    static constexpr size_t kUniqueIntentShardCount = 256;
+    std::array<UniqueIntentShard, kUniqueIntentShardCount>
+        unique_intent_shards_;
+
+    size_t get_unique_intent_shard(const UniqueIntentKey &intent) const {
+        return UniqueIntentKeyHash{}(intent) &
+               (kUniqueIntentShardCount - 1);
+    }
 
     // Monotonic latch-free fast path for filter_visible_records: flips to true
     // on the first version ever installed and is never reset, so it can only be
@@ -407,8 +462,4 @@ private:
     std::mutex txn_state_latch_;
     std::condition_variable mvcc_cv_;
     std::unordered_map<txn_id_t, MvccTxnState> mvcc_txns_;
-    // Unique-key conflict candidate index.  Keyed by mvcc file_id; each set
-    // entry is a RecordKey whose version chain may contain a live unique key.
-    std::unordered_map<uint64_t, std::unordered_set<RecordKey, RecordKeyHash>>
-        mvcc_unique_conflict_keys_by_file_;
 };

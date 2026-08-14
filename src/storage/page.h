@@ -10,6 +10,10 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <cstdint>
+#include <cstring>
+#include <functional>
+
 #include "common/config.h"
 
 /**
@@ -20,6 +24,7 @@ struct PageId {
     page_id_t page_no = INVALID_PAGE_ID;
 
     friend bool operator==(const PageId &x, const PageId &y) { return x.fd == y.fd && x.page_no == y.page_no; }
+    friend bool operator!=(const PageId &x, const PageId &y) { return !(x == y); }
     bool operator<(const PageId& x) const {
         if(fd < x.fd) return true;
         return page_no < x.page_no;
@@ -29,19 +34,22 @@ struct PageId {
         return "{fd: " + std::to_string(fd) + " page_no: " + std::to_string(page_no) + "}"; 
     }
 
-    inline int64_t Get() const {
-        return (static_cast<int64_t>(fd << 16) | page_no);
+    inline uint64_t Get() const {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(fd)) << 32) |
+               static_cast<uint32_t>(page_no);
     }
 };
 
 // PageId的自定义哈希算法, 用于构建unordered_map<PageId, frame_id_t, PageIdHash>
 struct PageIdHash {
-    size_t operator()(const PageId &x) const { return (x.fd << 16) | x.page_no; }
+    size_t operator()(const PageId &x) const {
+        return std::hash<uint64_t>()(x.Get());
+    }
 };
 
 template <>
 struct std::hash<PageId> {
-    size_t operator()(const PageId &obj) const { return std::hash<int64_t>()(obj.Get()); }
+    size_t operator()(const PageId &obj) const { return std::hash<uint64_t>()(obj.Get()); }
 };
 
 /**
@@ -61,13 +69,19 @@ class Page {
 
     inline char *get_data() { return data_; }
 
+    inline const char *get_data() const { return data_; }
+
     bool is_dirty() const { return is_dirty_; }
 
     static constexpr size_t OFFSET_PAGE_START = 0;
     static constexpr size_t OFFSET_LSN = 0;
     static constexpr size_t OFFSET_PAGE_HDR = 4;
 
-    inline lsn_t get_page_lsn() { return *reinterpret_cast<lsn_t *>(get_data() + OFFSET_LSN) ; }
+    inline lsn_t get_page_lsn() const {
+        lsn_t page_lsn;
+        memcpy(&page_lsn, get_data() + OFFSET_LSN, sizeof(page_lsn));
+        return page_lsn;
+    }
 
     inline void set_page_lsn(lsn_t page_lsn) { memcpy(get_data() + OFFSET_LSN, &page_lsn, sizeof(lsn_t)); }
 

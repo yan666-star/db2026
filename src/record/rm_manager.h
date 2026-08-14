@@ -74,9 +74,8 @@ class RmManager {
      * @description: 关闭表的数据文件
      * @param {RmFileHandle*} file_handle 要关闭文件的句柄
      */
-    void close_file(const RmFileHandle* file_handle) {
-        disk_manager_->write_page(file_handle->fd_, RM_FILE_HDR_PAGE, (char *)&file_handle->file_hdr_,
-                                  sizeof(file_handle->file_hdr_));
+    void close_file(RmFileHandle* file_handle) {
+        file_handle->flush_file_header();
         // 缓冲区的所有页刷到磁盘，注意这句话必须写在close_file前面
         buffer_pool_manager_->flush_all_pages(file_handle->fd_);
         buffer_pool_manager_->discard_all_pages(file_handle->fd_);

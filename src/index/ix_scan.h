@@ -25,26 +25,20 @@ class IxScan : public RecScan {
     std::vector<Rid> batch_rids_;
 
     bool load_leaf(page_id_t page_no) {
-        auto node = ih_->fetch_node(page_no);
-        node_size_ = node->get_size();
+        IxReadNode node = ih_->fetch_node_read(page_no);
+        node_size_ = node.node.get_size();
         if (node_size_ == 0) {
             batch_rids_.clear();
-            bpm_->unpin_page(node->get_page_id(), false);
-            delete node;
             return false;
         }
         if (iid_.slot_no < 0 || iid_.slot_no >= node_size_) {
-            bpm_->unpin_page(node->get_page_id(), false);
-            delete node;
             throw IndexEntryNotFoundError();
         }
         batch_rids_.clear();
         batch_rids_.reserve(node_size_);
         for (int i = 0; i < node_size_; ++i) {
-            batch_rids_.push_back(*node->get_rid(i));
+            batch_rids_.push_back(*node.node.get_rid(i));
         }
-        bpm_->unpin_page(node->get_page_id(), false);
-        delete node;
         return true;
     }
 

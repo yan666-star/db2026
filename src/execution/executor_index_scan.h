@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <limits>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "execution_eval.h"
@@ -45,6 +46,7 @@ class IndexScanExecutor : public AbstractExecutor {
     std::vector<Rid> batch_rids_;
     size_t batch_index_ = 0;
     std::unordered_map<int, std::vector<Rid>> batch_rids_map_;
+    std::unordered_set<uint64_t> candidate_rids_;
     ScanPlan *scan_plan_ = nullptr;
     std::vector<char> lookup_key_;
     bool has_lookup_key_ = false;
@@ -147,6 +149,7 @@ class IndexScanExecutor : public AbstractExecutor {
         batch_recs_.clear();
         batch_rids_.clear();
         batch_rids_map_.clear();
+        candidate_rids_.clear();
         batch_index_ = 0;
         rid_ = {-1, -1};
         bulk_table_locked_ = false;
@@ -164,6 +167,14 @@ class IndexScanExecutor : public AbstractExecutor {
         IxIndexHandle *ih =
             sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, full_index_col_names)).get();
 
+        if (uses_mvcc()) {
+            for (const Rid &historical :
+                 context_->txn_mgr_->get_historical_index_rids(
+                     context_->txn_, ih->GetFd())) {
+                add_candidate_rid(historical);
+            }
+        }
+
         std::vector<char> equality_key;
         if (has_lookup_key_) {
             equality_key = lookup_key_;
@@ -174,9 +185,7 @@ class IndexScanExecutor : public AbstractExecutor {
             std::vector<Rid> point_rids;
             ih->get_value(equality_key.data(), &point_rids, context_->txn_);
             for (const auto &point_rid : point_rids) {
-                if (point_rid.page_no >= 0) {
-                    batch_rids_map_[point_rid.page_no].push_back(point_rid);
-                }
+                add_candidate_rid(point_rid);
             }
             load_next_batch();
             return;
@@ -359,6 +368,20 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
    private:
+    void add_candidate_rid(const Rid &candidate) {
+        if (candidate.page_no < 0 || candidate.slot_no < 0) {
+            return;
+        }
+        const uint64_t encoded =
+            (static_cast<uint64_t>(
+                 static_cast<uint32_t>(candidate.page_no))
+             << 32) |
+            static_cast<uint32_t>(candidate.slot_no);
+        if (candidate_rids_.insert(encoded).second) {
+            batch_rids_map_[candidate.page_no].push_back(candidate);
+        }
+    }
+
     bool build_complete_equality_key(std::vector<char> &key) {
         key.resize(index_meta_.col_tot_len);
         int offset = 0;
@@ -403,9 +426,7 @@ class IndexScanExecutor : public AbstractExecutor {
                 }
                 for (int i = 0; i < batch_size && !scan_->is_end(); ++i) {
                     Rid scan_rid = scan_->rid();
-                    if (scan_rid.page_no >= 0) {
-                        batch_rids_map_[scan_rid.page_no].push_back(scan_rid);
-                    }
+                    add_candidate_rid(scan_rid);
                     scan_->next();
                 }
             }

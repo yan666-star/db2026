@@ -1,0 +1,198 @@
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <mutex>
+
+#include <unistd.h>
+
+#include "recovery/log_manager.h"
+#include "transaction/transaction_manager.h"
+
+namespace {
+
+using namespace std::chrono_literals;
+
+void require(bool condition, const char *message) {
+    if (!condition) {
+        std::cerr << "FAIL: " << message << '\n';
+        std::exit(1);
+    }
+}
+
+class BlockingSyncDiskManager : public DiskManager {
+   public:
+    void sync_log() override {
+        std::unique_lock<std::mutex> lock(latch_);
+        sync_started_ = true;
+        cv_.notify_all();
+        cv_.wait(lock, [&] { return allow_sync_; });
+        lock.unlock();
+        DiskManager::sync_log();
+    }
+
+    void wait_for_sync() {
+        std::unique_lock<std::mutex> lock(latch_);
+        require(cv_.wait_for(lock, 2s, [&] { return sync_started_; }),
+                "commit did not reach WAL sync");
+    }
+
+    void release_sync() {
+        std::lock_guard<std::mutex> lock(latch_);
+        allow_sync_ = true;
+        cv_.notify_all();
+    }
+
+   private:
+    std::mutex latch_;
+    std::condition_variable cv_;
+    bool sync_started_ = false;
+    bool allow_sync_ = false;
+};
+
+std::unique_ptr<RmRecord> make_int_record(int value) {
+    auto record = std::make_unique<RmRecord>(sizeof(value));
+    std::memcpy(record->data, &value, sizeof(value));
+    return record;
+}
+
+void test_commit_is_hidden_until_wal_is_durable() {
+    char directory_template[] = "/tmp/rmdb-mvcc-visible-XXXXXX";
+    char *directory = mkdtemp(directory_template);
+    require(directory != nullptr, "mkdtemp failed");
+    const std::filesystem::path previous =
+        std::filesystem::current_path();
+    std::filesystem::current_path(directory);
+    std::ofstream(LOG_FILE_NAME, std::ios::binary).close();
+
+    BlockingSyncDiskManager disk;
+    auto log = std::make_unique<LogManager>(&disk);
+    TransactionManager manager(nullptr, nullptr);
+    Transaction *writer = manager.begin(
+        nullptr, log.get(), IsolationLevel::SNAPSHOT_ISOLATION);
+    Rid rid{1, 2};
+    auto inserted = make_int_record(73);
+    manager.prepare_insert(writer, 0, rid, *inserted);
+    writer->append_write_record(
+        new WriteRecord(WType::INSERT_TUPLE, "probe", rid));
+
+    auto commit = std::async(std::launch::async, [&] {
+        manager.commit(writer, log.get());
+        return true;
+    });
+    disk.wait_for_sync();
+
+    Transaction observer(999, IsolationLevel::SNAPSHOT_ISOLATION);
+    observer.set_start_ts(std::numeric_limits<timestamp_t>::max());
+    auto before_durable = manager.get_visible_record(
+        &observer, 0, rid, make_int_record(73));
+    require(before_durable == nullptr,
+            "MVCC version became visible before COMMIT WAL was durable");
+
+    disk.release_sync();
+    require(commit.wait_for(2s) == std::future_status::ready && commit.get(),
+            "commit did not complete after WAL sync");
+    auto after_durable = manager.get_visible_record(
+        &observer, 0, rid, make_int_record(73));
+    require(after_durable != nullptr,
+            "durable MVCC version was not published");
+
+    const int log_fd = disk.GetLogFd();
+    if (log_fd >= 0) {
+        disk.close_file(log_fd);
+    }
+    manager.release_transaction(writer);
+    std::filesystem::current_path(previous);
+    std::filesystem::remove_all(directory);
+}
+
+void test_wait_die_keeps_older_transaction_waiting() {
+    TransactionManager manager(nullptr, nullptr);
+    Transaction *older = manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    Transaction *younger = manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    Rid rid{7, 9};
+    auto younger_record = make_int_record(81);
+    manager.prepare_insert(younger, 0, rid, *younger_record);
+    younger->append_write_record(
+        new WriteRecord(WType::INSERT_TUPLE, "probe", rid));
+
+    auto older_attempt = std::async(std::launch::async, [&] {
+        auto older_record = make_int_record(82);
+        try {
+            manager.prepare_insert(older, 0, rid, *older_record);
+            return false;
+        } catch (const TransactionAbortException &) {
+            return true;
+        }
+    });
+    require(older_attempt.wait_for(5ms) == std::future_status::timeout,
+            "older transaction timed out instead of waiting for younger owner");
+
+    manager.commit(younger, nullptr);
+    require(older_attempt.wait_for(2s) == std::future_status::ready &&
+                older_attempt.get(),
+            "older waiter did not recheck the committed write conflict");
+    manager.abort(older, nullptr);
+    manager.release_transaction(younger);
+    manager.release_transaction(older);
+}
+
+void test_unique_key_intent_uses_wait_die_and_wakes_on_abort() {
+    TransactionManager manager(nullptr, nullptr);
+    Transaction *older = manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    Transaction *younger = manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    const std::vector<char> key{'k', 'e', 'y'};
+    manager.acquire_unique_key_intent(younger, 17, key);
+
+    auto older_attempt = std::async(std::launch::async, [&] {
+        manager.acquire_unique_key_intent(older, 17, key);
+        return true;
+    });
+    require(older_attempt.wait_for(5ms) == std::future_status::timeout,
+            "older unique-key writer did not wait for younger owner");
+
+    manager.abort(younger, nullptr);
+    require(older_attempt.wait_for(2s) == std::future_status::ready &&
+                older_attempt.get(),
+            "unique-key waiter was not woken when owner aborted");
+    manager.abort(older, nullptr);
+    manager.release_transaction(younger);
+    manager.release_transaction(older);
+
+    Transaction *first = manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    Transaction *later = manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    manager.acquire_unique_key_intent(first, 19, key);
+    bool aborted = false;
+    try {
+        manager.acquire_unique_key_intent(later, 19, key);
+    } catch (const TransactionAbortException &) {
+        aborted = true;
+    }
+    require(aborted,
+            "younger unique-key writer did not abort behind older owner");
+    manager.abort(later, nullptr);
+    manager.abort(first, nullptr);
+    manager.release_transaction(later);
+    manager.release_transaction(first);
+}
+
+}  // namespace
+
+int main() {
+    test_commit_is_hidden_until_wal_is_durable();
+    test_wait_die_keeps_older_transaction_waiting();
+    test_unique_key_intent_uses_wait_die_and_wakes_on_abort();
+    std::cout << "MVCC commit visibility tests passed\n";
+    return 0;
+}

@@ -14,6 +14,7 @@
 #include "common/session_defaults.h"
 #include "errors.h"
 #include "execution/execution_manager.h"
+#include "execution/executor_batch_insert.h"
 #include "execution/executor_insert.h"
 #include "execution/parameter_binding.h"
 #include "optimizer/optimizer.h"
@@ -465,6 +466,81 @@ void SqlExecutionService::execute_prepared(
     execute_plan(executable->plan, sink);
 }
 
+bool SqlExecutionService::supports_prepared_batch(
+    const wire::PreparedStatement &statement) const {
+    auto executable =
+        std::dynamic_pointer_cast<PlanExecutable>(statement.executable);
+    return executable != nullptr && executable->plan != nullptr &&
+           executable->plan->tag == T_Insert &&
+           statement.result_kind == wire::ResultKind::COMMAND;
+}
+
+void SqlExecutionService::execute_prepared_batch(
+    const wire::PreparedStatement &statement,
+    const std::vector<std::vector<TypedValue>> &parameter_rows,
+    ResultSink &sink) {
+    auto executable =
+        std::dynamic_pointer_cast<PlanExecutable>(statement.executable);
+    auto dml = executable == nullptr
+                   ? nullptr
+                   : std::dynamic_pointer_cast<DMLPlan>(executable->plan);
+    if (dml == nullptr || dml->tag != T_Insert || parameter_rows.empty()) {
+        throw InternalError("Prepared INSERT batch plan is unavailable");
+    }
+    if (explicit_txn_failed_) {
+        throw RMDBError("failure");
+    }
+
+    std::vector<std::vector<Value>> value_rows;
+    value_rows.reserve(parameter_rows.size());
+    for (const auto &parameters : parameter_rows) {
+        bind_plan_parameters(executable->plan, parameters);
+        value_rows.push_back(dml->values_);
+    }
+
+    TrackingResultSink tracking_sink(sink);
+    Context context(lock_manager_, log_manager_, nullptr,
+                    transaction_manager_, &isolation_level_,
+                    &tracking_sink);
+    bool statement_entered = false;
+    try {
+        transaction_manager_->enter_statement(transaction_id_);
+        statement_entered = true;
+        ensure_transaction(&context, true);
+        if (context.txn_ == nullptr || !context.txn_->get_txn_mode()) {
+            throw InternalError(
+                "Prepared INSERT batching requires an explicit transaction");
+        }
+
+        BatchInsertExecutor executor(sm_manager_, dml->tab_name_,
+                                     std::move(value_rows), &context);
+        executor.execute();
+        tracking_sink.command_ok();
+        transaction_manager_->leave_statement();
+    } catch (TransactionAbortException &error) {
+        abort_active_transaction();
+        explicit_txn_failed_ = false;
+        if (statement_entered) {
+            transaction_manager_->leave_statement();
+        }
+        throw wire::TransactionAbortError(error.GetInfo());
+    } catch (...) {
+        if (context.txn_ != nullptr && context.txn_->get_txn_mode()) {
+            abort_active_transaction();
+            explicit_txn_failed_ = true;
+            if (statement_entered) {
+                transaction_manager_->leave_statement();
+            }
+            throw RMDBError("failure");
+        }
+        abort_active_transaction();
+        if (statement_entered) {
+            transaction_manager_->leave_statement();
+        }
+        throw;
+    }
+}
+
 void SqlExecutionService::ensure_transaction(
     Context *context, bool admit_execution) {
     context->txn_ =
@@ -677,6 +753,10 @@ void SqlExecutionService::abort_active_transaction() {
     }
     transaction_manager_->release_transaction(transaction);
     transaction_id_ = INVALID_TXN_ID;
+}
+
+void SqlExecutionService::reset_after_auto_abort() {
+    explicit_txn_failed_ = false;
 }
 
 }  // namespace rmdb::execution

@@ -285,6 +285,7 @@ void RequestDispatcher::dispatch_batch(
         request = decode_exec_batch(payload, prepared_dictionary_);
     } catch (const std::exception &error) {
         abort_if_active();
+        execution_service_.reset_after_auto_abort();
         emit(make_error_frame(safe_diagnostic(error.what())));
         return;
     }
@@ -292,12 +293,35 @@ void RequestDispatcher::dispatch_batch(
     BatchResult result;
     // BATCH_RESULT fixed fields excluding diagnostic bytes are 11 bytes.
     size_t encoded_response_bytes = 11U;
-    for (size_t index = 0; index < request.operations.size(); ++index) {
+    for (size_t index = 0; index < request.operations.size();) {
         const auto &operation = request.operations[index];
         try {
+            size_t run_end = index + 1;
+            while (run_end < request.operations.size() &&
+                   request.operations[run_end].statement ==
+                       operation.statement) {
+                run_end++;
+            }
+
             BatchResultSink sink(*operation.statement);
-            execution_service_.execute_prepared(
-                *operation.statement, operation.parameters, sink);
+            const bool use_batch =
+                run_end - index > 1 &&
+                execution_service_.has_active_transaction() &&
+                execution_service_.supports_prepared_batch(
+                    *operation.statement);
+            if (use_batch) {
+                std::vector<std::vector<execution::TypedValue>> rows;
+                rows.reserve(run_end - index);
+                for (size_t row = index; row < run_end; ++row) {
+                    rows.push_back(request.operations[row].parameters);
+                }
+                execution_service_.execute_prepared_batch(
+                    *operation.statement, rows, sink);
+            } else {
+                execution_service_.execute_prepared(
+                    *operation.statement, operation.parameters, sink);
+                run_end = index + 1;
+            }
             sink.require_complete();
             if (operation.statement->result_kind == ResultKind::QUERY) {
                 constexpr size_t kQueryHeaderBytes =
@@ -313,9 +337,12 @@ void RequestDispatcher::dispatch_batch(
                 result.results.push_back(
                     {static_cast<uint16_t>(index), sink.take_rows()});
             }
-            result.executed_operations++;
+            result.executed_operations +=
+                static_cast<uint16_t>(run_end - index);
+            index = run_end;
         } catch (const TransactionAbortError &error) {
             abort_if_active();
+            execution_service_.reset_after_auto_abort();
             result.status = BatchStatus::TRANSACTION_ABORT;
             result.failed_operation = result.executed_operations;
             result.diagnostic = safe_diagnostic(error.what());
@@ -324,6 +351,7 @@ void RequestDispatcher::dispatch_batch(
             return;
         } catch (const std::exception &error) {
             abort_if_active();
+            execution_service_.reset_after_auto_abort();
             result.status = BatchStatus::ERROR;
             result.failed_operation = result.executed_operations;
             result.diagnostic = safe_diagnostic(error.what());

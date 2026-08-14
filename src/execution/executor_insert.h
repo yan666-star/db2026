@@ -125,7 +125,7 @@ class InsertExecutor : public AbstractExecutor {
             }
             if (uses_mvcc) {
                 context_->txn_mgr_->check_unique_key_conflict(
-                    context_->txn_, fh_->GetMvccFileId(), Rid{-1, -1}, rec,
+                    context_->txn_, ih->GetFd(), Rid{-1, -1}, rec,
                     index.cols);
             }
         }

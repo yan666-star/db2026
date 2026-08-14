@@ -218,12 +218,16 @@ std::chrono::microseconds pending_writer_wait_budget() {
     static auto budget = [] {
         const char *value = std::getenv("RMDB_PENDING_WAIT_US");
         if (value == nullptr || value[0] == '\0') {
-            return std::chrono::microseconds(500);
+            // wait-die is deadlock-free: an older transaction may wait for a
+            // younger owner until that owner resolves. Zero therefore means
+            // no artificial timeout. A positive environment value remains a
+            // diagnostics-only escape hatch.
+            return std::chrono::microseconds(0);
         }
         char *end = nullptr;
         unsigned long long parsed = std::strtoull(value, &end, 10);
         if (end == value) {
-            return std::chrono::microseconds(500);
+            return std::chrono::microseconds(0);
         }
         return std::chrono::microseconds(parsed);
     }();
@@ -353,7 +357,9 @@ static void update_indexes(SmManager *sm_manager,
                            const std::string &table_name,
                            const RmRecord &old_record,
                            const RmRecord &new_record,
-                           const Rid &rid, Transaction *txn) {
+                           const Rid &rid, Transaction *txn,
+                           TransactionManager *txn_manager,
+                           IndexVersionStore *index_versions) {
     auto &tab = sm_manager->db_.get_table(table_name);
     for (auto &index_meta : tab.indexes) {
         bool key_changed = false;
@@ -383,6 +389,12 @@ static void update_indexes(SmManager *sm_manager,
                    index_meta.cols[i].len);
             key_offset += index_meta.cols[i].len;
         }
+        if (index_versions != nullptr && txn != nullptr) {
+            txn_manager->acquire_unique_key_intent(
+                txn, index_handle->GetFd(), old_key);
+            index_versions->retain(index_handle->GetFd(), old_key, rid,
+                                   txn->get_transaction_id());
+        }
         index_handle->delete_entry(old_key.data(), txn);
         index_handle->insert_entry(new_key.data(), rid, txn);
     }
@@ -391,7 +403,9 @@ static void update_indexes(SmManager *sm_manager,
 static void delete_indexes(SmManager *sm_manager,
                            const std::string &table_name,
                            const RmRecord &record,
-                           const Rid &rid, Transaction *txn) {
+                           const Rid &rid, Transaction *txn,
+                           TransactionManager *txn_manager,
+                           IndexVersionStore *index_versions) {
     auto &tab = sm_manager->db_.get_table(table_name);
     for (auto &index_meta : tab.indexes) {
         auto index_name =
@@ -410,6 +424,12 @@ static void delete_indexes(SmManager *sm_manager,
         if (index_handle->get_value(key.data(), &indexed_rids, txn) &&
             std::find(indexed_rids.begin(), indexed_rids.end(), rid) !=
                 indexed_rids.end()) {
+            if (index_versions != nullptr && txn != nullptr) {
+                txn_manager->acquire_unique_key_intent(
+                    txn, index_handle->GetFd(), key);
+                index_versions->retain(index_handle->GetFd(), key, rid,
+                                       txn->get_transaction_id());
+            }
             index_handle->delete_entry(key.data(), txn);
         }
     }
@@ -423,17 +443,20 @@ void TransactionManager::commit(Transaction *txn, LogManager *log_manager) {
 
     if (txn->uses_mvcc()) {
         try {
-            commit_mvcc(txn);
+            commit_mvcc(txn, log_manager);
         } catch (const TransactionAbortException &) {
             abort(txn, log_manager);
             throw;
         }
-        if ((mvcc_commit_count_.fetch_add(1) & 0xFFu) == 0) {
-            GarbageCollection();
+        release_unique_key_intents(txn);
+        const uint64_t commit_count =
+            mvcc_commit_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if ((commit_count & 0x00FFu) == 0) {
+            garbage_collect_incremental();
         }
     }
 
-    if (log_manager != nullptr) {
+    if (!txn->uses_mvcc() && log_manager != nullptr) {
         CommitLogRecord commit_log(txn->get_transaction_id());
         commit_log.prev_lsn_ = txn->get_prev_lsn();
         lsn_t lsn = log_manager->add_log_to_buffer(&commit_log);
@@ -471,8 +494,7 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     Context context(lock_manager_, log_manager, txn);
     auto write_set = txn->get_write_set();
     bool did_physical_rollback = false;
-    bool entered_mvcc_commit =
-        txn->uses_mvcc() && txn->get_commit_ts() != INVALID_TS;
+    bool entered_mvcc_commit = mvcc_txn_entered_apply(txn);
     if (perf_diag_enabled() && entered_mvcc_commit) {
         perf_diag_stats().abort_entered_mvcc_commit.fetch_add(
             1, std::memory_order_relaxed);
@@ -549,6 +571,7 @@ void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     txn->get_lock_set()->clear();
     if (txn->uses_mvcc()) {
         abort_mvcc(txn);
+        release_unique_key_intents(txn);
     }
     txn->set_state(TransactionState::ABORTED);
     finish_transaction(txn);
@@ -829,8 +852,41 @@ void TransactionManager::mark_mvcc_txn_aborted_under_latch(txn_id_t txn_id) {
     auto it = mvcc_txns_.find(txn_id);
     if (it != mvcc_txns_.end()) {
         it->second.aborted = true;
+        it->second.commit_state = MvccCommitState::ABORTED;
     }
     mvcc_cv_.notify_all();
+}
+
+int phase2_max_active() {
+    static int limit = [] {
+        constexpr int kDefaultLimit = 16;
+        constexpr int kMaximumLimit = 64;
+        const char *value = std::getenv("RMDB_PHASE2_MAX_ACTIVE");
+        if (value == nullptr || value[0] == '\0') {
+            return kDefaultLimit;
+        }
+        char *end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end == value || *end != '\0' || parsed < 1 ||
+            parsed > kMaximumLimit) {
+            return kDefaultLimit;
+        }
+        return static_cast<int>(parsed);
+    }();
+    return limit;
+}
+
+bool TransactionManager::mvcc_txn_entered_apply(Transaction *txn) {
+    if (!uses_mvcc(txn)) {
+        return false;
+    }
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
+    auto it = mvcc_txns_.find(txn->get_transaction_id());
+    if (it == mvcc_txns_.end()) {
+        return false;
+    }
+    return it->second.entered_apply;
 }
 
 void TransactionManager::mark_mvcc_txn_aborted(txn_id_t txn_id) {
@@ -845,18 +901,33 @@ bool TransactionManager::wait_for_pending_writer(
     if (txn == nullptr || writer == txn->get_transaction_id()) {
         return true;
     }
-    auto budget = pending_writer_wait_budget();
-    if (budget.count() <= 0) {
+
+    auto resolved_predicate = [&] {
+        auto writer_it = mvcc_txns_.find(writer);
+        return writer_it == mvcc_txns_.end() || writer_it->second.aborted ||
+               writer_it->second.commit_ts != INVALID_TS;
+    };
+    if (resolved_predicate()) {
+        return true;
+    }
+
+    // Transaction ids are allocated monotonically. In wait-die, a younger
+    // requester never waits for an older owner; only the older requester may
+    // sleep. This removes wait cycles without turning every short conflict
+    // into a fixed 500us timeout/abandon.
+    if (txn->get_transaction_id() > writer) {
         return false;
     }
     if (perf_diag_enabled()) {
         perf_diag_stats().pending_waits.fetch_add(1, std::memory_order_relaxed);
     }
-    bool resolved = mvcc_cv_.wait_for(lock, budget, [&] {
-        auto writer_it = mvcc_txns_.find(writer);
-        return writer_it == mvcc_txns_.end() || writer_it->second.aborted ||
-               writer_it->second.commit_ts != INVALID_TS;
-    });
+    const auto budget = pending_writer_wait_budget();
+    bool resolved = true;
+    if (budget.count() > 0) {
+        resolved = mvcc_cv_.wait_for(lock, budget, resolved_predicate);
+    } else {
+        mvcc_cv_.wait(lock, resolved_predicate);
+    }
     if (perf_diag_enabled()) {
         if (resolved) {
             perf_diag_stats().pending_wait_resolved.fetch_add(
@@ -917,6 +988,9 @@ void TransactionManager::check_physical_before(
 
 TransactionManager::RecordKey TransactionManager::make_record_key(
     const std::string &table_name, const Rid &rid) const {
+    if (sm_manager_ == nullptr) {
+        return RecordKey{0, rid};
+    }
     auto fh_it = sm_manager_->fhs_.find(table_name);
     if (fh_it == sm_manager_->fhs_.end()) {
         return RecordKey{0, rid};
@@ -1091,6 +1165,56 @@ void TransactionManager::register_table_read(
     }
 }
 
+std::vector<Rid> TransactionManager::get_historical_index_rids(
+    Transaction *txn, int index_id) {
+    if (!uses_mvcc(txn)) {
+        return {};
+    }
+    const std::vector<IndexVersionStore::Entry> entries =
+        index_versions_.snapshot(index_id);
+    if (entries.empty()) {
+        return {};
+    }
+
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
+    std::vector<Rid> result;
+    result.reserve(entries.size());
+    std::unordered_set<uint64_t> seen;
+    for (const auto &entry : entries) {
+        bool visible = false;
+        if (entry.valid_until != INVALID_TS) {
+            visible = txn->get_read_ts() < entry.valid_until;
+        } else {
+            auto owner = mvcc_txns_.find(entry.owner);
+            if (owner != mvcc_txns_.end() && !owner->second.aborted) {
+                if (owner->second.commit_state == MvccCommitState::VISIBLE &&
+                    owner->second.commit_ts != INVALID_TS) {
+                    visible =
+                        txn->get_read_ts() < owner->second.commit_ts;
+                } else {
+                    // Physical index application precedes publication. Until
+                    // the owner resolves, every snapshot must retain a path
+                    // to the pre-transaction record version.
+                    visible = true;
+                }
+            }
+        }
+        if (!visible || entry.rid.page_no < 0 || entry.rid.slot_no < 0) {
+            continue;
+        }
+        const uint64_t encoded =
+            (static_cast<uint64_t>(
+                 static_cast<uint32_t>(entry.rid.page_no))
+             << 32) |
+            static_cast<uint32_t>(entry.rid.slot_no);
+        if (seen.insert(encoded).second) {
+            result.push_back(entry.rid);
+        }
+    }
+    return result;
+}
+
 void TransactionManager::register_record_read(
     Transaction *txn, uint64_t file_id, const Rid &rid) {
     if (txn == nullptr ||
@@ -1133,6 +1257,24 @@ void TransactionManager::prepare_insert(
     Transaction *txn, uint64_t file_id, const Rid &rid,
     const RmRecord &new_record) {
     prepare_write(txn, file_id, rid, nullptr, &new_record, false);
+}
+
+void TransactionManager::prepare_inserts(
+    Transaction *txn, uint64_t file_id, const std::vector<Rid> &rids,
+    const std::vector<RmRecord> &new_records) {
+    if (!uses_mvcc(txn)) {
+        return;
+    }
+    if (rids.size() != new_records.size()) {
+        throw InternalError("MVCC batch insert size mismatch");
+    }
+
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
+    for (size_t row = 0; row < rids.size(); ++row) {
+        prepare_write_under_latch(txn, file_id, rids[row], nullptr,
+                                  &new_records[row], false, "", txn_lock);
+    }
 }
 
 void TransactionManager::prepare_update(
@@ -1259,96 +1401,95 @@ bool TransactionManager::has_stale_write_target(
 }
 
 void TransactionManager::check_unique_key_conflict(
-    Transaction *txn, uint64_t file_id, const Rid &target_rid,
+    Transaction *txn, int index_id, const Rid &target_rid,
     const RmRecord &new_record, const std::vector<ColMeta> &index_cols) {
     if (!uses_mvcc(txn)) {
         return;
     }
 
-    auto same_key = [&](const std::vector<char> &data) {
-        if (data.empty()) {
-            return false;
-        }
-        for (const auto &col : index_cols) {
-            if (memcmp(data.data() + col.offset,
-                       new_record.data + col.offset, col.len) != 0) {
-                return false;
-            }
-        }
-        return true;
-    };
+    size_t key_size = 0;
+    for (const ColMeta &column : index_cols) {
+        key_size += static_cast<size_t>(column.len);
+    }
+    std::vector<char> key(key_size);
+    size_t offset = 0;
+    for (const ColMeta &column : index_cols) {
+        std::memcpy(key.data() + offset, new_record.data + column.offset,
+                    column.len);
+        offset += static_cast<size_t>(column.len);
+    }
 
-    auto txn_lock = rmdb_perf::lock_mutex(
-        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
-    auto candidate_it = mvcc_unique_conflict_keys_by_file_.find(file_id);
-    if (candidate_it == mvcc_unique_conflict_keys_by_file_.end()) {
+    acquire_unique_key_intent(txn, index_id, key);
+    if (index_versions_.conflicts_with_snapshot(
+            index_id, key, target_rid, txn->get_transaction_id(),
+            txn->get_start_ts())) {
+        if (perf_diag_enabled()) {
+            perf_diag_stats().unique_conflict_committed_after_start.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+        mark_mvcc_txn_aborted(txn->get_transaction_id());
+        throw TransactionAbortException(txn->get_transaction_id(),
+                                        AbortReason::WRITE_CONFLICT);
+    }
+}
+
+void TransactionManager::acquire_unique_key_intent(
+    Transaction *txn, int index_id, const std::vector<char> &key) {
+    if (!uses_mvcc(txn)) {
         return;
     }
-
-    bool has_other_pending_writer = false;
-    for (const auto &[other_txn_id, state] : mvcc_txns_) {
-        if (other_txn_id == txn->get_transaction_id() || state.aborted ||
-            state.commit_ts != INVALID_TS || state.write_records.empty()) {
-            continue;
+    UniqueIntentKey intent{index_id, std::string(key.data(), key.size())};
+    UniqueIntentShard &shard =
+        unique_intent_shards_[get_unique_intent_shard(intent)];
+    std::unique_lock<std::mutex> lock(shard.latch);
+    while (true) {
+        auto owner = shard.owners.find(intent);
+        if (owner == shard.owners.end()) {
+            shard.owners.emplace(intent, txn->get_transaction_id());
+            txn->append_unique_intent(index_id, intent.key);
+            return;
         }
-        has_other_pending_writer = true;
-        break;
-    }
-    if (!has_other_pending_writer &&
-        last_commit_ts_.load() <= txn->get_start_ts()) {
-        return;
-    }
-
-    for (const auto &ckey : candidate_it->second) {
-        if (ckey.rid == target_rid) {
-            continue;
+        if (owner->second == txn->get_transaction_id()) {
+            return;
         }
-        auto &shard = mvcc_shards_[get_shard_idx(ckey)];
-        // Lock shards individually under txn_state; lock-ordering permits this.
-        std::lock_guard<std::mutex> shard_lock(shard.latch);
-        auto history_it = shard.record_versions.find(ckey);
-        if (history_it == shard.record_versions.end()) {
-            continue;
-        }
-        const auto &history = history_it->second;
-
-        const MvccVersion *latest_committed = nullptr;
-        for (const auto &version : history) {
-            if (version.commit_ts == INVALID_TS) {
-                if (version.owner != txn->get_transaction_id() &&
-                    !mvcc_txn_aborted(version.owner) &&
-                    !version.deleted && same_key(version.data)) {
-                    if (perf_diag_enabled()) {
-                        perf_diag_stats().unique_conflict_pending.fetch_add(
-                            1, std::memory_order_relaxed);
-                    }
-                    mark_mvcc_txn_aborted_under_latch(txn->get_transaction_id());
-                    throw TransactionAbortException(
-                        txn->get_transaction_id(),
-                        AbortReason::WRITE_CONFLICT);
-                }
-                continue;
-            }
-            if (latest_committed == nullptr ||
-                version.commit_ts > latest_committed->commit_ts) {
-                latest_committed = &version;
-            }
-        }
-
-        if (latest_committed != nullptr &&
-            latest_committed->commit_ts > txn->get_start_ts() &&
-            !latest_committed->deleted &&
-            same_key(latest_committed->data)) {
+        if (txn->get_transaction_id() > owner->second) {
+            lock.unlock();
             if (perf_diag_enabled()) {
-                perf_diag_stats()
-                    .unique_conflict_committed_after_start.fetch_add(
-                        1, std::memory_order_relaxed);
+                perf_diag_stats().unique_conflict_pending.fetch_add(
+                    1, std::memory_order_relaxed);
             }
-            mark_mvcc_txn_aborted_under_latch(txn->get_transaction_id());
-            throw TransactionAbortException(
-                txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+            mark_mvcc_txn_aborted(txn->get_transaction_id());
+            throw TransactionAbortException(txn->get_transaction_id(),
+                                            AbortReason::WRITE_CONFLICT);
+        }
+        shard.cv.wait(lock, [&] {
+            auto current = shard.owners.find(intent);
+            return current == shard.owners.end() ||
+                   current->second == txn->get_transaction_id();
+        });
+    }
+}
+
+void TransactionManager::release_unique_key_intents(Transaction *txn) {
+    for (const auto &[index_id, binary_key] : txn->get_unique_intents()) {
+        UniqueIntentKey intent{index_id, binary_key};
+        UniqueIntentShard &shard =
+            unique_intent_shards_[get_unique_intent_shard(intent)];
+        bool released = false;
+        {
+            std::lock_guard<std::mutex> lock(shard.latch);
+            auto owner = shard.owners.find(intent);
+            if (owner != shard.owners.end() &&
+                owner->second == txn->get_transaction_id()) {
+                shard.owners.erase(owner);
+                released = true;
+            }
+        }
+        if (released) {
+            shard.cv.notify_all();
         }
     }
+    txn->clear_unique_intents();
 }
 
 void TransactionManager::prepare_write(
@@ -1359,11 +1500,20 @@ void TransactionManager::prepare_write(
         return;
     }
 
-    RecordKey key{file_id, rid};
-    auto &shard = mvcc_shards_[get_shard_idx(key)];
-
     auto txn_lock = rmdb_perf::lock_mutex(
         txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
+    prepare_write_under_latch(txn, file_id, rid, old_record, new_record,
+                              deleted, table_name, txn_lock);
+}
+
+void TransactionManager::prepare_write_under_latch(
+    Transaction *txn, uint64_t file_id, const Rid &rid,
+    const RmRecord *old_record, const RmRecord *new_record, bool deleted,
+    const std::string &table_name,
+    std::unique_lock<std::mutex> &txn_lock) {
+
+    RecordKey key{file_id, rid};
+    auto &shard = mvcc_shards_[get_shard_idx(key)];
 
     MvccVersion *own_pending = nullptr;
     while (true) {
@@ -1424,16 +1574,6 @@ void TransactionManager::prepare_write(
         break;
     }
 
-    // Physical verification (still under shard + txn_state; shard_lock
-    // is not held after the `break` above — reacquire for the history update).
-    {
-        std::lock_guard<std::mutex> shard_lock(shard.latch);
-        auto &history = shard.record_versions[key];
-        if (own_pending == nullptr && old_record != nullptr &&
-            !table_name.empty()) {
-            // check_physical_before performs I/O; release shard before calling.
-        }
-    }
     if (own_pending == nullptr && old_record != nullptr &&
         !table_name.empty()) {
         check_physical_before(txn, table_name, rid, old_record);
@@ -1517,7 +1657,6 @@ void TransactionManager::prepare_write(
     if (state_it != mvcc_txns_.end()) {
         state_it->second.write_records.insert(key);
     }
-    mvcc_unique_conflict_keys_by_file_[file_id].insert(key);
 }
 
 void TransactionManager::check_commit_conflict_under_latch(Transaction *txn) {
@@ -1605,7 +1744,8 @@ void TransactionManager::check_commit_conflict(Transaction *txn) {
     check_commit_conflict_under_latch(txn);
 }
 
-void TransactionManager::commit_mvcc(Transaction *txn) {
+void TransactionManager::commit_mvcc(Transaction *txn,
+                                     LogManager *log_manager) {
     if (!uses_mvcc(txn)) {
         return;
     }
@@ -1619,122 +1759,86 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
     };
     std::vector<PhysicalOp> ops;
 
-    // ── Phase 1: version publication ──────────────────────────────────
-    // commit_apply_latch_ serializes commit-ts assignment so two commits
-    // touching the same RID land in timestamp order.  txn_state + affected
-    // shards are locked underneath for conflict checking and version marking.
-    // This phase is purely in-memory (< 100 µs); commit_apply is released
-    // before Phase 2 so that other transactions can publish their versions
-    // while physical I/O is in flight.
+    // Phase 1 validates and builds the physical operation list, but leaves
+    // every version pending. No commit timestamp is published before the
+    // physical changes and COMMIT WAL record are durable.
     {
-        auto apply_lock =
-            rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
-        {
-            auto txn_lock = rmdb_perf::lock_mutex(
-                txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
+        auto txn_lock = rmdb_perf::lock_mutex(
+            txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
+        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+        if (state_it == mvcc_txns_.end()) {
+            throw InternalError("Missing MVCC transaction state at commit");
+        }
+        state_it->second.commit_state = MvccCommitState::VALIDATING;
 
-            // Collect and lock all shards touched (sorted → no deadlock).
-            std::set<size_t> sorted_shards;
-            {
-                auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-                if (state_it != mvcc_txns_.end()) {
-                    for (const auto &key : state_it->second.write_records) {
-                        sorted_shards.insert(get_shard_idx(key));
-                    }
+        std::set<size_t> sorted_shards;
+        for (const auto &key : state_it->second.write_records) {
+            sorted_shards.insert(get_shard_idx(key));
+        }
+        std::vector<std::unique_lock<std::mutex>> shard_locks;
+        for (size_t idx : sorted_shards) {
+            shard_locks.emplace_back(mvcc_shards_[idx].latch);
+        }
+
+        check_commit_conflict_under_latch(txn);
+        for (const auto &key : state_it->second.write_records) {
+            auto &shard = mvcc_shards_[get_shard_idx(key)];
+            auto history_it = shard.record_versions.find(key);
+            MvccVersion *own_pending = nullptr;
+            if (history_it != shard.record_versions.end()) {
+                own_pending = find_own_pending_version(
+                    history_it->second, txn->get_transaction_id());
+            }
+            if (own_pending == nullptr) {
+                mark_mvcc_txn_aborted_under_latch(
+                    txn->get_transaction_id());
+                throw TransactionAbortException(
+                    txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+            }
+
+            if (write_record_is_insert_only(txn, key)) {
+                continue;
+            }
+
+            std::vector<char> before = own_pending->before;
+            if (has_multiple_mutating_writes(txn, key)) {
+                WriteRecord *mutating = first_mutating_write_record(txn, key);
+                if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                    before = copy_record(&mutating->GetRecord());
+                }
+            } else if (before.empty()) {
+                WriteRecord *mutating = first_mutating_write_record(txn, key);
+                if (mutating != nullptr && mutating->GetRecord().size > 0) {
+                    before = copy_record(&mutating->GetRecord());
                 }
             }
-            std::vector<std::unique_lock<std::mutex>> shard_locks;
-            for (size_t idx : sorted_shards) {
-                shard_locks.emplace_back(mvcc_shards_[idx].latch);
-            }
-
-            check_commit_conflict_under_latch(txn);
-            timestamp_t commit_ts = last_commit_ts_.fetch_add(1) + 1;
-            txn->set_commit_ts(commit_ts);
-            auto state_it = mvcc_txns_.find(txn->get_transaction_id());
-            if (state_it != mvcc_txns_.end()) {
-                state_it->second.commit_ts = commit_ts;
-                for (const auto &key : state_it->second.write_records) {
-                    auto &shard = mvcc_shards_[get_shard_idx(key)];
-                    auto history_it = shard.record_versions.find(key);
-                    MvccVersion *own_pending = nullptr;
-                    if (history_it != shard.record_versions.end()) {
-                        own_pending = find_own_pending_version(
-                            history_it->second, txn->get_transaction_id());
-                    }
-                    if (own_pending == nullptr) {
-                        if (write_record_is_insert_only(txn, key)) {
-                            continue;
-                        }
-                        mark_mvcc_txn_aborted_under_latch(
-                            txn->get_transaction_id());
-                        throw TransactionAbortException(
-                            txn->get_transaction_id(),
-                            AbortReason::WRITE_CONFLICT);
-                    }
-
-                    if (write_record_is_insert_only(txn, key)) {
-                        own_pending->commit_ts = commit_ts;
-                        continue;
-                    }
-
-                    std::vector<char> before = own_pending->before;
-                    if (has_multiple_mutating_writes(txn, key)) {
-                        WriteRecord *mutating =
-                            first_mutating_write_record(txn, key);
-                        if (mutating != nullptr &&
-                            mutating->GetRecord().size > 0) {
-                            before = copy_record(&mutating->GetRecord());
-                        }
-                    } else if (before.empty()) {
-                        WriteRecord *mutating =
-                            first_mutating_write_record(txn, key);
-                        if (mutating != nullptr &&
-                            mutating->GetRecord().size > 0) {
-                            before = copy_record(&mutating->GetRecord());
-                        }
-                    }
-                    std::string table_name = own_pending->table_name;
-                    if (table_name.empty()) {
-                        WriteRecord *mutating =
-                            first_mutating_write_record(txn, key);
-                        if (mutating != nullptr) {
-                            table_name = mutating->GetTableName();
-                        }
-                    }
-                    if (before.empty() || table_name.empty()) {
-                        mark_mvcc_txn_aborted_under_latch(
-                            txn->get_transaction_id());
-                        throw TransactionAbortException(
-                            txn->get_transaction_id(),
-                            AbortReason::WRITE_CONFLICT);
-                    }
-                    if (!own_pending->deleted && own_pending->data.empty()) {
-                        mark_mvcc_txn_aborted_under_latch(
-                            txn->get_transaction_id());
-                        throw TransactionAbortException(
-                            txn->get_transaction_id(),
-                            AbortReason::WRITE_CONFLICT);
-                    }
-                    ops.push_back(PhysicalOp{own_pending->deleted, table_name,
-                                             key.rid, before,
-                                             own_pending->data});
-                    own_pending->commit_ts = commit_ts;
+            std::string table_name = own_pending->table_name;
+            if (table_name.empty()) {
+                WriteRecord *mutating = first_mutating_write_record(txn, key);
+                if (mutating != nullptr) {
+                    table_name = mutating->GetTableName();
                 }
             }
-        } // shard locks → txn_lock released
-    } // apply_lock released
-    mvcc_cv_.notify_all();
+            if (before.empty() || table_name.empty() ||
+                (!own_pending->deleted && own_pending->data.empty())) {
+                mark_mvcc_txn_aborted_under_latch(
+                    txn->get_transaction_id());
+                throw TransactionAbortException(
+                    txn->get_transaction_id(), AbortReason::WRITE_CONFLICT);
+            }
+            ops.push_back(PhysicalOp{own_pending->deleted, table_name, key.rid,
+                                     before, own_pending->data});
+        }
+        state_it->second.entered_apply = true;
+        state_it->second.commit_state = MvccCommitState::APPLYING;
+    }
 
-    // ── Phase 2: physical application ──────────────────────────────────
-    // commit_apply_latch_ is no longer held.  Up to kMaxConcurrentPhase2
-    // transactions may apply physical changes concurrently so that the
-    // buffer pool and disk are not overwhelmed by unbounded write
-    // parallelism, while still exploiting available I/O bandwidth.
+    // Phase 2 applies heap/index changes with bounded concurrency. Versions
+    // remain pending, so readers cannot observe the not-yet-durable result.
     {
         std::unique_lock<std::mutex> phase2_lock(phase2_latch_);
         phase2_cv_.wait(phase2_lock, [&] {
-            return phase2_active_count_ < kMaxConcurrentPhase2;
+            return phase2_active_count_ < phase2_max_active();
         });
         ++phase2_active_count_;
         phase2_lock.unlock();
@@ -1749,20 +1853,22 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
                 check_physical_before(txn, op.table_name, op.rid, &before);
                 if (op.is_delete) {
                     delete_indexes(sm_manager_, op.table_name, before, op.rid,
-                                   txn);
+                                   txn, this, &index_versions_);
                     auto file_handle =
                         sm_manager_->fhs_.at(op.table_name).get();
                     if (file_handle->record_exists(op.rid)) {
-                        file_handle->delete_record(op.rid, nullptr);
+                        file_handle->delete_record(
+                            op.rid, nullptr, txn->get_prev_lsn());
                     }
                 } else {
                     auto file_handle =
                         sm_manager_->fhs_.at(op.table_name).get();
                     RmRecord after(static_cast<int>(op.after.size()),
                                    const_cast<char *>(op.after.data()));
-                    file_handle->update_record(op.rid, after.data, nullptr);
+                    file_handle->update_record(
+                        op.rid, after.data, nullptr, txn->get_prev_lsn());
                     update_indexes(sm_manager_, op.table_name, before, after,
-                                   op.rid, txn);
+                                   op.rid, txn, this, &index_versions_);
                 }
             } catch (const TransactionAbortException &) {
                 // txn_state is NOT held here — use the public version that
@@ -1805,6 +1911,68 @@ void TransactionManager::commit_mvcc(Transaction *txn) {
         --phase2_active_count_;
     }
     phase2_cv_.notify_one();
+
+    // The positive COMMIT record and the transaction's entire preceding WAL
+    // chain must be durable before any version is published.
+    if (log_manager != nullptr) {
+        CommitLogRecord commit_log(txn->get_transaction_id());
+        commit_log.prev_lsn_ = txn->get_prev_lsn();
+        lsn_t lsn = log_manager->add_log_to_buffer(&commit_log);
+        txn->set_prev_lsn(lsn);
+        log_manager->force_flush_up_to(lsn);
+    }
+
+    // Publication is a short all-shards critical section. Take txn_state
+    // first so the exclusive publication latch is never held while queued
+    // behind a batch writer on txn_state_latch_; the old order created a
+    // convoy where one blocked publisher prevented every other durable
+    // transaction from becoming visible.
+    {
+        auto txn_lock = rmdb_perf::lock_mutex(
+            txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
+        auto apply_lock =
+            rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
+        auto state_it = mvcc_txns_.find(txn->get_transaction_id());
+        if (state_it == mvcc_txns_.end() ||
+            state_it->second.commit_state != MvccCommitState::APPLYING) {
+            throw InternalError("Invalid MVCC durable publication state");
+        }
+        // force_flush_up_to(commit_lsn) completed before this critical
+        // section. Marking DURABLE and publishing under the same txn-state
+        // acquisition preserves the required state transition while avoiding
+        // a second global-latch round trip for every commit.
+        state_it->second.commit_state = MvccCommitState::DURABLE;
+
+        std::set<size_t> sorted_shards;
+        for (const auto &key : state_it->second.write_records) {
+            sorted_shards.insert(get_shard_idx(key));
+        }
+        std::vector<std::unique_lock<std::mutex>> shard_locks;
+        for (size_t idx : sorted_shards) {
+            shard_locks.emplace_back(mvcc_shards_[idx].latch);
+        }
+
+        timestamp_t commit_ts = last_commit_ts_.load() + 1;
+        for (const auto &key : state_it->second.write_records) {
+            auto &shard = mvcc_shards_[get_shard_idx(key)];
+            auto history_it = shard.record_versions.find(key);
+            if (history_it == shard.record_versions.end()) {
+                throw InternalError("Durable MVCC version disappeared");
+            }
+            MvccVersion *own_pending = find_own_pending_version(
+                history_it->second, txn->get_transaction_id());
+            if (own_pending == nullptr) {
+                throw InternalError("Durable MVCC pending version disappeared");
+            }
+            own_pending->commit_ts = commit_ts;
+        }
+        txn->set_commit_ts(commit_ts);
+        state_it->second.commit_ts = commit_ts;
+        index_versions_.finalize(txn->get_transaction_id(), commit_ts);
+        state_it->second.commit_state = MvccCommitState::VISIBLE;
+        last_commit_ts_.store(commit_ts);
+    }
+    mvcc_cv_.notify_all();
 }
 
 void TransactionManager::remove_dependencies(txn_id_t txn_id) {
@@ -1840,6 +2008,7 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
         return;
     }
     timestamp_t partial_commit_ts = txn->get_commit_ts();
+    index_versions_.discard(txn->get_transaction_id());
 
     // Collect and lock all shards this transaction touched (sorted to
     // avoid AB-BA deadlocks with other lockers that follow the ordering).
@@ -1868,29 +2037,12 @@ void TransactionManager::abort_mvcc(Transaction *txn) {
             }),
             history.end());
         if (history.empty()) {
-            auto candidate_it =
-                mvcc_unique_conflict_keys_by_file_.find(key.file_id);
-            if (candidate_it != mvcc_unique_conflict_keys_by_file_.end()) {
-                candidate_it->second.erase(key);
-                if (candidate_it->second.empty()) {
-                    mvcc_unique_conflict_keys_by_file_.erase(candidate_it);
-                }
-            }
             shard.record_versions.erase(history_it);
-        } else if (history.size() == 1 && history.front().commit_ts == 0 &&
-                   !history.front().deleted) {
-            auto candidate_it =
-                mvcc_unique_conflict_keys_by_file_.find(key.file_id);
-            if (candidate_it != mvcc_unique_conflict_keys_by_file_.end()) {
-                candidate_it->second.erase(key);
-                if (candidate_it->second.empty()) {
-                    mvcc_unique_conflict_keys_by_file_.erase(candidate_it);
-                }
-            }
         }
     }
     remove_dependencies(txn->get_transaction_id());
     state_it->second.aborted = true;
+    state_it->second.commit_state = MvccCommitState::ABORTED;
     state_it->second.predicates.clear();
     state_it->second.read_records.clear();
     state_it->second.write_records.clear();
@@ -1915,6 +2067,18 @@ timestamp_t TransactionManager::GetWatermark() {
 }
 
 void TransactionManager::GarbageCollection() {
+    garbage_collect_shards(0, kMvccShardCount);
+}
+
+void TransactionManager::garbage_collect_incremental() {
+    const size_t shard_idx =
+        mvcc_gc_shard_cursor_.fetch_add(1, std::memory_order_relaxed) &
+        (kMvccShardCount - 1);
+    garbage_collect_shards(shard_idx, 1);
+}
+
+void TransactionManager::garbage_collect_shards(size_t first_shard,
+                                                 size_t shard_count) {
     // Lock ordering: txn_state_latch_ → mvcc_shards_[*].latch.
     //
     // GC only compacts in-memory version metadata; committed DELETEs have
@@ -1928,9 +2092,8 @@ void TransactionManager::GarbageCollection() {
     // reader and committer for the duration of the full 64-shard scan — the
     // periodic 256-commit GC would otherwise serialize the whole system.
 
-    // Hold txn_state for the entire shard scan so that unique_conflict_keys
-    // cleanup does not invert the lock order (shard → txn_state would
-    // deadlock against prepare_write's txn_state → shard).
+    // Hold txn_state while compacting the requested bounded shard range so
+    // transaction-state pruning and version publication share one watermark.
     auto txn_lock = rmdb_perf::lock_mutex(
         txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
 
@@ -1945,9 +2108,15 @@ void TransactionManager::GarbageCollection() {
         }
         watermark = std::min(watermark, state.start_ts);
     }
+    index_versions_.garbage_collect(watermark);
 
-    // Process each shard independently — one shard latch at a time.
-    for (size_t shard_idx = 0; shard_idx < kMvccShardCount; ++shard_idx) {
+    // Process only the requested bounded shard range. The commit hot path
+    // advances one shard every 16 commits, avoiding the long stop-the-world
+    // pause caused by scanning all 64 shards in one client COMMIT. The public
+    // GarbageCollection entry point still performs a complete pass.
+    for (size_t offset = 0; offset < shard_count; ++offset) {
+        const size_t shard_idx =
+            (first_shard + offset) & (kMvccShardCount - 1);
         std::lock_guard<std::mutex> shard_lock(mvcc_shards_[shard_idx].latch);
         auto &shard = mvcc_shards_[shard_idx];
 
@@ -1987,20 +2156,6 @@ void TransactionManager::GarbageCollection() {
                 MvccVersion &only = history.front();
                 if (only.commit_ts != INVALID_TS &&
                     only.commit_ts <= watermark) {
-                    // Once a version is settled below the watermark it can no
-                    // longer conflict with a future unique-key write.
-                    // (txn_state_latch_ is already held — see above.)
-                    auto candidate_it =
-                        mvcc_unique_conflict_keys_by_file_.find(
-                            it->first.file_id);
-                    if (candidate_it !=
-                        mvcc_unique_conflict_keys_by_file_.end()) {
-                        candidate_it->second.erase(it->first);
-                        if (candidate_it->second.empty()) {
-                            mvcc_unique_conflict_keys_by_file_.erase(
-                                candidate_it);
-                        }
-                    }
                     if (only.deleted) {
                         // The heap row is already gone.  Retain the
                         // tombstone's timestamp while the chain exists so a
@@ -2046,11 +2201,11 @@ void TransactionManager::apply_committed_deletes_for_checkpoint() {
     };
     std::vector<Reclaim> reclaims;
 
+    auto txn_lock = rmdb_perf::lock_mutex(
+        txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
     auto apply_lock =
         rmdb_perf::lock_commit_apply_write(commit_apply_latch_);
     {
-        auto txn_lock = rmdb_perf::lock_mutex(
-            txn_state_latch_, rmdb_perf::Metric::TXN_STATE_WAIT);
 
         for (size_t shard_idx = 0; shard_idx < kMvccShardCount; ++shard_idx) {
             std::lock_guard<std::mutex> shard_lock(
@@ -2085,14 +2240,6 @@ void TransactionManager::apply_committed_deletes_for_checkpoint() {
                 }
                 // The physical state now becomes authoritative (row absent),
                 // so the tombstone chain is no longer needed.
-                auto candidate_it =
-                    mvcc_unique_conflict_keys_by_file_.find(it->first.file_id);
-                if (candidate_it != mvcc_unique_conflict_keys_by_file_.end()) {
-                    candidate_it->second.erase(it->first);
-                    if (candidate_it->second.empty()) {
-                        mvcc_unique_conflict_keys_by_file_.erase(candidate_it);
-                    }
-                }
                 it = shard.record_versions.erase(it);
             }
         }

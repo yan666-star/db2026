@@ -31,11 +31,13 @@ class DiskManager {
    public:
     explicit DiskManager();
 
-    ~DiskManager() = default;
+    virtual ~DiskManager() = default;
 
-    void write_page(int fd, page_id_t page_no, const char *offset, int num_bytes);
+    virtual void write_page(int fd, page_id_t page_no, const char *offset,
+                            int num_bytes);
 
-    void read_page(int fd, page_id_t page_no, char *offset, int num_bytes);
+    virtual void read_page(int fd, page_id_t page_no, char *offset,
+                           int num_bytes);
 
     page_id_t allocate_page(int fd);
 
@@ -70,7 +72,7 @@ class DiskManager {
 
     void write_log(char *log_data, int size);
 
-    void sync_log();
+    virtual void sync_log();
 
     void truncate_log(int64_t size);
 

@@ -78,11 +78,29 @@ class FakeExecutionService final : public rmdb::wire::ExecutionService {
         }
     }
 
+    bool supports_prepared_batch(
+        const rmdb::wire::PreparedStatement &statement) const override {
+        return statement.statement_id == 3;
+    }
+
+    void execute_prepared_batch(
+        const rmdb::wire::PreparedStatement &statement,
+        const std::vector<std::vector<rmdb::execution::TypedValue>> &rows,
+        rmdb::execution::ResultSink &sink) override {
+        events.push_back("batch:" + std::to_string(statement.statement_id) +
+                         ":" + std::to_string(rows.size()));
+        sink.command_ok();
+    }
+
     bool has_active_transaction() const override { return active; }
 
     void abort_active_transaction() override {
         events.push_back("abort");
         active = false;
+    }
+
+    void reset_after_auto_abort() override {
+        events.push_back("reset");
     }
 
     bool active{false};
@@ -197,7 +215,8 @@ void test_batch_abort_happens_before_unique_failure_reply() {
     expect_true(
         service.events ==
             std::vector<std::string>(
-                {"execute:1", "execute:2", "execute:3", "abort", "reply"}),
+                {"execute:1", "execute:2", "execute:3", "abort", "reset",
+                 "reply"}),
         "AUTO_ABORT must finish rollback before sending the failure reply");
     expect_true(!service.active,
                 "Failed AUTO_ABORT batch must end the active transaction");
@@ -247,7 +266,7 @@ void test_decode_error_also_auto_aborts_before_top_level_error() {
             frames.push_back(frame);
         });
     expect_true(service.events ==
-                    std::vector<std::string>({"abort", "reply"}),
+                    std::vector<std::string>({"abort", "reset", "reply"}),
                 "Undecodable AUTO_ABORT request must rollback before reply");
     expect_true(
         frames.size() == 1 &&
@@ -276,6 +295,32 @@ void test_success_batch_has_no_per_command_ack() {
         "Successful batch must aggregate all output into one BATCH_RESULT");
 }
 
+void test_consecutive_supported_operations_use_one_batch_call() {
+    FakeExecutionService service;
+    rmdb::wire::RequestDispatcher dispatcher(service);
+    install_dictionary(dispatcher);
+    service.events.clear();
+    const auto payload = make_batch_payload({1, 3, 3});
+    std::vector<std::vector<uint8_t>> frames;
+    dispatcher.dispatch(
+        request_header(
+            rmdb::wire::ClientTag::EXEC_BATCH,
+            static_cast<uint32_t>(payload.size()),
+            rmdb::wire::kExecBatchAutoAbort),
+        payload,
+        [&](const std::vector<uint8_t> &frame) { frames.push_back(frame); });
+    expect_true(
+        service.events ==
+            std::vector<std::string>({"execute:1", "batch:3:2"}),
+        "Consecutive supported operations in an explicit transaction must "
+        "use one batch execution call");
+    expect_true(
+        frames.size() == 1 &&
+            response_header(frames[0]).tag ==
+                static_cast<uint8_t>(rmdb::wire::ServerTag::BATCH_RESULT),
+        "Batched prepared operations must retain one BATCH_RESULT reply");
+}
+
 void test_oversized_batch_result_aborts_before_small_failure_reply() {
     FakeExecutionService service;
     rmdb::wire::RequestDispatcher dispatcher(service);
@@ -298,7 +343,7 @@ void test_oversized_batch_result_aborts_before_small_failure_reply() {
     expect_true(
         service.events ==
             std::vector<std::string>(
-                {"execute:1", "execute:5", "abort", "reply"}),
+                {"execute:1", "execute:5", "abort", "reset", "reply"}),
         "Oversized batch output must rollback before its failure reply");
     expect_true(
         frames.size() == 1 &&
@@ -317,6 +362,7 @@ int main() {
     test_batch_abort_happens_before_unique_failure_reply();
     test_decode_error_also_auto_aborts_before_top_level_error();
     test_success_batch_has_no_per_command_ack();
+    test_consecutive_supported_operations_use_one_batch_call();
     test_oversized_batch_result_aborts_before_small_failure_reply();
 
     if (failures != 0) {

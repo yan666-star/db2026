@@ -22,10 +22,8 @@ void IxScan::next() {
 
     page_id_t page_no = iid_.page_no;
     while (true) {
-        auto node = ih_->fetch_node(page_no);
-        page_id_t next_page = node->get_next_leaf();
-        bpm_->unpin_page(node->get_page_id(), false);
-        delete node;
+        IxReadNode node = ih_->fetch_node_read(page_no);
+        page_id_t next_page = node.node.get_next_leaf();
 
         if (next_page == IX_LEAF_HEADER_PAGE ||
             next_page == INVALID_PAGE_ID || next_page == IX_NO_PAGE) {

@@ -44,9 +44,16 @@ class SqlExecutionService final : public wire::ExecutionService {
         const wire::PreparedStatement &statement,
         const std::vector<TypedValue> &parameters,
         ResultSink &sink) override;
+    bool supports_prepared_batch(
+        const wire::PreparedStatement &statement) const override;
+    void execute_prepared_batch(
+        const wire::PreparedStatement &statement,
+        const std::vector<std::vector<TypedValue>> &parameter_rows,
+        ResultSink &sink) override;
 
     bool has_active_transaction() const override;
     void abort_active_transaction() override;
+    void reset_after_auto_abort() override;
 
  private:
     std::shared_ptr<ast::TreeNode> parse_sql(const std::string &sql);

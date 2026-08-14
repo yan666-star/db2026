@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -45,16 +46,16 @@ int main() {
     std::ofstream(LOG_FILE_NAME, std::ios::binary).close();
 
     DiskManager disk;
-    LogManager log(&disk);
+    auto log = std::make_unique<LogManager>(&disk);
     constexpr int kTransactions = 16;
     std::vector<std::thread> workers;
     workers.reserve(kTransactions);
     for (int index = 0; index < kTransactions; ++index) {
         workers.emplace_back([&, index] {
             CommitLogRecord commit(index + 1);
-            const lsn_t lsn = log.add_log_to_buffer(&commit);
-            log.force_flush_up_to(lsn);
-            require(log.durable_lsn() >= lsn,
+            const lsn_t lsn = log->add_log_to_buffer(&commit);
+            log->force_flush_up_to(lsn);
+            require(log->durable_lsn() >= lsn,
                     "COMMIT returned before its LSN was durable");
         });
     }
@@ -92,9 +93,9 @@ int main() {
     const int64_t expected_size =
         kLargeCheckpointOffset + checkpoint.log_tot_len_ +
         tail_commit.log_tot_len_;
-    LogManager recovered_log(&large_disk);
-    recovered_log.initialize_from_disk();
-    require(recovered_log.durable_lsn() == tail_commit.lsn_,
+    auto recovered_log = std::make_unique<LogManager>(&large_disk);
+    recovered_log->initialize_from_disk();
+    require(recovered_log->durable_lsn() == tail_commit.lsn_,
             "WAL tail beyond INT32_MAX was not recovered");
     require(large_disk.get_file_size(LOG_FILE_NAME) == expected_size,
             "large WAL was truncated at a narrowed checkpoint offset");

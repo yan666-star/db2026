@@ -21,6 +21,17 @@ See the Mulan PSL v2 for more details. */
 /* 标识事务状态 */
 enum class TransactionState { DEFAULT, GROWING, SHRINKING, COMMITTED, ABORTED };
 
+// In-memory MVCC commit progress. Only VISIBLE transactions may expose their
+// versions to readers; DURABLE means the COMMIT WAL record is already stable.
+enum class MvccCommitState {
+    ACTIVE,
+    VALIDATING,
+    APPLYING,
+    DURABLE,
+    VISIBLE,
+    ABORTED
+};
+
 /* 系统的隔离级别，当前赛题中为可串行化隔离级别 */
 enum class IsolationLevel {
     READ_UNCOMMITTED,

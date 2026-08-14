@@ -15,7 +15,9 @@ See the Mulan PSL v2 for more details. */
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -40,6 +42,32 @@ constexpr uint16_t kServerPort = 8765;
 constexpr int kListenBacklog = 128;
 constexpr bool kVerboseServerLog = false;
 
+size_t server_buffer_pool_pages() {
+    constexpr size_t kMinimumPages = BUFFER_POOL_SIZE;
+    constexpr size_t kMaximumPages = 2U * 1024U * 1024U;  // 8 GiB
+    if (const char *raw = std::getenv("RMDB_BUFFER_POOL_PAGES");
+        raw != nullptr && raw[0] != '\0') {
+        char *end = nullptr;
+        const unsigned long long parsed = std::strtoull(raw, &end, 10);
+        if (end != raw && *end == '\0' && parsed >= 1024 &&
+            parsed <= kMaximumPages) {
+            return static_cast<size_t>(parsed);
+        }
+    }
+
+    const long physical_pages = sysconf(_SC_PHYS_PAGES);
+    const long system_page_size = sysconf(_SC_PAGE_SIZE);
+    if (physical_pages <= 0 || system_page_size <= 0) {
+        return kMinimumPages;
+    }
+    const uint64_t physical_bytes =
+        static_cast<uint64_t>(physical_pages) *
+        static_cast<uint64_t>(system_page_size);
+    const uint64_t budget_bytes = physical_bytes / 4;
+    const size_t pages = static_cast<size_t>(budget_bytes / PAGE_SIZE);
+    return std::max(kMinimumPages, std::min(kMaximumPages, pages));
+}
+
 volatile sig_atomic_t should_exit = 0;
 int listener_fd = -1;
 std::mutex parser_mutex;
@@ -47,7 +75,7 @@ std::mutex optimizer_mutex;
 
 auto disk_manager = std::make_unique<DiskManager>();
 auto buffer_pool_manager = std::make_unique<BufferPoolManager>(
-    BUFFER_POOL_SIZE, disk_manager.get());
+    server_buffer_pool_pages(), disk_manager.get());
 auto rm_manager = std::make_unique<RmManager>(
     disk_manager.get(), buffer_pool_manager.get());
 auto ix_manager = std::make_unique<IxManager>(

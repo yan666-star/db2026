@@ -1,150 +1,194 @@
 /* Copyright (c) 2023 Renmin University of China
-RMDB is licensed under Mulan PSL v2.
-You can use this software according to the terms and conditions of the Mulan PSL v2.
-You may obtain a copy of Mulan PSL v2 at:
-        http://license.coscl.org.cn/MulanPSL2
-THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-See the Mulan PSL v2 for more details. */
+RMDB is licensed under Mulan PSL v2. */
 
 #pragma once
-
-#include <assert.h>
 
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
-#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "bitmap.h"
 #include "common/context.h"
 #include "rm_defs.h"
 #include "rm_record_pool.h"
+#include "storage/page_guard.h"
 
 class RmManager;
 
-/* 对表数据文件中的页面进行封装 */
-struct RmPageHandle {
-    const RmFileHdr *file_hdr;  // 当前页面所在文件的文件头指针
-    Page *page;                 // 页面的实际数据，包括页面存储的数据、元信息等
-    RmPageHdr *page_hdr;        // page->data的第一部分，存储页面元信息，指针指向首地址，长度为sizeof(RmPageHdr)
-    char *bitmap;               // page->data的第二部分，存储页面的bitmap，指针指向首地址，长度为file_hdr->bitmap_size
-    char *slots;                // page->data的第三部分，存储表的记录，指针指向首地址，每个slot的长度为file_hdr->record_size
+/** A parsed record page whose pin and shared page latch are owned by guard. */
+class RmPageReadHandle {
+   public:
+    RmPageReadHandle() = default;
+    RmPageReadHandle(const RmPageReadHandle &) = delete;
+    RmPageReadHandle &operator=(const RmPageReadHandle &) = delete;
+    RmPageReadHandle(RmPageReadHandle &&) noexcept = default;
+    RmPageReadHandle &operator=(RmPageReadHandle &&) noexcept = default;
 
-    RmPageHandle(const RmFileHdr *fhdr_, Page *page_) : file_hdr(fhdr_), page(page_) {
-        page_hdr = reinterpret_cast<RmPageHdr *>(page->get_data() + page->OFFSET_PAGE_HDR);
-        bitmap = page->get_data() + sizeof(RmPageHdr) + page->OFFSET_PAGE_HDR;
-        slots = bitmap + file_hdr->bitmap_size;
+    RmPageReadHandle(const RmFileHdr *file_hdr, ReadPageGuard guard)
+        : guard_(std::move(guard)), file_hdr_(file_hdr) {
+        const char *data = guard_.data();
+        page_hdr = reinterpret_cast<const RmPageHdr *>(
+            data + Page::OFFSET_PAGE_HDR);
+        bitmap = data + sizeof(RmPageHdr) + Page::OFFSET_PAGE_HDR;
+        slots = bitmap + file_hdr_->bitmap_size;
     }
 
-    // 返回指定slot_no的slot存储收地址
-    char* get_slot(int slot_no) const {
-        return slots + slot_no * file_hdr->record_size;  // slots的首地址 + slot个数 * 每个slot的大小(每个record的大小)
+    const char *get_slot(int slot_no) const {
+        return slots + slot_no * file_hdr_->record_size;
     }
+    page_id_t page_no() const {
+        return guard_.get_page()->get_page_id().page_no;
+    }
+    void drop() {
+        guard_.drop();
+        page_hdr = nullptr;
+        bitmap = nullptr;
+        slots = nullptr;
+    }
+
+    const RmPageHdr *page_hdr = nullptr;
+    const char *bitmap = nullptr;
+    const char *slots = nullptr;
+
+   private:
+    ReadPageGuard guard_;
+    const RmFileHdr *file_hdr_ = nullptr;
 };
 
-/* 每个RmFileHandle对应一个表的数据文件，里面有多个page，每个page的数据封装在RmPageHandle中 */
-class RmFileHandle {      
-    friend class RmScan;    
+/** A parsed record page whose pin and exclusive page latch are owned by guard. */
+class RmPageWriteHandle {
+   public:
+    RmPageWriteHandle() = default;
+    RmPageWriteHandle(const RmPageWriteHandle &) = delete;
+    RmPageWriteHandle &operator=(const RmPageWriteHandle &) = delete;
+    RmPageWriteHandle(RmPageWriteHandle &&) noexcept = default;
+    RmPageWriteHandle &operator=(RmPageWriteHandle &&) noexcept = default;
+
+    RmPageWriteHandle(const RmFileHdr *file_hdr, WritePageGuard guard)
+        : guard_(std::move(guard)), file_hdr_(file_hdr) {
+        char *data = guard_.data();
+        page_hdr = reinterpret_cast<RmPageHdr *>(
+            data + Page::OFFSET_PAGE_HDR);
+        bitmap = data + sizeof(RmPageHdr) + Page::OFFSET_PAGE_HDR;
+        slots = bitmap + file_hdr_->bitmap_size;
+    }
+
+    char *get_slot(int slot_no) const {
+        return slots + slot_no * file_hdr_->record_size;
+    }
+    page_id_t page_no() const {
+        return guard_.get_page()->get_page_id().page_no;
+    }
+    Page *page() { return guard_.get_page(); }
+    void mark_dirty() { guard_.mark_dirty(); }
+    void set_page_lsn(lsn_t page_lsn) {
+        guard_.set_page_lsn(page_lsn, true);
+    }
+    void drop() {
+        guard_.drop();
+        page_hdr = nullptr;
+        bitmap = nullptr;
+        slots = nullptr;
+    }
+
+    RmPageHdr *page_hdr = nullptr;
+    char *bitmap = nullptr;
+    char *slots = nullptr;
+
+   private:
+    WritePageGuard guard_;
+    const RmFileHdr *file_hdr_ = nullptr;
+};
+
+struct PendingInsert {
+    const char *data;
+    size_t size;
+};
+
+class RmFileHandle {
+    friend class RmScan;
     friend class RmManager;
 
    private:
-    struct IntEqualityCache {
-        int offset = 0;
-        std::unordered_multimap<int, Rid> values;
-    };
-
     DiskManager *disk_manager_;
     BufferPoolManager *buffer_pool_manager_;
-    int fd_;        // 打开文件后产生的文件句柄
+    int fd_;
     inline static std::atomic<uint64_t> next_mvcc_file_id_{0};
     uint64_t mvcc_file_id_;
-    RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
-    std::mutex insert_latch_;
+    RmFileHdr file_hdr_;
+
+    // DML owns this latch in shared mode. Header/free-list persistence owns it
+    // exclusively, so a temporarily leased non-full page cannot disappear
+    // from the on-disk free-page chain.
+    mutable std::shared_mutex lifecycle_latch_;
+    mutable std::mutex allocation_latch_;
+    mutable std::mutex free_pages_latch_;
+    std::vector<page_id_t> free_page_candidates_;
+    std::unordered_set<page_id_t> free_page_candidate_set_;
     std::mutex logical_update_latch_;
-    std::unordered_map<int, IntEqualityCache> int_equality_caches_;
 
    public:
-    RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
-        : disk_manager_(disk_manager),
-          buffer_pool_manager_(buffer_pool_manager),
-          fd_(fd),
-          mvcc_file_id_(next_mvcc_file_id_.fetch_add(1)) {
-        // 注意：这里从磁盘中读出文件描述符为fd的文件的file_hdr，读到内存中
-        // 这里实际就是初始化file_hdr，只不过是从磁盘中读出进行初始化
-        // init file_hdr_
-        disk_manager_->read_page(fd, RM_FILE_HDR_PAGE, (char *)&file_hdr_, sizeof(file_hdr_));
-        // disk_manager管理的fd对应的文件中，设置从file_hdr_.num_pages开始分配page_no
-        disk_manager_->set_fd2pageno(fd, file_hdr_.num_pages);
-    }
+    RmFileHandle(DiskManager *disk_manager,
+                 BufferPoolManager *buffer_pool_manager, int fd);
 
-    RmFileHdr get_file_hdr() { return file_hdr_; }
-    int GetFd() { return fd_; }
+    RmFileHdr get_file_hdr() const;
+    int GetFd() const { return fd_; }
     uint64_t GetMvccFileId() const { return mvcc_file_id_; }
     std::unique_lock<std::mutex> acquire_logical_update_latch() {
         return std::unique_lock<std::mutex>(logical_update_latch_);
     }
 
-    /* 判断指定位置上是否已经存在一条记录，通过Bitmap来判断 */
-    bool is_record(const Rid &rid) const {
-        RmPageHandle page_handle = fetch_page_handle(rid.page_no);
-        bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
-        buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
-        return exists;
-    }
-
-    std::unique_ptr<RmRecord> get_record(const Rid &rid, Context *context) const;
-
+    bool is_record(const Rid &rid) const;
+    std::unique_ptr<RmRecord> get_record(const Rid &rid,
+                                         Context *context) const;
     std::vector<std::unique_ptr<RmRecord>> batch_get_records(
         int page_no, std::vector<Rid> &rids, Context *context,
         RmRecordPool *record_pool = nullptr) const;
+    bool read_next_page_batch(
+        page_id_t page_no, std::vector<Rid> *rids,
+        std::vector<std::unique_ptr<RmRecord>> *records,
+        RmRecordPool *record_pool = nullptr) const;
 
     std::vector<Rid> lookup_int_equal_records(int offset, int value);
-
     std::vector<Rid> all_record_slots();
 
     Rid insert_record(char *buf, Context *context);
-
-    Rid insert_record(char *buf, Context *context, const std::string &table_name);
-
+    Rid insert_record(char *buf, Context *context,
+                      const std::string &table_name);
+    std::vector<Rid> insert_records(
+        const std::vector<PendingInsert> &records, Context *context,
+        const std::string &table_name);
     void insert_record(const Rid &rid, char *buf);
-
-    void delete_record(const Rid &rid, Context *context);
-
-    void update_record(const Rid &rid, char *buf, Context *context);
+    void delete_record(const Rid &rid, Context *context,
+                       lsn_t page_lsn = INVALID_LSN);
+    void update_record(const Rid &rid, char *buf, Context *context,
+                       lsn_t page_lsn = INVALID_LSN);
 
     bool record_exists(const Rid &rid) const;
-
     void upsert_record_for_recovery(const Rid &rid, const char *buf);
-
     void delete_record_for_recovery(const Rid &rid);
-
     void rebuild_free_page_list();
+    void flush_file_header();
 
-    void flush_file_header() const;
-
-    RmPageHandle create_new_page_handle();
-
-    RmPageHandle fetch_page_handle(int page_no) const;
+    RmPageReadHandle fetch_page_read(int page_no) const;
+    RmPageWriteHandle fetch_page_write(int page_no) const;
 
    private:
-    Rid insert_record_internal(char *buf, Context *context, const std::string *table_name);
-
-    RmPageHandle create_page_handle();
-
-    void release_page_handle(RmPageHandle &page_handle);
-
+    Rid insert_record_internal(char *buf, Context *context,
+                               const std::string *table_name);
+    RmPageWriteHandle acquire_insert_page();
+    RmPageWriteHandle create_new_page_handle();
     void ensure_page_exists(int page_no);
 
-    void remove_page_from_free_list(int page_no);
-
-    void add_to_int_equality_caches(const Rid &rid, const char *record);
-
-    void remove_from_int_equality_caches(const Rid &rid, const char *record);
-
-    void update_int_equality_caches(const Rid &rid, const char *old_record, const char *new_record);
+    int page_count() const;
+    void initialize_free_page_candidates();
+    page_id_t pop_free_page_candidate();
+    void add_free_page_candidate(page_id_t page_no);
+    void remove_free_page_candidate(page_id_t page_no);
+    void rebuild_persisted_free_list_locked();
 };
