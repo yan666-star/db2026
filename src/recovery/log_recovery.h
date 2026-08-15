@@ -46,6 +46,8 @@ public:
         log_manager_ = log_manager;
     }
     int64_t get_restart_offset() const { return restart_offset_; }
+    int64_t get_valid_log_end() const { return valid_log_end_; }
+    lsn_t get_max_lsn() const { return max_lsn_; }
     txn_id_t get_next_txn_id() const { return next_txn_id_; }
     bool has_usable_checkpoint() const {
         return has_valid_checkpoint_ && indexes_from_checkpoint_;
@@ -81,6 +83,7 @@ private:
     LogManager *log_manager_;
     int64_t restart_offset_ = 0;
     int64_t valid_log_end_ = 0;
+    lsn_t max_lsn_ = INVALID_LSN;
     txn_id_t next_txn_id_ = 0;
     std::unordered_set<txn_id_t> active_txns_;
     std::unordered_set<txn_id_t> aborted_txns_;

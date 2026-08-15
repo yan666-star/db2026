@@ -208,11 +208,13 @@ void initialize_database(const std::string &database_name) {
         sm_manager->create_db(database_name);
     }
     sm_manager->open_db(database_name);
-    log_manager->initialize_from_disk();
     buffer_pool_manager->set_log_manager(log_manager.get());
     recovery_manager->set_log_manager(log_manager.get());
 
     recovery_manager->analyze();
+    log_manager->initialize_from_recovery_scan(
+        recovery_manager->get_valid_log_end(),
+        recovery_manager->get_max_lsn());
     transaction_manager->advance_next_txn_id(
         recovery_manager->get_next_txn_id());
     recovery_manager->redo();

@@ -70,6 +70,10 @@ add_executable(
 target_link_libraries(test_log_manager_durability recovery storage pthread)
 add_test(NAME test_log_manager_durability COMMAND test_log_manager_durability)
 
+add_executable(test_log_record_scanner test/log_record_scanner_test.cpp)
+target_link_libraries(test_log_record_scanner recovery storage pthread)
+add_test(NAME test_log_record_scanner COMMAND test_log_record_scanner)
+
 add_executable(test_group_commit test/group_commit_test.cpp)
 target_link_libraries(test_group_commit recovery storage pthread)
 add_test(NAME test_group_commit COMMAND test_group_commit)

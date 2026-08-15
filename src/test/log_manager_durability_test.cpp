@@ -101,6 +101,35 @@ int main() {
             "large WAL was truncated at a narrowed checkpoint offset");
 
     close_wal(&large_disk);
+
+    // RecoveryManager already validates the WAL and discovers both its last
+    // complete byte and maximum LSN.  Adopting that scan must initialize the
+    // durability clocks and discard only an incomplete tail without scanning
+    // every record again.
+    std::ofstream(LOG_FILE_NAME,
+                  std::ios::binary | std::ios::trunc).close();
+    DiskManager scanned_disk;
+    BeginLogRecord scanned_begin(23);
+    scanned_begin.lsn_ = 73;
+    append_record(&scanned_disk, scanned_begin);
+    CommitLogRecord scanned_commit(23);
+    scanned_commit.lsn_ = 74;
+    scanned_commit.prev_lsn_ = scanned_begin.lsn_;
+    append_record(&scanned_disk, scanned_commit);
+    const int64_t scanned_valid_end =
+        scanned_disk.get_file_size(LOG_FILE_NAME);
+    char incomplete_tail[LOG_HEADER_SIZE - 1]{};
+    scanned_disk.write_log(incomplete_tail, sizeof(incomplete_tail));
+
+    LogManager scanned_log(&scanned_disk);
+    scanned_log.initialize_from_recovery_scan(
+        scanned_valid_end, scanned_commit.lsn_);
+    require(scanned_log.durable_lsn() == scanned_commit.lsn_,
+            "recovery scan result did not initialize the durable LSN");
+    require(scanned_disk.get_file_size(LOG_FILE_NAME) == scanned_valid_end,
+            "recovery scan result did not truncate the incomplete WAL tail");
+
+    close_wal(&scanned_disk);
     std::filesystem::current_path(previous);
     std::filesystem::remove_all(directory);
     std::cout << "log manager durability tests passed\n";

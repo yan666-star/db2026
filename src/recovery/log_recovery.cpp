@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "errors.h"
+#include "log_record_scanner.h"
 
 std::unique_ptr<LogRecord> RecoveryManager::read_log_record(
     int64_t offset, int64_t log_end, int64_t *next_offset) const {
@@ -59,6 +60,7 @@ void RecoveryManager::analyze() {
     index_rebuild_tables_.clear();
     next_txn_id_ = 0;
     valid_log_end_ = 0;
+    max_lsn_ = INVALID_LSN;
     has_valid_checkpoint_ = false;
     indexes_from_checkpoint_ = false;
 
@@ -108,14 +110,11 @@ void RecoveryManager::analyze() {
         }
     }
 
-    int64_t offset = scan_start;
     txn_id_t max_txn_id = INVALID_TXN_ID;
-    while (offset < log_size) {
-        int64_t next_offset = offset;
-        auto record = read_log_record(offset, log_size, &next_offset);
-        if (record == nullptr) {
-            break;
-        }
+    LogRecordScanner scanner(disk_manager_, scan_start, log_size);
+    while (auto scanned = scanner.next()) {
+        const auto &record = scanned->record;
+        max_lsn_ = std::max(max_lsn_, record->lsn_);
 
         txn_id_t txn_id = record->log_tid_;
         if (record->log_type_ != LogType::CHECKPOINT &&
@@ -150,9 +149,8 @@ void RecoveryManager::analyze() {
                 break;
         }
 
-        offset = next_offset;
     }
-    valid_log_end_ = offset;
+    valid_log_end_ = scanner.valid_end();
 
     if (max_txn_id != INVALID_TXN_ID) {
         next_txn_id_ = std::max(next_txn_id_, max_txn_id + 1);
@@ -171,13 +169,10 @@ void RecoveryManager::analyze() {
 
 void RecoveryManager::redo() {
     loser_action_offsets_.clear();
-    int64_t offset = restart_offset_;
-    while (offset < valid_log_end_) {
-        int64_t next_offset = offset;
-        auto record = read_log_record(offset, valid_log_end_, &next_offset);
-        if (record == nullptr) {
-            break;
-        }
+    LogRecordScanner scanner(
+        disk_manager_, restart_offset_, valid_log_end_);
+    while (auto scanned = scanner.next()) {
+        const auto &record = scanned->record;
 
         const LogRecord &base = *record;
         bool is_action = base.log_type_ == LogType::INSERT ||
@@ -188,15 +183,13 @@ void RecoveryManager::redo() {
             // Active loser: record offset for UNDO, but do NOT physically
             // redo.  Replaying a loser's actions can cause unique-index
             // conflicts with committed winners that UNDO cannot clean up.
-            loser_action_offsets_.push_back(offset);
-            offset = next_offset;
+            loser_action_offsets_.push_back(scanned->offset);
             continue;
         }
         if (aborted_txns_.find(base.log_tid_) != aborted_txns_.end()) {
             // An ABORT record is written only after runtime rollback has
             // restored the database. Replaying its original actions would
             // resurrect changes that were already undone.
-            offset = next_offset;
             continue;
         }
         switch (base.log_type_) {
@@ -212,7 +205,6 @@ void RecoveryManager::redo() {
             default:
                 break;
         }
-        offset = next_offset;
     }
 }
 

@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <cstdlib>
 #include "common/perf_counters.h"
 #include "log_manager.h"
+#include "log_record_scanner.h"
 
 namespace {
 
@@ -256,38 +257,35 @@ void LogManager::initialize_from_disk() {
         }
     }
 
-    int64_t valid_end = offset;
     lsn_t max_lsn = INVALID_LSN;
-    char header[LOG_HEADER_SIZE];
-    while (offset + LOG_HEADER_SIZE <= file_size) {
-        int bytes = disk_manager_->read_log(header, LOG_HEADER_SIZE, offset);
-        if (bytes != LOG_HEADER_SIZE) {
-            break;
-        }
-
-        lsn_t lsn;
-        uint32_t total_len;
-        memcpy(&lsn, header + OFFSET_LSN, sizeof(lsn));
-        memcpy(&total_len, header + OFFSET_LOG_TOT_LEN, sizeof(total_len));
-        if (total_len < LOG_HEADER_SIZE ||
-            static_cast<int64_t>(offset) + total_len > file_size) {
-            break;
-        }
-        std::vector<char> record(total_len);
-        if (disk_manager_->read_log(record.data(), total_len, offset) !=
-                static_cast<int>(total_len) ||
-            !validate_serialized_log_record(record.data(), total_len)) {
-            break;
-        }
-        max_lsn = std::max(max_lsn, lsn);
-        offset += static_cast<int>(total_len);
-        valid_end = offset;
+    LogRecordScanner scanner(disk_manager_, offset, file_size);
+    while (auto scanned = scanner.next()) {
+        max_lsn = std::max(max_lsn, scanned->record->lsn_);
     }
+    const int64_t valid_end = scanner.valid_end();
 
     if (valid_end < file_size) {
         disk_manager_->truncate_log(valid_end);
     }
 
+    written_lsn_ = max_lsn;
+    durable_lsn_ = max_lsn;
+    global_lsn_.store(max_lsn == INVALID_LSN ? 0 : max_lsn + 1);
+}
+
+void LogManager::initialize_from_recovery_scan(int64_t valid_log_end,
+                                               lsn_t max_lsn) {
+    std::lock_guard<std::mutex> lock(latch_);
+    const int64_t file_size = disk_manager_->get_file_size(LOG_FILE_NAME);
+    if (file_size < 0 || valid_log_end < 0 || valid_log_end > file_size) {
+        throw InternalError("Invalid WAL recovery scan result");
+    }
+    if (log_buffer_.offset_ != 0) {
+        throw InternalError("Cannot adopt WAL scan after buffered appends");
+    }
+    if (valid_log_end < file_size) {
+        disk_manager_->truncate_log(valid_log_end);
+    }
     written_lsn_ = max_lsn;
     durable_lsn_ = max_lsn;
     global_lsn_.store(max_lsn == INVALID_LSN ? 0 : max_lsn + 1);

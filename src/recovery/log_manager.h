@@ -481,6 +481,8 @@ public:
     void force_flush_up_to(lsn_t target_lsn);
     lsn_t durable_lsn();
     void initialize_from_disk();
+    void initialize_from_recovery_scan(int64_t valid_log_end,
+                                       lsn_t max_lsn);
     int64_t write_checkpoint_record(const std::vector<txn_id_t> &active_txns);
     void persist_restart_offset(int64_t offset);
 
