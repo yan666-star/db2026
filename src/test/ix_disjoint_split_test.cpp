@@ -423,7 +423,7 @@ void require_batch_restarts_at_first_non_fitting_key() {
               << " batch_structural_restarts=" << restart_delta << '\n';
 }
 
-void require_mutation_batch_groups_non_monotonic_leaf() {
+void require_mutation_batch_falls_back_on_non_monotonic_leaf() {
     TestIndex fixture("ix_batch_non_monotonic_leaf");
     std::map<int, Rid> expected;
     for (int value = 0; value < 80; ++value) {
@@ -507,14 +507,14 @@ void require_mutation_batch_groups_non_monotonic_leaf() {
     fixture.index->apply_sorted_batch(std::move(mutations), nullptr);
 
     require(counters.ix_batch_leaf_groups.load(std::memory_order_relaxed) -
-                groups_before == 1,
-            "non-monotonic leaf batch was not applied as one group");
+                groups_before == 0,
+            "non-monotonic leaf batch held two leaves instead of falling back");
     require(counters.ix_batch_leaf_rows.load(std::memory_order_relaxed) -
-                rows_before == 2,
-            "non-monotonic leaf batch grouped the wrong number of rows");
+                rows_before == 0,
+            "non-monotonic leaf batch unexpectedly used the grouped path");
     require(counters.ix_leaf_write_guards.load(std::memory_order_relaxed) -
-                leaf_guards_before == 1,
-            "non-monotonic leaf batch re-entered the root path per row");
+                leaf_guards_before == 2,
+            "non-monotonic leaf fallback did not make per-row progress");
     verify_tree(fixture.index.get(), &fixture.buffer_pool, &fixture.disk,
                 expected);
 }
@@ -529,7 +529,7 @@ int main(int argc, char **argv) {
         require_disjoint_splits_overlap_and_preserve_tree();
         require_safe_insert_uses_only_one_leaf_write_guard();
         require_batch_restarts_at_first_non_fitting_key();
-        require_mutation_batch_groups_non_monotonic_leaf();
+        require_mutation_batch_falls_back_on_non_monotonic_leaf();
     }
     std::cout << "disjoint B+Tree split tests passed\n";
     return 0;

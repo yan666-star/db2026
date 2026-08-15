@@ -820,34 +820,12 @@ void IxIndexHandle::apply_sorted_batch(
                     observed_next != IX_NO_PAGE;
                 std::vector<char> upper_boundary;
                 if (has_successor && observed_next < page_no) {
-                    // Acquire the two adjacent leaves by physical page id,
-                    // while still applying mutations in logical key order.
-                    // Non-rightmost splits commonly create page N -> page M
-                    // with M < N; taking M first avoids both latch inversion
-                    // and the former per-key root-path fallback.
-                    IxReadNode next = fetch_node_read(observed_next);
-                    IxWriteNode leaf = fetch_node_write(page_no);
-                    record_insert_write_guard(leaf.node);
-                    if (leaf.guard.generation() != generation ||
-                        !leaf.node.is_leaf_page() ||
-                        !next.node.is_leaf_page() ||
-                        leaf.node.get_next_leaf() != observed_next ||
-                        next.node.get_prev_leaf() != page_no ||
-                        next.node.get_size() == 0 ||
-                        (leaf.node.get_size() > 0 &&
-                         leaf.node.get_prev_leaf() != IX_LEAF_HEADER_PAGE &&
-                         ix_compare(mutations[begin].key.data(),
-                                    leaf.node.get_key(0),
-                                    file_hdr_->col_types_,
-                                    file_hdr_->col_lens_) < 0)) {
-                        retry = true;
-                    } else {
-                        upper_boundary.resize(file_hdr_->col_tot_len_);
-                        std::memcpy(upper_boundary.data(),
-                                    next.node.get_key(0),
-                                    file_hdr_->col_tot_len_);
-                        apply_group(leaf, upper_boundary);
-                    }
+                    // A stable reverse page-number link cannot be followed
+                    // while retaining the current leaf without introducing a
+                    // second cross-page latch order.  Drop all guards and use
+                    // the ordinary one-key structural path, matching the
+                    // correctness-proven 2de44d4 behavior.
+                    single_fallback = true;
                 } else {
                     IxWriteNode leaf = fetch_node_write(page_no);
                     record_insert_write_guard(leaf.node);
