@@ -237,7 +237,7 @@ Transaction *TransactionManager::begin(Transaction *txn, LogManager *log_manager
         }
         txn_registry_.attach(txn->get_control());
         if (txn->uses_mvcc()) {
-            const timestamp_t start_ts = txn_registry_.current_commit_ts();
+            const timestamp_t start_ts = txn_registry_.capture_snapshot_ts();
             txn->set_start_ts(start_ts);
             txn->set_read_ts(start_ts);
             if (isolation_level == IsolationLevel::SERIALIZABLE) {
@@ -274,7 +274,7 @@ void TransactionManager::ensure_snapshot_admission(Transaction *txn) {
     // access, not merely when BEGIN is acknowledged. Transactions waiting in
     // the admission queue must not retain a timestamp that became stale while
     // earlier admitted transactions committed.
-    const timestamp_t start_ts = txn_registry_.current_commit_ts();
+    const timestamp_t start_ts = txn_registry_.capture_snapshot_ts();
     txn->set_start_ts(start_ts);
     txn->set_read_ts(start_ts);
     if (txn->get_isolation_level() == IsolationLevel::SERIALIZABLE) {
@@ -1727,9 +1727,11 @@ void TransactionManager::commit_mvcc(Transaction *txn,
             TxnVisibilityState::APPLYING) {
             throw InternalError("Invalid MVCC durable publication state");
         }
-        const timestamp_t commit_ts = txn_registry_.next_commit_ts();
-        index_versions_.finalize(txn->get_control(), commit_ts);
-        mvcc_store_.publish(txn->get_control(), commit_ts);
+        const timestamp_t commit_ts = txn_registry_.publish_commit(
+            [&](timestamp_t timestamp) {
+                index_versions_.finalize(txn->get_control(), timestamp);
+                mvcc_store_.publish(txn->get_control(), timestamp);
+            });
         maybe_fail_commit(CommitFailurePoint::AFTER_PUBLISH);
         if (txn->get_isolation_level() == IsolationLevel::SERIALIZABLE) {
             std::lock_guard<std::mutex> lock(serializable_state_latch_);

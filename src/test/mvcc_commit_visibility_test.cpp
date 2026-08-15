@@ -111,6 +111,100 @@ void test_commit_is_hidden_until_wal_is_durable() {
     std::filesystem::remove_all(directory);
 }
 
+void test_snapshot_timestamp_excludes_incomplete_publication() {
+    TxnRegistry registry;
+    std::mutex latch;
+    std::condition_variable cv;
+    bool publication_entered = false;
+    bool allow_publication = false;
+    bool version_visible = false;
+
+    auto publisher = std::async(std::launch::async, [&] {
+        return registry.publish_commit([&](timestamp_t) {
+            std::unique_lock<std::mutex> lock(latch);
+            publication_entered = true;
+            cv.notify_all();
+            cv.wait(lock, [&] { return allow_publication; });
+            version_visible = true;
+        });
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(latch);
+        require(cv.wait_for(lock, 2s, [&] { return publication_entered; }),
+                "commit did not enter version publication");
+    }
+
+    auto during_publication = std::async(std::launch::async, [&] {
+        const timestamp_t timestamp = registry.capture_snapshot_ts();
+        std::lock_guard<std::mutex> lock(latch);
+        return std::make_pair(timestamp, version_visible);
+    });
+    require(during_publication.wait_for(2s) == std::future_status::ready,
+            "snapshot capture blocked behind version publication");
+    const auto [during_ts, visible_during] = during_publication.get();
+    require(during_ts == 0 && !visible_during,
+            "snapshot timestamp escaped before version publication");
+
+    {
+        std::lock_guard<std::mutex> lock(latch);
+        allow_publication = true;
+        cv.notify_all();
+    }
+    require(publisher.wait_for(2s) == std::future_status::ready,
+            "version publication did not complete");
+    const timestamp_t commit_ts = publisher.get();
+    const timestamp_t after_ts = registry.capture_snapshot_ts();
+    require(version_visible && after_ts == commit_ts,
+            "snapshot included a commit timestamp without its visible version");
+}
+
+void test_out_of_order_publication_advances_only_contiguous_prefix() {
+    TxnRegistry registry;
+    std::mutex latch;
+    std::condition_variable cv;
+    bool first_entered = false;
+    bool allow_first = false;
+
+    auto first = std::async(std::launch::async, [&] {
+        return registry.publish_commit([&](timestamp_t commit_ts) {
+            require(commit_ts == 1, "first commit received the wrong timestamp");
+            std::unique_lock<std::mutex> lock(latch);
+            first_entered = true;
+            cv.notify_all();
+            cv.wait(lock, [&] { return allow_first; });
+        });
+    });
+    {
+        std::unique_lock<std::mutex> lock(latch);
+        require(cv.wait_for(lock, 2s, [&] { return first_entered; }),
+                "first commit did not enter publication");
+    }
+
+    auto second = std::async(std::launch::async, [&] {
+        return registry.publish_commit([](timestamp_t commit_ts) {
+            require(commit_ts == 2,
+                    "second commit received the wrong timestamp");
+        });
+    });
+    require(second.wait_for(2s) == std::future_status::ready &&
+                second.get() == 2,
+            "second commit was serialized behind first publication");
+    require(registry.capture_snapshot_ts() == 0,
+            "out-of-order commit escaped across a publication gap");
+
+    {
+        std::lock_guard<std::mutex> lock(latch);
+        allow_first = true;
+        cv.notify_all();
+    }
+    require(first.wait_for(2s) == std::future_status::ready &&
+                first.get() == 1,
+            "first commit did not finish publication");
+    require(registry.capture_snapshot_ts() == 2,
+            "visible commit prefix did not cross a completed publication gap");
+}
+
 void test_record_intent_conflicts_fail_fast() {
     TransactionManager manager(nullptr, nullptr);
     Transaction *older = manager.begin(
@@ -203,6 +297,8 @@ void test_unique_key_intent_conflicts_fail_fast() {
 
 int main() {
     test_commit_is_hidden_until_wal_is_durable();
+    test_snapshot_timestamp_excludes_incomplete_publication();
+    test_out_of_order_publication_advances_only_contiguous_prefix();
     test_record_intent_conflicts_fail_fast();
     test_unique_key_intent_conflicts_fail_fast();
     std::cout << "MVCC commit visibility tests passed\n";

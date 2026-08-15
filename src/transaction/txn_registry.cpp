@@ -71,14 +71,54 @@ timestamp_t TxnRegistry::current_commit_ts() const noexcept {
 }
 
 timestamp_t TxnRegistry::next_commit_ts() noexcept {
-    return commit_clock_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    return allocated_commit_clock_.fetch_add(1, std::memory_order_acq_rel) + 1;
 }
 
 void TxnRegistry::advance_commit_ts(timestamp_t timestamp) noexcept {
-    timestamp_t current = commit_clock_.load(std::memory_order_relaxed);
-    while (current < timestamp &&
-           !commit_clock_.compare_exchange_weak(
-               current, timestamp, std::memory_order_release,
-               std::memory_order_relaxed)) {
+    auto advance = [timestamp](std::atomic<timestamp_t> &clock) {
+        timestamp_t current = clock.load(std::memory_order_relaxed);
+        while (current < timestamp &&
+               !clock.compare_exchange_weak(
+                   current, timestamp, std::memory_order_release,
+                   std::memory_order_relaxed)) {
+        }
+    };
+    advance(allocated_commit_clock_);
+    advance(commit_clock_);
+}
+
+timestamp_t TxnRegistry::capture_snapshot_ts() const {
+    return commit_clock_.load(std::memory_order_acquire);
+}
+
+timestamp_t TxnRegistry::publish_commit(
+    const std::function<void(timestamp_t)> &publish) {
+    const timestamp_t commit_ts = next_commit_ts();
+    try {
+        publish(commit_ts);
+    } catch (...) {
+        // Failed publication still consumes its timestamp. Mark the gap as
+        // complete so later successfully published commits can advance the
+        // visible prefix; the failed transaction has no visible version.
+        complete_commit_ts(commit_ts);
+        throw;
     }
+    complete_commit_ts(commit_ts);
+    return commit_ts;
+}
+
+void TxnRegistry::complete_commit_ts(timestamp_t commit_ts) {
+    std::lock_guard<std::mutex> lock(publication_latch_);
+    timestamp_t visible = commit_clock_.load(std::memory_order_relaxed);
+    if (commit_ts != visible + 1) {
+        if (commit_ts > visible + 1) {
+            completed_commit_ts_.insert(commit_ts);
+        }
+        return;
+    }
+    ++visible;
+    while (completed_commit_ts_.erase(visible + 1) != 0) {
+        ++visible;
+    }
+    commit_clock_.store(visible, std::memory_order_release);
 }

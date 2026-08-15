@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -86,8 +87,20 @@ class TxnRegistry {
     timestamp_t next_commit_ts() noexcept;
     void advance_commit_ts(timestamp_t timestamp) noexcept;
 
+    // A snapshot reads only the greatest contiguous timestamp whose commit
+    // has finished publishing. Committers may publish out of order, but a gap
+    // cannot escape into a snapshot timestamp.
+    timestamp_t capture_snapshot_ts() const;
+    timestamp_t publish_commit(
+        const std::function<void(timestamp_t)> &publish);
+
    private:
+    void complete_commit_ts(timestamp_t commit_ts);
+
     mutable std::shared_mutex latch_;
     std::unordered_map<txn_id_t, std::shared_ptr<TxnControl>> controls_;
+    std::mutex publication_latch_;
+    std::unordered_set<timestamp_t> completed_commit_ts_;
+    std::atomic<timestamp_t> allocated_commit_clock_{0};
     std::atomic<timestamp_t> commit_clock_{0};
 };
