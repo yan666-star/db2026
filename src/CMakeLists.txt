@@ -119,6 +119,15 @@ add_executable(test_mvcc_disjoint_progress test/mvcc_disjoint_progress_test.cpp)
 target_link_libraries(test_mvcc_disjoint_progress transaction record system recovery pthread)
 add_test(NAME test_mvcc_disjoint_progress COMMAND test_mvcc_disjoint_progress)
 
+add_executable(test_mvcc_gc_reclamation test/mvcc_gc_reclamation_test.cpp)
+target_link_libraries(
+    test_mvcc_gc_reclamation
+    -Wl,--start-group
+    transaction record system recovery index storage
+    -Wl,--end-group
+    pthread)
+add_test(NAME test_mvcc_gc_reclamation COMMAND test_mvcc_gc_reclamation)
+
 add_executable(test_transaction_write_batch test/transaction_write_batch_test.cpp)
 target_link_libraries(test_transaction_write_batch transaction pthread)
 add_test(NAME test_transaction_write_batch COMMAND test_transaction_write_batch)

@@ -1878,20 +1878,19 @@ void TransactionManager::garbage_collect_shards(size_t first_shard,
                     history.end());
             }
 
+            bool erase_history = false;
             bool keep_dirty = false;
             if (history.size() == 1) {
-                MvccVersion &only = history.front();
+                const MvccVersion &only = history.front();
                 if (only.commit_ts != INVALID_TS &&
                     only.commit_ts <= watermark) {
-                    if (only.deleted) {
-                        // The heap row is already gone.  Retain the
-                        // tombstone's timestamp while the chain exists so a
-                        // copied/reused physical slot cannot resurrect for an
-                        // older snapshot.
-                        only.table_name.clear();
-                        only.before.clear();
-                        only.data.clear();
-                    }
+                    // No active snapshot predates this final version.  The
+                    // heap already contains the committed after-image (or no
+                    // row for DELETE), so future readers can use physical
+                    // state directly.  Erase the whole entry instead of
+                    // retaining one full record and TxnControl per RID for
+                    // the lifetime of the server.
+                    erase_history = true;
                 } else {
                     keep_dirty = true;
                 }
@@ -1900,7 +1899,10 @@ void TransactionManager::garbage_collect_shards(size_t first_shard,
                 // after the watermark or writer state advances.
                 keep_dirty = true;
             }
-            if (!keep_dirty) {
+            if (erase_history) {
+                shard.record_versions.erase(it);
+                shard.gc_dirty_keys.erase(current_dirty_it);
+            } else if (!keep_dirty) {
                 shard.gc_dirty_keys.erase(current_dirty_it);
             }
         }
