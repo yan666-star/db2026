@@ -143,6 +143,9 @@ public:
 
     std::vector<Rid> get_historical_index_rids(Transaction *txn,
                                                 int index_id);
+    uint64_t index_history_generation() const noexcept {
+        return index_versions_.generation();
+    }
 
     void prepare_insert(Transaction *txn, uint64_t file_id, const Rid &rid,
                         const RmRecord &new_record);

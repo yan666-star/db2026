@@ -37,6 +37,9 @@ class IndexVersionStore {
                   timestamp_t commit_ts);
     void discard(const std::shared_ptr<TxnControl> &owner);
     void garbage_collect(timestamp_t watermark);
+    uint64_t generation() const noexcept {
+        return generation_.load(std::memory_order_acquire);
+    }
 
    private:
     static constexpr size_t kShardCount = 64;
@@ -46,6 +49,7 @@ class IndexVersionStore {
     };
     std::array<Shard, kShardCount> shards_;
     std::atomic<size_t> entry_count_{0};
+    std::atomic<uint64_t> generation_{0};
 
     static size_t shard_index(int index_id) {
         return std::hash<int>{}(index_id) & (kShardCount - 1);

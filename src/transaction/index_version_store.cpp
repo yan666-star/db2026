@@ -26,6 +26,7 @@ void IndexVersionStore::retain(int index_id, std::vector<char> old_key,
     }
     if (inserted) {
         entry_count_.fetch_add(1, std::memory_order_relaxed);
+        generation_.fetch_add(1, std::memory_order_release);
     }
 }
 

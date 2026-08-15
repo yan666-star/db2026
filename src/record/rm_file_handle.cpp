@@ -186,20 +186,29 @@ std::vector<std::unique_ptr<RmRecord>> RmFileHandle::batch_get_records(
     }
 
     RmPageReadHandle page = fetch_page_read(page_no);
+    const bool snapshot_read =
+        context != nullptr && context->txn_mgr_ != nullptr &&
+        context->txn_mgr_->uses_mvcc(context->txn_);
     std::vector<Rid> valid_rids;
     valid_rids.reserve(rids.size());
     records.reserve(rids.size());
     for (const Rid &rid : rids) {
         if (rid.page_no != page_no || rid.slot_no < 0 ||
-            rid.slot_no >= file_hdr_.num_records_per_page ||
-            !Bitmap::is_set(page.bitmap, rid.slot_no)) {
+            rid.slot_no >= file_hdr_.num_records_per_page) {
             continue;
         }
-        auto record = record_pool == nullptr
-                          ? std::make_unique<RmRecord>(file_hdr_.record_size)
-                          : record_pool->acquire(file_hdr_.record_size);
-        std::memcpy(record->data, page.get_slot(rid.slot_no),
-                    file_hdr_.record_size);
+        const bool exists = Bitmap::is_set(page.bitmap, rid.slot_no);
+        if (!exists && !snapshot_read) {
+            continue;
+        }
+        std::unique_ptr<RmRecord> record;
+        if (exists) {
+            record = record_pool == nullptr
+                         ? std::make_unique<RmRecord>(file_hdr_.record_size)
+                         : record_pool->acquire(file_hdr_.record_size);
+            std::memcpy(record->data, page.get_slot(rid.slot_no),
+                        file_hdr_.record_size);
+        }
         records.push_back(std::move(record));
         valid_rids.push_back(rid);
     }

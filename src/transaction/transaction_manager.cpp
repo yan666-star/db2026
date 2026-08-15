@@ -636,8 +636,13 @@ void TransactionManager::filter_visible_records(
     // headers on every batch read.
     const bool has_own_overlay =
         uses_mvcc(txn) && !txn->write_batch().writes().empty();
+    const bool has_missing_physical = std::any_of(
+        records.begin(), records.end(),
+        [](const std::unique_ptr<RmRecord> &record) {
+            return record == nullptr;
+        });
     if (!has_own_overlay &&
-        !mvcc_store_.any_versions()) {
+        !has_missing_physical && !mvcc_store_.any_versions()) {
         return;
     }
 

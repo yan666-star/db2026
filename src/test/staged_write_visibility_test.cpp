@@ -198,6 +198,13 @@ void test_si_executor_writes_are_private_until_commit() {
             "another SI transaction observed uncommitted staged writes");
 
     transaction_manager.commit(writer, nullptr);
+    require(point_lookup(&system_manager, &old_context, 2) ==
+                std::map<int, int>{{2, 20}},
+            "old snapshot lost a physically deleted indexed row");
+    require(index_rows(&system_manager, &old_context) ==
+                std::map<int, int>{{1, 10}, {2, 20}},
+            "old snapshot range scan lost a physically deleted indexed row");
+
     Transaction *new_snapshot = transaction_manager.begin(
         nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
     Context new_context(&lock_manager, nullptr, new_snapshot,
@@ -219,10 +226,86 @@ void test_si_executor_writes_are_private_until_commit() {
     std::filesystem::remove_all(directory);
 }
 
+void test_index_scan_closes_concurrent_delete_window() {
+    char directory_template[] = "/tmp/rmdb-index-scan-delete-XXXXXX";
+    char *directory = mkdtemp(directory_template);
+    require(directory != nullptr, "mkdtemp failed");
+    const std::filesystem::path previous =
+        std::filesystem::current_path();
+    std::filesystem::current_path(directory);
+
+    DiskManager disk;
+    BufferPoolManager buffer_pool(128, &disk);
+    RmManager record_manager(&disk, &buffer_pool);
+    IxManager index_manager(&disk, &buffer_pool);
+    SmManager system_manager(&disk, &buffer_pool, &record_manager,
+                             &index_manager);
+    LockManager lock_manager;
+    TransactionManager transaction_manager(&lock_manager, &system_manager);
+
+    system_manager.create_db("index_scan_delete_db");
+    system_manager.open_db("index_scan_delete_db");
+    system_manager.create_table(
+        "items", {ColDef{"id", TYPE_INT, static_cast<int>(sizeof(int))},
+                  ColDef{"payload", TYPE_INT,
+                         static_cast<int>(sizeof(int))}},
+        nullptr);
+    system_manager.create_index("items", {"id"}, nullptr);
+    RmFileHandle *file = system_manager.fhs_.at("items").get();
+
+    constexpr int row_count = 1000;
+    Rid last_rid;
+    for (int id = 0; id < row_count; ++id) {
+        last_rid = seed_row(&system_manager, file, id, id * 10);
+    }
+
+    Transaction *reader = transaction_manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    Context reader_context(&lock_manager, nullptr, reader,
+                           &transaction_manager);
+    IndexScanExecutor scan(&system_manager, "items", {}, {"id"},
+                           &reader_context);
+    scan.beginTuple();
+    require(!scan.is_end(), "multi-leaf index scan started empty");
+
+    Transaction *writer = transaction_manager.begin(
+        nullptr, nullptr, IsolationLevel::SNAPSHOT_ISOLATION);
+    Context writer_context(&lock_manager, nullptr, writer,
+                           &transaction_manager);
+    DeleteExecutor erase(&system_manager, "items", {}, {last_rid},
+                         &writer_context);
+    erase.Next();
+    transaction_manager.commit(writer, nullptr);
+
+    bool saw_last = false;
+    int visible_count = 0;
+    while (!scan.is_end()) {
+        auto record = scan.Next();
+        require(record != nullptr,
+                "concurrent-delete scan returned an empty visible row");
+        const auto row = decode_row(*record);
+        saw_last = saw_last || row.first == row_count - 1;
+        ++visible_count;
+        scan.nextTuple();
+    }
+    require(saw_last,
+            "snapshot range scan missed a delete committed after scan start");
+    require(visible_count == row_count,
+            "snapshot range scan changed cardinality across concurrent delete");
+
+    transaction_manager.abort(reader, nullptr);
+    transaction_manager.release_transaction(writer);
+    transaction_manager.release_transaction(reader);
+    system_manager.close_db();
+    std::filesystem::current_path(previous);
+    std::filesystem::remove_all(directory);
+}
+
 }  // namespace
 
 int main() {
     test_si_executor_writes_are_private_until_commit();
+    test_index_scan_closes_concurrent_delete_window();
     std::cout << "staged write visibility tests passed\n";
     return 0;
 }

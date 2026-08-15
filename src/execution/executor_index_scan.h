@@ -54,6 +54,9 @@ class IndexScanExecutor : public AbstractExecutor {
     bool bulk_read_requested_ = false;
     bool bulk_table_locked_ = false;
     bool staged_writes_loaded_ = false;
+    bool historical_refresh_done_ = false;
+    uint64_t historical_index_generation_ = 0;
+    int index_id_ = -1;
     size_t lookup_prefix_len_ = 0;
 
     bool uses_mvcc() const {
@@ -153,6 +156,8 @@ class IndexScanExecutor : public AbstractExecutor {
         batch_rids_map_.clear();
         candidate_rids_.clear();
         staged_writes_loaded_ = false;
+        historical_refresh_done_ = false;
+        historical_index_generation_ = 0;
         batch_index_ = 0;
         rid_ = {-1, -1};
         bulk_table_locked_ = false;
@@ -169,8 +174,11 @@ class IndexScanExecutor : public AbstractExecutor {
         }
         IxIndexHandle *ih =
             sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, full_index_col_names)).get();
+        index_id_ = ih->GetFd();
 
         if (uses_mvcc()) {
+            historical_index_generation_ =
+                context_->txn_mgr_->index_history_generation();
             for (const Rid &historical :
                  context_->txn_mgr_->get_historical_index_rids(
                      context_->txn_, ih->GetFd())) {
@@ -495,6 +503,22 @@ class IndexScanExecutor : public AbstractExecutor {
             }
 
             if (batch_rids_map_.empty()) {
+                if (uses_mvcc() && !historical_refresh_done_ &&
+                    (scan_ == nullptr || scan_->is_end())) {
+                    historical_refresh_done_ = true;
+                    const uint64_t current_generation =
+                        context_->txn_mgr_->index_history_generation();
+                    if (current_generation != historical_index_generation_) {
+                        for (const Rid &historical :
+                             context_->txn_mgr_->get_historical_index_rids(
+                                 context_->txn_, index_id_)) {
+                            add_candidate_rid(historical);
+                        }
+                    }
+                }
+                if (!batch_rids_map_.empty()) {
+                    continue;
+                }
                 append_staged_writes();
                 break;
             }
