@@ -72,7 +72,7 @@ ColMeta Analyze::promote_union_col(const ColMeta &a, const ColMeta &b);  // 升�
 
 位置：[analyze.cpp](../../src/analyze/analyze.cpp:333)
 
-这是**资格赛改动最常碰的函数**。整体分 8 个阶段：
+整体分 8 个阶段：
 
 ```text
 1. UNION 早退
@@ -101,8 +101,6 @@ std::shared_ptr<Query> query = std::make_shared<Query>();
 query->is_explain_analyze = x->is_explain_analyze;
 query->is_select_all = x->is_select_all;
 ```
-
-**新增 SELECT 标志（如 is_distinct）就在这段之后加一行 `query->is_distinct = x->is_distinct;`。**
 
 ### 2.3 处理 FROM（表/别名/派生表）
 
@@ -204,8 +202,6 @@ if (!query->group_bys.empty()) {
 get_clause(x->conds, query->conds);
 check_clause(query, query->conds, query->alias_to_table);
 ```
-
-**JOIN 扩展的 `query->join_types = x->join_types;` 就加在 check_clause 之后**（当前源码这段被 `#if 0` 包住）。
 
 ## 三、`do_analyze`（总入口）
 
@@ -316,24 +312,10 @@ CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op);                          /
 AggType Analyze::convert_agg_type(ast::AggFuncType func_type);                 // switch 一对一
 ```
 
-新增比较符的链路：`ast::SvCompOp` 加枚举 → 这里 map 加映射 → common `CompOp` 加枚举 → execution_eval 加求值。**只改 parser 不够**。
-
-## 八、资格赛常见改动的落点对照
-
-| 要做的功能 | 改这个文件哪里 |
-|---|---|
-| 新增 SELECT 标志（DISTINCT 等） | `analyze_select` 第 2 阶段复制字段；组合限制可放在聚合检查附近 |
-| 只允许选某侧列（ANTI） | `query->cols` 绑定完成后遍历 `tab_name` |
-| 新比较符 | `convert_sv_comp_op` + common + execution_eval |
-| 新字面量类型 | `convert_sv_value` + common Value + execution_eval |
-| 新聚合函数 | `convert_agg_type` + common AggType + AggregationExecutor |
-| JOIN 边类型下传 | `analyze_select` 第 8 阶段后 `query->join_types = x->join_types;` |
-
-## 九、易错点总结
+## 八、易错点总结
 
 1. `SELECT *` 在第 2.5 阶段展开，之后所有限制检查都要考虑它（ANTI 的 `SELECT *` 会被列为限制条件）。
 2. `conds` 处理顺序是 `get_clause` **然后** `check_clause`，顺序不能反。
 3. 常量的 `init_raw` 必须按列 len 做，否则定长 STRING 的填充字节、INT 的字节序都会错。
 4. `query->parse = std::move(parse)` 在函数末尾；move 之后不能再依赖原 parse 对象。
-5. 聚合语义检查（GROUP 一致性）在转条件**之前**执行，改条件相关逻辑时注意顺序。
-6. 新增的 Query 字段默认值必须维持旧 SQL 行为（布尔标志默认 false）。
+5. 聚合语义检查（GROUP 一致性）在转条件**之前**执行。

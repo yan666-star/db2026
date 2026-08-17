@@ -45,7 +45,7 @@ record 管理定长记录文件：页内 bitmap、槽位、插入/读取/更新/
 | [rm_manager.h](../../src/record/rm_manager.h:20) | 创建/打开/关闭表文件 |
 | [bitmap.h](../../src/record/bitmap.h:1) | 槽位位图 |
 
-`rm.h` 为聚合 include；CMakeLists 编译 rm_file_handle.cpp、rm_scan.cpp。新增独立实现文件要加入构建目标。
+`rm.h` 为聚合 include；CMakeLists 编译 rm_file_handle.cpp、rm_scan.cpp。
 
 ## 2. 物理布局变量
 
@@ -110,25 +110,7 @@ RmPageHandle 借用 Page，计算 page_hdr、bitmap、slots 地址。RmFileHandl
 
 扫描器保存文件句柄和当前 Rid。`next()` 从当前槽后找下一个 bitmap=1 的槽，跨页继续；`is_end()` 在超过最后页时为真。
 
-## 7. 类似现场改动
-
-### 增加批量读取
-
-保持单条 get_record 不变，新接口按同页 Rid 分组，只 fetch 一次 Page，复制多个 RmRecord 后统一 unpin。不能把 Page 内裸指针返回到 unpin 之后。
-
-### 改每页布局
-
-任何 bitmap/page header 大小变化都要同步 `num_records_per_page` 计算、槽起始地址和已有文件格式。资格赛通常不宜改磁盘格式，优先新增逻辑而非重排。
-
-### 增加记录标记
-
-若标记要永久存储，必须决定放在 tuple bytes、页外元数据还是 MVCC 管理器；直接在 RmRecord C++ 对象加字段不会自动写入磁盘。
-
-### 等值缓存策略
-
-`int_equality_caches_` 属于 RmFileHandle，insert/delete/update 都必须同步。新增缓存列时要定义失效和更新规则。
-
-## 8. 注意
+## 7. 注意
 
 1. 修改页后 unpin 必须 dirty=true。
 2. 访问页内数据期间 Page 必须保持 pin。
@@ -136,7 +118,7 @@ RmPageHandle 借用 Page，计算 page_hdr、bitmap、slots 地址。RmFileHandl
 4. 指定 Rid 恢复必须维护 bitmap、计数、空闲链。
 5. 文件头变化必须刷新到第 0 页。
 
-## 9. 页面内存布局
+## 8. 页面内存布局
 
 一个数据页可理解为：
 
@@ -152,7 +134,7 @@ slots + slot_no * file_hdr->record_size
 
 bitmap 第 i 位表示 slot i 是否有记录。`num_records_per_page` 必须使页头、bitmap、所有槽总和不超过 PAGE_SIZE。
 
-## 10. `insert_record()` 详细状态变化
+## 9. `insert_record()` 详细状态变化
 
 1. 获取 insert_latch_，保护空闲链。
 2. `create_page_handle()`：若 first_free=-1 新建页，否则 fetch 空闲页。
@@ -165,27 +147,11 @@ bitmap 第 i 位表示 slot i 是否有记录。`num_records_per_page` 必须使
 
 任何提前异常都要考虑页是否已 pin、锁是否由 RAII 释放。
 
-## 11. `delete_record()` 详细状态变化
+## 10. `delete_record()` 详细状态变化
 
 删除前页可能是满页。如果满页删除一条，它第一次重新获得空槽，必须挂回空闲页链。然后 bitmap 清 0、num_records--、缓存删除。重复删除同一空槽不应再次减计数。
 
-## 12. 专题：从 bitmap 改空闲槽链
-
-若题目要求每页维护 free slot linked list，需要改变页内格式：每个空槽前若干字节保存 next slot，并在 RmPageHdr 增加 first_free_slot。此改动会减少可用记录字节或改变槽内容解释，风险大。
-
-最小设计：仍保留 bitmap 判占用，只用页头缓存下一个搜索起点，避免每次从 0 扫描；不改变磁盘格式主要部分。
-
-## 13. 专题：增加批量 insert
-
-不要简单循环公共 insert_record 导致反复加锁/fetch/unpin。可新增内部 `insert_records_internal`：持有一次 insert_latch，在当前 free page 连续填槽，页满再切页。每条仍返回 Rid 数组。
-
-上层索引和事务写集仍必须逐条登记；record 批量接口只负责表字节。
-
-## 14. 专题：记录可变长
-
-当前 ColMeta.offset 和 RmFileHdr.record_size 假设定长。真正 VARCHAR 会影响页布局、Rid 稳定性、更新移动、索引键提取，不是简单把 CHAR 长度设大。资格赛若只要求 VARCHAR(n) 语法，最小可仍按定长 n 存储并明确语义，而不要引入 slotted-page 可变长格式。
-
-## 15. Page pin 的生命周期
+## 11. Page pin 的生命周期
 
 ```text
 fetch_page -> pin_count+1 -> 得到 Page*
@@ -195,7 +161,7 @@ unpin_page(page_id, dirty)
 
 RmPageHandle 中的 `slots/bitmap/page_hdr` 都指向 Page.data_ 内部；unpin 后不应继续使用这些指针，因为 frame 可能被替换。
 
-## 16. record 层变量归属边界
+## 12. record 层变量归属边界
 
 | 信息 | 应放位置 |
 |---|---|
@@ -207,12 +173,6 @@ RmPageHandle 中的 `slots/bitmap/page_hdr` 都指向 Page.data_ 内部；unpin 
 | 行的物理位置 | Rid |
 | 事务可见版本 | TransactionManager，不写进普通 RmRecord C++字段就自动持久化 |
 
-## 17. Bitmap 接口如何使用
+## 13. Bitmap 接口如何使用
 
 常见操作：初始化全 0、set(slot)、reset(slot)、is_set(slot)、first_bit(value)。传入的 bitmap 指针属于当前 Page，操作后该页必须 dirty。slot 范围必须小于 num_records_per_page，多出的 bitmap padding 位不能当真实槽。
-
-## 18. 专题：实现反向全表扫描
-
-可新增 RmReverseScan：初始为最后数据页最后已占用槽；next 向 slot--，页内无更多则 page_no--。接口仍实现 RecScan。它只改变输出顺序，不改变记录。
-
-若表页可能存在空洞，不能简单 Rid-- 就返回，必须查 bitmap。

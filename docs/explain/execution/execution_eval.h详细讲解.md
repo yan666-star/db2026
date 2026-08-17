@@ -2,7 +2,7 @@
 
 源码入口：[execution_eval.h](../../src/execution/execution_eval.h:1)
 
-这个文件是 **执行期条件求值与类型安全比较工具集**（header-only，全 `inline`）。Scan/Filter/Join 的谓词求值、QlManager 的输出格式化都靠它。**新增比较符、新类型、NULL、LIKE 等都集中扩展这里**，不要在每个执行器各写一份。
+这个文件是 **执行期条件求值与类型安全比较工具集**（header-only，全 `inline`）。Scan/Filter/Join 的谓词求值、QlManager 的输出格式化都靠它。
 
 ## 〇、文件里所有函数一览
 
@@ -95,7 +95,7 @@ inline int compare_col_to_value(const char *lhs_data, const ColMeta &lhs_col, co
 inline int compare_record_by_cols(const RmRecord &a, const RmRecord &b, const std::vector<ColMeta> &cols);
 ```
 
-两条记录按给定列列表做**字典序比较**，从前到后比，首个非零结果即返回。**Sort 和去重（DISTINCT/UNION 判断）都依赖它**。
+两条记录按给定列列表做**字典序比较**，从前到后比，首个非零结果即返回。
 
 ## 三、条件求值核心
 
@@ -115,7 +115,7 @@ inline bool eval_comp(int cmp, CompOp op) {
 }
 ```
 
-把三路比较结果映射为布尔。**新增比较符（如 LIKE）会加在这里的 case**，或者引入新的判断函数。
+把三路比较结果映射为布尔。
 
 ### 3.2 `find_col(cols, target)`
 
@@ -161,38 +161,3 @@ inline bool eval_conditions(const RmRecord &rec, const std::vector<Condition> &c
 ```
 
 **全部条件为真才返回 true（AND 语义）**。空条件数组返回 true——这就是 CROSS JOIN 依赖的行为。
-
-## 四、常见扩展点
-
-### 4.1 新增比较符 LIKE
-
-必须同步四处（AST→common→analyze→eval）：
-
-1. `ast::SvCompOp` 加 `SV_OP_LIKE`
-2. `common::CompOp` 加 `OP_LIKE`
-3. `Analyze::convert_sv_comp_op` map 加映射
-4. 本文件加 `like_match` 函数 + `eval_condition` 分支
-
-不能把 LIKE 映射成 EQ——`%`/`_` 通配语义不同。若题目明确只要求无通配符的精确匹配，才可重写为 EQ。
-
-### 4.2 新增值类型 DATE
-
-同步：ColType、ColMeta 长度、`compare_col_value`（加 TYPE_DATE 分支）、`format_col_value`（加输出分支）、Value。DATE 若按整数天数存储，比较走 `compare_col_value` 的 int 分支即可，但打印要转回字符串。
-
-### 4.3 实现 SQL NULL / 三值逻辑
-
-当前**没有 NULL 位图**：外连接缺一侧用全 0 占位（`pad_left_null`/`pad_right_null`）。要实现真 NULL：
-- 记录布局加 NULL 位图。
-- `compare_*` 函数需要能表达"UNKNOWN"（不只是 true/false）。
-- `eval_condition` 返回值从 bool 改成三值。
-
-这是大改动，资格赛大概率不考，但要知道当前实现的局限。
-
-## 五、易错点总结
-
-1. `eval_conditions` 是 AND 语义。**把 OR 条件 push 进 conds 再调它不会得到 OR 效果**——需要条件组（外层 OR / 内层 AND）或表达式树。
-2. `compare_string_value` 先截 `\0` 再去尾部空格，两遍不能漏。
-3. `compare_col_to_value` 的 STRING 分支会把常量拷入定长缓冲，超长截断、不足补 0。
-4. 新增比较符必须四处同步（SvCompOp / CompOp / convert_sv_comp_op / eval），只改 parser 不够。
-5. `find_col` 找不到会 throw `ColumnNotFoundError`；在 Join 里若条件列没进 cols_（比如 ANTI 的求值 schema 漏了右列），就会在这里炸。SEMI/ANTI 需要"求值 schema = 左+右，输出 schema = 左"两套。
-6. `eval_conditions` 空条件返回 true——这是 CROSS JOIN 的依赖，别改。

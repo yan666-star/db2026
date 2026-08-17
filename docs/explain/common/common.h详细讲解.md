@@ -2,8 +2,7 @@
 
 源码入口：[common.h](../../src/common/common.h:13)
 
-这个文件是 **执行层的公共数据结构**：`TabCol`、`CompOp`、`Value`、`Condition`、`SelectItem` 等。这些结构贯穿 Analyze → Planner → Executor 全程，**是条件、投影、聚合的"标准件"**。做任何功能题前，先确认公共结构有没有对应字段。
-
+这个文件是 **执行层的公共数据结构**：`TabCol`、`CompOp`、`Value`、`Condition`、`SelectItem` 等。这些结构贯穿 Analyze → Planner → Executor 全程，**是条件、投影、聚合的"标准件"**。
 ## 一、`TabCol`（绑定后的列引用）
 
 位置：[common.h](../../src/common/common.h:22)
@@ -32,7 +31,7 @@ struct TabCol {
 enum CompOp { OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE };
 ```
 
-**执行层的比较符**。由 AST 层 `SvCompOp` 通过 `Analyze::convert_sv_comp_op` 一对一转换而来。新增比较符要两边同步加。
+**执行层的比较符**。由 AST 层 `SvCompOp` 通过 `Analyze::convert_sv_comp_op` 一对一转换而来。
 
 ## 三、`AggType` 与 `AggExpr`
 
@@ -181,21 +180,10 @@ struct SetClause {
 
 UPDATE SET：`is_arithmetic` 为 true 表示 `a = b <op> val` 的列间算术。
 
-## 七、资格赛扩展的落点对照
-
-| 功能 | 改 common.h 哪里 |
-|---|---|
-| 新比较符（LIKE） | `CompOp` 加枚举 |
-| 新聚合函数 | `AggType` 加枚举 |
-| 新类型（DATE） | `Value` 加 union 成员 + `set_*` + `init_raw` 分支；`ColType`（在 defs.h）加枚举 |
-| 新 SELECT 标志 | 不加在 Value，加在 `Query`（analyze.h）和对应 Plan |
-| SQL NULL | 加 NULL 位图到记录/列定义，`Condition` 可能需要 `is_null` 表示 |
-
-## 八、易错点总结
+## 七、易错点总结
 
 1. `Value` 的 `int_val`/`float_val` 是 **union 成员**，只按 `type` 读一个，混读是 UB。
 2. `init_raw` 前必须 `cast_val_to_col` 对齐类型；`raw` 为空时 execution_eval 的 STRING 比较会走不了。
 3. `Condition` 里 `is_rhs_val` 为 false 时，`rhs_col` 必须已绑定；为 true 时 `rhs_val` 必须已 `init_raw`。
 4. `TabCol` 的 `operator<` 让它可以作 `std::set`/`std::map` 的键（去重用）。
-5. 新增比较符必须 `SvCompOp / CompOp / convert_sv_comp_op / execution_eval` 四处同步。
-6. `Condition` 是扁平结构，只表达 AND 合取；OR 需要更高层结构（条件组/表达式树）。
+5. `Condition` 是扁平结构，只表达 AND 合取；OR 需要更高层结构（条件组/表达式树）。

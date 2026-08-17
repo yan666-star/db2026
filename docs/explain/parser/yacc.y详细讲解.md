@@ -42,8 +42,6 @@ tableRef  的 $n/$$ 读写 SemValue::sv_table_ref
 whereClause 读写 SemValue::sv_conds
 ```
 
-增加一种复杂非终结符时，先在 `SemValue` 增加能装下它的成员，再在 `%type` 绑定。
-
 ## 三、`$1`、`$3`、`$$` 的固定含义
 
 产生式：
@@ -101,14 +99,6 @@ tableList:
 
 `{$1}` 使用初始化列表创建只含一个 TableRef 的 vector。`{}` 创建空条件数组。
 
-如果启用 `join_types`，这里也应初始化为空：
-
-```cpp
-$$.join_types = {};
-```
-
-一张表还没有 JOIN 边，所以不是放一个 INNER_JOIN。
-
 ## 五、逗号连接分支
 
 ```yacc
@@ -116,8 +106,6 @@ $$.join_types = {};
 ```
 
 逗号 FROM 在当前 Planner 中通常会形成没有显式 ON 条件的连接。动作只追加表，不追加条件。
-
-若系统用 `join_types.size()==tables.size()-1` 作为硬约束，逗号连接也要定义一个类型，通常按 CROSS/INNER 的既有语义处理。是否追加不能只看语法名称，要看 Planner 的数组对齐规则。
 
 ## 六、普通 `JOIN tableRef`
 
@@ -129,14 +117,6 @@ $$ = $1;
 ```
 
 这里 `$2` 是 JOIN，`$3` 是右表。没有 ON，所以没有 `$5` 条件。
-
-启用连接类型数组后应追加：
-
-```cpp
-$1.join_types.push_back(INNER_JOIN);
-```
-
-追加发生在 `$$=$1` 之前。
 
 ## 七、`JOIN tableRef ON whereClause`
 
@@ -251,15 +231,9 @@ auto conds = std::move($4.conds);
 conds.insert(conds.end(), $5.begin(), $5.end());
 ```
 
-因此 Analyze 看到的 `SelectStmt::conds` 已经包含 JOIN ON 和 WHERE。若需要保持二者的不同语义，现有扁平 Condition 结构就不够，需要额外字段保存来源。
+因此 Analyze 看到的 `SelectStmt::conds` 已经包含 JOIN ON 和 WHERE。
 
 `std::move($4.conds)` 把 vector 内部缓冲交给局部变量 `conds`，减少复制。此后不要再依赖 `$4.conds` 的原内容。
-
-启用 join_types 后要在构造 SelectStmt 后补：
-
-```cpp
-stmt->join_types = std::move($4.join_types);
-```
 
 ## 十一、条件列表的 AND 语义
 
@@ -271,8 +245,6 @@ c1 AND c2 AND c3
 
 展平成 vector `[c1,c2,c3]`。执行层 `eval_conditions()` 依次判断，任一 false 就返回 false。
 
-增加 OR 时不能仍放进同一个无结构 vector，否则执行层无法知道分组。需要新增表达式树或“条件组”表示。
-
 ## 十二、动作代码的所有权
 
 AST 节点大量使用 `shared_ptr`：
@@ -283,19 +255,4 @@ std::make_shared<SelectStmt>(...)
 
 多个上层节点可以共享子表达式，Bison 语义值复制 shared_ptr 时只增加引用计数，不复制整棵 AST。
 
-vector 使用 `std::move` 后，源 vector 仍是合法对象，但内容不再保证。现场手敲时不要在 move 后又从源对象复制同一批条件。
-
-## 十三、新关键字的修改顺序
-
-以 SEMI 为例：
-
-```text
-ast.h 增加 SEMI_JOIN
-  -> lex.l 返回 SEMI token
-  -> yacc.y 声明 %token SEMI
-  -> yacc.y 增加产生式并正确计算 $n
-  -> FromClause 保存 join_types
-  -> SelectStmt 接收 join_types
-```
-
-Parser 完成的判定标准不是“SQL 不报 syntax error”，而是 AST 中能够看到正确的表序、条件数组和连接类型数组。
+vector 使用 `std::move` 后，源 vector 仍是合法对象，但内容不再保证。

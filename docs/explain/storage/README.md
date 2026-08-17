@@ -100,46 +100,7 @@ Page 是 frame 中反复复用的对象。被淘汰后同一个 `pages_[frame_id
 - flush_page：页面存在时写磁盘并清 dirty。
 - flush_all_pages：遍历属于指定 fd 的页。
 
-## 8. 从 LRU 换 FIFO/LFU/自定义 FRU
-
-BufferPoolManager 不应包含具体排序算法。修改路径：
-
-```text
-新增 Replacer 子类
- -> 保持 victim/pin/unpin/Size
- -> CMake 加实现文件
- -> 构造函数 new 新策略
-```
-
-BufferPoolManager 中这些调用不变：
-
-```cpp
-replacer_->pin(frame_id);    // 页面被使用
-replacer_->unpin(frame_id);  // pin_count 变 0
-replacer_->victim(&frame_id);// 需要空帧
-```
-
-具体 FIFO/LFU/FRU 状态设计见 [README.md](../../src/replacer/README.md:1)。
-
-## 9. 类似现场改动
-
-### 改为 CLOCK
-
-Replacer 保存 frame 数组/指针和 reference bit。unpin 设置可淘汰；pin 清除可淘汰；victim 循环：遇引用位 1 清零并跳过，遇 0 选中。BufferPool 无需理解时钟指针。
-
-### 增加预取
-
-新增 prefetch_page 可将页载入但 pin_count 保持 0，并立即放入 replacer；不要复用 fetch_page 后忘记 unpin。
-
-### 改 dirty 写回策略
-
-必须保持淘汰 dirty 页前写回。后台刷页可以提前清 dirty，但需要页 latch 和 BufferPool latch 顺序明确。
-
-### 增加统计
-
-命中/未命中计数可放 BufferPoolManager；访问频次若仅属于 LFU 策略则放 Replacer，避免两份状态不同步。
-
-## 10. 注意
+## 8. 注意
 
 1. free_list 和 replacer 的 frame 不应重复。
 2. page_table 必须与 pages_[frame].id_ 一致。
@@ -149,7 +110,7 @@ Replacer 保存 frame 数组/指针和 reference bit。unpin 设置可淘汰；p
 6. 不把 frame_id 当 page_no。
 7. 选 victim 后要先处理旧页，再覆盖 Page 对象。
 
-## 11. `fetch_page()` 逐行状态表
+## 9. `fetch_page()` 逐行状态表
 
 ### 命中前
 
@@ -186,7 +147,7 @@ replacer.pin(frame)
 
 次序关键：旧 dirty 数据必须在 data 被 read_page 覆盖之前写回。
 
-## 12. `unpin_page()` dirty 合并
+## 10. `unpin_page()` dirty 合并
 
 正确：
 
@@ -198,65 +159,6 @@ page->is_dirty_ = page->is_dirty_ || is_dirty;
 
 pin_count 只有大于 0 才能减；只有恰好变 0 才进入 replacer。重复 unpin 会让同一 frame 重复候选或负计数。
 
-## 13. 专题：真正把 LRU 替换为 LFU
-
-Storage 层改动只有接线：
-
-1. include `replacer/lfu_replacer.h`。
-2. 构造函数创建 LFUReplacer。
-3. CMake 编译 lfu cpp。
-4. `find_victim_page/fetch_page/unpin_page/delete_page` 不改接口调用。
-
-原因：这些函数只关心 frame 是否候选，不关心 LRU/LFU 排序。若你在 fetch_page 里直接维护 frequency map，算法状态就被拆到 BufferPool 和 LFU 两处，容易不同步。
-
-LFU 详细成员和实现见 [README.md](../../src/replacer/README.md:1)。
-
-## 14. 专题：增加 BufferPool 命中率
-
-成员：
-
-```cpp
-uint64_t fetch_count_ = 0;
-uint64_t hit_count_ = 0;
-```
-
-每次 fetch 开始 fetch_count++；page_table 命中时 hit_count++。需要并发安全，可在现有 latch 保护区更新或使用 atomic。命中率只观察，不影响替换策略。
-
-## 15. 专题：调整缓冲池容量
-
-`pool_size_`、pages_ 数组、free_list 初始 frame、Replacer 最大容量必须一致。只改全局 `BUFFER_POOL_SIZE` 而某个 Replacer 数组仍用旧常量会越界。
-
-frame_id 合法范围始终 `[0,pool_size_)`。策略收到非法 frame 应按框架约定拒绝或 assert。
-
-## 16. 专题：增加 PageGuard
-
-PageGuard 用 RAII 在析构时自动 unpin，保存：
-
-```cpp
-BufferPoolManager *bpm_;
-Page *page_;
-bool dirty_;
-```
-
-移动构造转移责任并将来源 page_=nullptr；禁止复制，否则两个 guard 会 unpin 两次。写 guard 在修改后把 dirty_=true。这个改动会影响 record/index 大量 fetch/unpin 调用，不是资格赛最小题时不要全仓重构。
-
-## 17. 专题：后台刷脏页
-
-后台线程选 dirty 且可安全读的页写盘，但写盘期间要防止同一页继续修改导致清错 dirty。简单方式持页写 latch，复制/写出后确认版本未变再清标志。BufferPool 全局 latch 不宜跨慢磁盘 I/O 长期持有。
-
-## 18. 锁顺序
+## 11. 锁顺序
 
 常见层次：BufferPool latch 保护映射，Page latch 保护内容，Replacer latch 保护策略。不要在 Replacer 回调 BufferPool，避免反向锁序。Replacer 的 victim 只返回 frame，实际页处理由 BufferPool 完成正是为了保持边界。
-
-## 19. BufferPool 修改检查表
-
-```text
-新 frame 来源是 free_list 还是 victim
-旧 dirty 页是否先写回
-旧 page_table 映射是否删除
-新 PageId 与 frame 映射是否一致
-pin_count 是否正确
-replacer 中是否只有 pin_count=0 的 frame
-异常/失败时 frame 是否丢失
-delete 后 frame 是否只进入 free_list，不同时留在 replacer
-```

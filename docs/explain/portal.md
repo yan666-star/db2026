@@ -33,8 +33,6 @@ CREATE TABLE               -> PORTAL_MULTI_QUERY
 BEGIN/COMMIT/SET           -> PORTAL_CMD_UTILITY
 ```
 
-增加 `ANTI JOIN` 或 `SEMI JOIN` 时，SQL 仍然是一条 SELECT，所以不需要新增 portalTag。新 JOIN 的区别保存在 JoinPlan 和 JoinExecutor 中。
-
 ### 2. `PortalStmt`
 
 位置：[portal.h](../../src/portal.h:48)
@@ -132,8 +130,6 @@ Sort 与 Filter 不改变记录的列布局，所以继续递归读取 `subplan_
 ```cpp
 return collect_output_cols(s->subplan_);
 ```
-
-新增一个不改变 schema 的一元算子，例如 LimitPlan，也应继续向子计划递归。
 
 ### UnionPlan 分支
 
@@ -263,7 +259,7 @@ bool track_serializable_reads = true
 
 `track_serializable_reads`
 
-控制扫描是否登记 SERIALIZABLE 读集合。新增扫描执行器时也要接住这个语义，不能因为换算法而漏登记。
+控制扫描是否登记 SERIALIZABLE 读集合。
 
 ### ProjectionPlan 分支
 
@@ -297,44 +293,9 @@ std::make_unique<NestedLoopJoinExecutor>(
 
 两个 move 把子树所有权移入 Join。
 
-增加 ANTI/SEMI 时，接线应位于这个分支：
-
-```text
-x->type == INNER_JOIN -> NestedLoopJoinExecutor
-x->type == ANTI_JOIN  -> ExtendedJoinExecutor 或 AntiJoinExecutor
-x->type == SEMI_JOIN  -> ExtendedJoinExecutor 或 SemiJoinExecutor
-```
-
 构造函数参数顺序必须和执行器声明一致。`conds_` 决定匹配，`type` 决定命中后输出哪一侧，二者不能互相替代。
 
-## 六、增加新一元执行器的最小接线模板
-
-假设已有 `LimitPlan` 和 `LimitExecutor`：
-
-```cpp
-else if (auto x = std::dynamic_pointer_cast<LimitPlan>(plan)) {
-    auto child = convert_plan_executor(
-        x->subplan_, context, filter_plan,
-        false, track_serializable_reads);
-
-    return std::make_unique<LimitExecutor>(
-        std::move(child), x->limit_, x.get());
-}
-```
-
-逐句状态：
-
-```text
-x       借用当前 LimitPlan
-child   暂时拥有子执行器树
-move    把 child 所有权交给 LimitExecutor
-x->limit_ 传递逻辑参数
-x.get() 借给执行器统计行数
-```
-
-如果 Limit 不改变列布局，`collect_output_cols()` 还要加入递归到 `subplan_` 的分支。
-
-## 七、修改本文件时保持的四个对应关系
+## 六、修改本文件时保持的四个对应关系
 
 ```text
 Plan 子指针       <-> Executor 子 unique_ptr

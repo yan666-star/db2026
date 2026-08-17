@@ -10,7 +10,7 @@
 
 ```sql
 SELECT a.id
-FROM a SEMI JOIN b
+FROM a LEFT JOIN b
 ON a.id = b.a_id;
 ```
 
@@ -129,7 +129,7 @@ JoinPlan *plan_ = nullptr;
 JoinType join_type_ = INNER_JOIN;
 ```
 
-来源：构造函数参数 `join_type`。它决定执行器采取哪种 JOIN 语义：INNER/LEFT/RIGHT/FULL/ANTI，未来增加 SEMI_JOIN。例如 `if (join_type_ == ANTI_JOIN)` 表示只有当前执行的是 ANTI JOIN 时才进入这个分支。
+来源：构造函数参数 `join_type`。它决定执行器采取哪种 JOIN 语义：INNER/LEFT/RIGHT/FULL/ANTI。例如 `if (join_type_ == ANTI_JOIN)` 表示只有当前执行的是 ANTI JOIN 时才进入这个分支。
 
 ### 3. `left_` 和 `right_`
 
@@ -154,7 +154,7 @@ size_t right_len_ = 0;
 - `right_len_`：`right_->tupleLen()`，右子执行器输出的一条记录有多少字节。
 - `len_`：当前 JOIN 执行器对外输出的一条记录有多少字节。
   - 普通 JOIN：`len_ = left_len_ + right_len_;`（输出左记录 + 右记录）。
-  - ANTI/SEMI：`len_ = left_len_;`（只输出左记录）。
+  - ANTI：`len_ = left_len_;`（只输出左记录）。
 
 上层通过 `size_t tupleLen() const override { return len_; }` 询问这个执行器输出记录的长度。
 
@@ -272,7 +272,7 @@ bool left_has_match_ = false;
 
 含义：当前正在处理的这条左记录，是否至少找到过一次匹配。例如当前左行 L1：与 R1 不匹配 → false；与 R2 匹配 → true；与 R3 不匹配 → 仍然是 true。**它不能在检查完一条右记录后立即清零**，因为它记录的是当前左行对整个右表的匹配情况。
 
-这个变量主要决定：LEFT/FULL 是否需要输出"左+空右"；ANTI 是否需要输出左行；SEMI 是否已经满足"存在一条匹配"。换到下一条左行时必须重置：`left_has_match_ = false; right_idx_ = 0;`。
+这个变量主要决定：LEFT/FULL 是否需要输出"左+空右"；ANTI 是否需要输出左行。换到下一条左行时必须重置：`left_has_match_ = false; right_idx_ = 0;`。
 
 ## 五、辅助函数逐个解释
 
@@ -289,7 +289,7 @@ std::unique_ptr<RmRecord> join_records(const RmRecord &left_rec, const RmRecord 
 
 `left_rec` 来自 `left_->Next()`，`right_rec` 来自 `right_buffer_[right_idx_]`。作用：创建一条"左记录+右记录"的临时拼接记录。为什么必须先拼接？因为 ON 条件可能同时读取左右列（`a.id = b.a_id`），条件求值函数需要在同一条记录里根据 offset 找到 a.id 和 b.a_id。
 
-**当前代码的问题**：当前函数用 `RmRecord(len_)` 分配空间。普通 JOIN 时 `len_ = left_len_ + right_len_` 没问题；但 ANTI/SEMI 输出只有左表，若 `len_ = left_len_`，后面仍然复制右记录就会越界。正确实现需要新增 `joined_len_ = left_len_ + right_len_;`，改用 `auto joined = std::make_unique<RmRecord>(joined_len_);`。
+**当前代码的问题**：当前函数用 `RmRecord(len_)` 分配空间。普通 JOIN 时 `len_ = left_len_ + right_len_` 没问题；但 ANTI 输出只有左表，若 `len_ = left_len_`，后面仍然复制右记录就会越界。
 
 ### 2. `pad_left_null()`（位置 [line 100](../../src/execution/executor_extended_join.h:100)）
 
@@ -325,7 +325,7 @@ std::unique_ptr<RmRecord> anti_left_only(const RmRecord &left_rec) {
 }
 ```
 
-作用：只复制并返回左记录。ANTI JOIN 无匹配时调用它。SEMI JOIN 匹配时也需要完全相同的操作，所以更合理的名字是 `left_only()`。这个函数本身不判断匹配，只负责复制左记录。判断"什么时候调用它"是在 `find_next()` 中完成的。
+作用：只复制并返回左记录。ANTI JOIN 无匹配时调用它。这个函数本身不判断匹配，只负责复制左记录。判断"什么时候调用它"是在 `find_next()` 中完成的。
 
 ### 5. `cond_ok()`（位置 [line 121](../../src/execution/executor_extended_join.h:121)）
 
@@ -340,14 +340,7 @@ bool cond_ok(const RmRecord &joined) {
 
 `cols_` 在这里有什么用？假设条件要读取 `b.score`，程序必须在 `cols_` 中找到 b.score 的 offset，再从 `joined.data + offset` 读取该列的字节。
 
-**当前模板的问题**：若 ANTI/SEMI 的 `cols_` 只保留左表列，那么条件中的右表列无法找到。因此正确实现要有两套 schema：
-
-```cpp
-cols_       // 对外输出，SEMI/ANTI 只有左表
-eval_cols_  // 内部条件判断，永远是左表+右表
-```
-
-`cond_ok()` 应使用 `eval_conditions(joined, fed_conds_, eval_cols_);`。
+**当前模板的问题**：若 ANTI 的 `cols_` 只保留左表列，那么条件中的右表列无法找到。
 
 ### 6. `materialize_right()`（位置 [line 126](../../src/execution/executor_extended_join.h:126)）
 
@@ -458,30 +451,13 @@ return;
 
 例如 L1 同时匹配 R1、R2。第一次 `right_idx_=0` 输出 L1+R1，`right_idx_` 变成 1，返回上层。下一次上层调用 `nextTuple()` 再次进入 find_next()：左游标仍然是 L1，`right_idx_=1`，继续检查 R2，输出 L1+R2。这正是普通 JOIN 一对多时输出多行的原因。
 
-**SEMI 匹配时应该怎么做**：
-
-SEMI 只输出左行一次，因此应增加：
-
-```cpp
-if (join_type_ == SEMI_JOIN) {
-    auto result = left_only(*left_rec);
-    left_->nextTuple();          // 先推进左游标！
-    left_has_match_ = false;
-    right_idx_ = 0;
-    emit(std::move(result));
-    return;
-}
-```
-
-为什么马上执行 `left_->nextTuple();`？因为当前左行既然已经找到一个匹配，SEMI 的判断就完成了。如果不推进左游标，下一次还会处理同一条左行，可能因为另一条右记录再次输出，违反"只输出一次"。
-
 ### 阶段五：当前左行扫描完整个右表
 
 内层循环结束后，`if (!left_has_match_)` 表示当前左行与所有右记录都不匹配：
 
 - **LEFT/FULL**：`emit(pad_right_null(*left_rec));`（当前左记录 + 全0右半段）。输出前把左游标推进（当前左行已完成）：`left_->nextTuple(); left_has_match_ = false; right_idx_ = 0; return;`
 - **ANTI**：`emit(anti_left_only(*left_rec));`（正好需要没有任何匹配的左行）。同样在返回前推进左游标并重置状态。
-- **INNER/RIGHT/SEMI**：无匹配时不输出，直接落到下面 `left_->nextTuple(); left_has_match_ = false; right_idx_ = 0;`，然后外层 `while(true)` 继续处理下一条左记录。
+- **INNER/RIGHT**：无匹配时不输出，直接落到下面 `left_->nextTuple(); left_has_match_ = false; right_idx_ = 0;`，然后外层 `while(true)` 继续处理下一条左记录。
 
 ## 七、构造函数做了什么（位置 [line 250](../../src/execution/executor_extended_join.h:250)）
 
@@ -508,28 +484,16 @@ if (join_type_ == SEMI_JOIN) {
 1. **清除状态**：`scanning_unmatched_right_ = false; left_has_match_ = false; right_idx_ = 0;`（从头执行）。
 2. **物化右表**：`materialize_right();`（把右子树所有记录放进 right_buffer_，匹配标志全 0）。
 3. **打开左表**：`left_->beginTuple();` 定位第一条左记录。
-4. **左表为空**：RIGHT/FULL 仍可能有结果（需要输出右表全部未匹配记录）：`scanning_unmatched_right_ = true; right_idx_ = 0; find_next(); return;`。其他 JOIN（INNER/LEFT/ANTI/SEMI）空左表直接结束。
+4. **左表为空**：RIGHT/FULL 仍可能有结果（需要输出右表全部未匹配记录）：`scanning_unmatched_right_ = true; right_idx_ = 0; find_next(); return;`。其他 JOIN（INNER/LEFT/ANTI）空左表直接结束。
 5. **右表为空**：
 
 | 类型 | 右表为空时 |
 |---|---|
 | INNER | 空 |
 | RIGHT | 空 |
-| SEMI | 空 |
 | LEFT | 输出所有左行，右侧填空 |
 | FULL | 输出所有左行，右侧填空 |
 | ANTI | 输出所有左行 |
-
-因此增加 SEMI 后判断应为：
-
-```cpp
-if (join_type_ == INNER_JOIN ||
-    join_type_ == RIGHT_JOIN ||
-    join_type_ == SEMI_JOIN) {
-    is_end_ = true;
-    return;
-}
-```
 
 其余类型调用 `find_next();` 寻找第一条结果。
 
@@ -572,11 +536,6 @@ std::unique_ptr<RmRecord> Next() override {
 - 下一次：L1-R3 不匹配，右表扫描完成，推进左表到 L2，重置状态
 - L2 无匹配，不输出。最终 INNER 输出两行。
 
-**SEMI JOIN**：
-- L1-R1 第一次匹配 → 立即只复制 L1，立即推进左表到 L2，right_idx_=0，输出 L1。不会再检查 L1-R2，所以 L1 只输出一次。
-- L2 扫描全部右表无匹配，跳过。
-- 最终 SEMI 输出一行：L1。
-
 **ANTI JOIN**：
 - L1-R1 匹配 → L1 不符合 ANTI，立即结束 L1 的右表扫描，推进到 L2。
 - L2 与 R1、R2、R3 都不匹配 → left_has_match_=false，输出 L2。
@@ -593,7 +552,7 @@ right_matched_         = 每条右行是否至少匹配一次
 join_records()         = 临时拼成"左+右"，用于判断条件
 cond_ok()              = 判断 ON 条件
 pad_left_null/right    = 外连接缺一侧时补全0
-left_only()            = SEMI/ANTI 只复制左行
+left_only()            = ANTI 只复制左行
 find_next()            = 找到下一条应该输出的结果
 emit()                 = 把找到的结果存进 current_rec_
 Next()                 = 把 current_rec_ 的副本交给上层

@@ -48,7 +48,6 @@ bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_c
 要点：
 - **第一列未命中则索引不可定位**（最左前缀失效）。
 - BETWEEN 被展开成 GE+LE 后，`salary` 自动进入 `available_cols`，索引能合成范围——**Planner 不需要认识 BETWEEN**。
-- 新增 LIKE 时，第一版不要把它纳入 available_cols（没有前缀范围到 B+树 key 的转换）。
 
 ## 二、`pop_conds`（抽出单表条件）
 
@@ -114,14 +113,14 @@ std::shared_ptr<Query> Planner::logical_optimization(std::shared_ptr<Query> quer
 std::shared_ptr<Plan> Planner::physical_optimization(std::shared_ptr<Query> query, Context *context);
 ```
 
-- `logical_optimization`：当前直接返回原 query（TODO 挂点）。
+- `logical_optimization`：`normalize_and_deduplicate` 谓词规范化去重 → `propagate_equal_literals` 等值常量传播 → `reorder_inner_joins` 内连接重排，改写 Query 后返回。
 - `physical_optimization`：`make_one_rel` 建连接树，然后**非聚合查询**挂 SortPlan（`generate_sort_plan`）；聚合查询的排序留给 AggregatePlan（避免"先排序再聚合"语义错误）。
 
 ## 六、`make_one_rel`（核心：建 Scan + 左深 Join 树）
 
 位置：[planner.cpp](../../src/optimizer/planner.cpp:314)
 
-这是 **JOIN 扩展题最关键的函数**。逐段解释：
+逐段解释：
 
 ### 6.1 收集每表投影列
 
@@ -196,22 +195,6 @@ return table_join_executors;
 
 **第 i 条边的 Join 条件判定**：谓词一端在 `joined_tables`（已连接集合）、另一端是 `tables[i]`（新表）。
 
-### 6.4 JOIN 扩展改法（SEMI/ANTI 题必改）
-
-把 6.3 里的四参数构造改成读 `query->join_types[i-1]`：
-
-```cpp
-JoinType jt = INNER_JOIN;
-if (i - 1 < query->join_types.size()) {
-    jt = query->join_types[i - 1];
-}
-table_join_executors = std::make_shared<JoinPlan>(
-    T_NestLoop, std::move(table_join_executors),
-    std::move(table_scan_executors[i]), join_conds, jt);
-```
-
-`query->join_types[i-1]` 约定：表示"把 `tables[i]` 接到左深树"用的类型。**ANTI 时执行器只输出左列**，但 `table_proj_cols` 收集跨表条件列的逻辑保留（ON 条件仍需要右表列参与求值），最终根 Projection 才删右列。
-
 ## 七、`generate_sort_plan`
 
 ```cpp
@@ -243,16 +226,6 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
 }
 ```
 
-**DISTINCT 题的落点**：把 `query->is_distinct` 作为第 6 个参数传给 ProjectionPlan：
-
-```cpp
-plannerRoot = std::make_shared<ProjectionPlan>(
-    T_Projection, std::move(plannerRoot), std::move(sel_cols),
-    query->is_select_all, query->limit_num, query->is_distinct);
-```
-
-**关键顺序**：`limit_num` 在这里传给 ProjectionPlan，执行器在投影层同时处理 DISTINCT 和 LIMIT。必须保证去重在 LIMIT 之前（见 executor_projection 讲解）。
-
 ## 九、`do_planner`（规划总入口）
 
 位置：[planner.cpp](../../src/optimizer/planner.cpp:562)
@@ -267,22 +240,9 @@ plannerRoot = std::make_shared<ProjectionPlan>(
 | DeleteStmt | DMLPlan(T_Delete, scan) | 先选索引建 ScanPlan |
 | UpdateStmt | DMLPlan(T_Update, scan) | 同上，带 set_clauses |
 | SelectStmt | DMLPlan(T_select, projection) | generate_select_plan 后再包外壳 |
-| 其它 | throw InternalError | 新增 AST 节点要加分支 |
+| 其它 | throw InternalError | |
 
-**新增语句（AST 节点）不在这里加分支会直接 throw**。
-
-## 十、资格赛常见改动的落点对照
-
-| 功能 | 改这里哪里 |
-|---|---|
-| SEMI/ANTI/LEFT 等新 Join | 6.4 段按边传 type + plan.h 启用带类型构造 |
-| CROSS JOIN | 不用改！parser 加语法即可，空 join_conds 自然笛卡尔积 |
-| BETWEEN | 不用改！parser 展开成 GE+LE，available_cols 自动含 salary |
-| SELECT DISTINCT | `generate_select_plan` 传 `query->is_distinct` 给 ProjectionPlan |
-| 新索引选型规则 | `get_index_cols` |
-| 新一元算子 | 在 `generate_select_plan` / `physical_optimization` 加包层 |
-
-## 十一、易错点总结
+## 十、易错点总结
 
 1. **`pop_conds` 修改 `query->conds`**，make_one_rel 后它只剩跨表条件。调试别假设原样。
 2. `std::move(plannerRoot)` 后必须用返回值继续；`join_conds` move 给 Plan 后不能再用。
@@ -290,4 +250,3 @@ plannerRoot = std::make_shared<ProjectionPlan>(
 4. IndexScan 仍要保存完整 `conds_` 做最终过滤，索引边界只是减少候选。
 5. Join 条件判定依赖 `joined_tables` 集合，表顺序不能乱交换（交换表顺序要同步条件）。
 6. CROSS JOIN 不能"跳过 JoinPlan"，否则结果只剩一个输入。
-7. `query->join_types` 是 `#if 0` 字段，启用后所有"另建 Query"路径都要确保填好。

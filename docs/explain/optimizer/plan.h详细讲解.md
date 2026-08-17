@@ -34,7 +34,7 @@ typedef enum PlanTag {
 } PlanTag;
 ```
 
-Portal 和 EXPLAIN 都按 `tag` 分支。新增一个独立算子时，要先在这里加 tag，再改 Portal 的分派——**否则 tag 存在但没有 Executor 分支会直接失败**。
+Portal 和 EXPLAIN 都按 `tag` 分支。
 
 注意：
 - `T_select` 是 DMLPlan 的 tag（SELECT 也包一层 DMLPlan），`T_NestLoop` / `T_SortMerge` 是两种 Join 算法。
@@ -51,7 +51,7 @@ public:
 };
 ```
 
-`rows_` 是 **EXPLAIN ANALYZE 用**：Executor 每输出一行就 `plan_->rows_++`。普通查询里它不影响结果，但 EXPLAIN ANALYZE 的输出对不上会扣分。
+`rows_` 是 **EXPLAIN ANALYZE 用**：Executor 每输出一行就 `plan_->rows_++`。普通查询里它不影响结果，但 EXPLAIN ANALYZE 依赖它回填实际行数，必须保证计数与实际输出一致。
 
 ## 三、`ScanPlan` 逐个字段
 
@@ -97,7 +97,7 @@ public:
 
 不改变 schema（输入输出列一样），只过滤行。
 
-## 五、`JoinPlan` 逐个字段（JOIN 扩展核心）
+## 五、`JoinPlan` 逐个字段
 
 位置：[plan.h](../../src/optimizer/plan.h:128)
 
@@ -126,11 +126,11 @@ class JoinPlan : public Plan {
 ```
 
 关键点：
-- **现行四参数构造把 `type` 硬编码成 `INNER_JOIN`**。所以即使 `query->join_types` 里有 SEMI，只要 Portal 用的是这个构造，type 还是 INNER。**做 JOIN 扩展题必须启用带 JoinType 的构造函数**（`#if 1`），否则 SEMI/ANTI 无法传到执行器。
+- **现行四参数构造把 `type` 硬编码成 `INNER_JOIN`**，所以 Portal 创建 JoinPlan 时 type 恒为 INNER。
 - `left_` 可能是已经 Join 出来的子树（左深树），`right_` 是新的单表计划。
 - `conds_` 是"本层"的 Join 条件：一端属于已连接集合，一端属于新表。
 
-## 六、`ProjectionPlan` 逐个字段（DISTINCT/LIMIT 相关）
+## 六、`ProjectionPlan` 逐个字段
 
 位置：[plan.h](../../src/optimizer/plan.h:168)
 
@@ -144,14 +144,7 @@ bool display_all_ = false;        // SELECT * 展示标记
 int limit_num_ = -1;              // LIMIT；-1 表示不限制
 ```
 
-**参数顺序是 `sel_cols, display_all, limit_num`**。加 DISTINCT 标志时**追加到参数尾部**（带默认值 false），不要插到中间，否则现有调用全乱：
-
-```cpp
-ProjectionPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols,
-               bool display_all = false, int limit_num = -1, bool is_distinct = false)
-```
-
-然后加成员 `bool is_distinct_ = false;`。
+**参数顺序是 `sel_cols, display_all, limit_num`**。
 
 ## 七、`SortPlan` / `UnionPlan` / `AggregatePlan`
 
@@ -235,40 +228,10 @@ class plannerInfo {
 
 主路径现在多用 `Query` + 局部变量，`plannerInfo` 是历史遗留，一般不改。
 
-## 十、做 JOIN 扩展题的精确改法
+## 十、易错点总结
 
-第 1 步：启用带 JoinType 的构造函数（`#if 0` → `#if 1`）。
-
-第 2 步：Planner 构造 JoinPlan 时传边类型（见 planner.cpp 讲解）。
-
-第 3 步：Portal 看 `plan->type`：
-
-```cpp
-if (x->type != INNER_JOIN) {
-    return std::make_unique<ExtendedJoinExecutor>(std::move(left), std::move(right), x->conds_, x->type, x.get());
-}
-return std::make_unique<NestedLoopJoinExecutor>(std::move(left), std::move(right), x->conds_, x.get());
-```
-
-**不能同时保留两个参数完全相同的重载**（C++ 不允许）；启用带类型构造后，四参数构造仍然合法（类型不同）。
-
-## 十一、做 DISTINCT 题的精确改法
-
-在 `ProjectionPlan` 构造参数**尾部**追加 `bool is_distinct = false`，加成员 `bool is_distinct_ = false;`，构造函数里 `is_distinct_ = is_distinct;`。
-
-Planner 构造处传 `query->is_distinct`：
-
-```cpp
-plannerRoot = std::make_shared<ProjectionPlan>(
-    T_Projection, std::move(plannerRoot), std::move(sel_cols),
-    query->is_select_all, query->limit_num, query->is_distinct);
-```
-
-## 十二、易错点总结
-
-1. Plan 树顺序 = 关系代数顺序，**父节点后执行**。DISTINCT 必须在 LIMIT 之前，顺序不能反。
+1. Plan 树顺序 = 关系代数顺序，**父节点后执行**。
 2. Plan 用 `shared_ptr`，Executor 用 `unique_ptr`；Executor 里保存 Plan 裸指针是借用，不 delete。
 3. 状态（seen_、cursor、临时记录）放 Executor，**不放 Plan**。Plan 只描述。
-4. `JoinPlan::type` 当前固定 INNER；启用扩展前，Portal 永远走 NestedLoopJoinExecutor。
-5. 新 Plan 要同步 Portal 分支和 EXPLAIN 输出，否则 tag 有了也不认。
-6. `ProjectionPlan` 参数顺序是 `sel_cols, display_all, limit_num`，追加字段别插中间。
+4. `JoinPlan::type` 当前固定 INNER，Portal 走 NestedLoopJoinExecutor。
+5. `ProjectionPlan` 参数顺序是 `sel_cols, display_all, limit_num`。

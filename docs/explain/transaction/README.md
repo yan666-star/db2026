@@ -120,25 +120,7 @@ UndoLink 用 `(prev_txn_, prev_log_idx_)` 指向某事务的某条撤销日志�
 
 `current_reads_` 统计每个 read_ts 的活跃事务数；`watermark_` 是最老活跃读时间。早于 watermark 且不再被任何快照需要的版本才可回收。
 
-## 8. 类似现场改动
-
-### 新事务命令 SAVEPOINT（简化版）
-
-可在 Transaction 保存 savepoint 名到 write_set 大小。ROLLBACK TO 时从 back 回滚到记录大小，不结束整个事务。要明确索引也由 SmManager 回滚。
-
-### 改隐式提交规则
-
-主要落点在 rmdb.cpp/ExecutionManager 的语句结束逻辑；不能只修改 txn_mode 字段，否则事务对象状态和连接 txn_id 不一致。
-
-### 新隔离级别关键字
-
-Parser AST -> SetTransactionIsolationPlan -> ExecutionManager 修改 session_isolation；TransactionManager begin 时读该值。隔离算法本身若不同，还需更改可见性/冲突检查。
-
-### 只要求单事务回滚
-
-优先复用 WriteRecord+SmManager 物理回滚，不扩张 MVCC。INSERT 保存 Rid；DELETE/UPDATE 保存旧记录；逆序处理。
-
-## 9. 注意
+## 8. 注意
 
 1. 事务提交前不可把未持久化结果对其他事务可见。
 2. ABORT 必须逆序。
@@ -147,7 +129,7 @@ Parser AST -> SetTransactionIsolationPlan -> ExecutionManager 修改 session_iso
 5. 不要删除 undo_logs_ 中间元素破坏 UndoLink 下标。
 6. 并发模式分支要明确，不能把 2PL 写集逻辑误当完整 MVCC 版本逻辑。
 
-## 10. 显式事务和隐式事务完整流
+## 9. 显式事务和隐式事务完整流
 
 隐式：语句开始若无活动事务，begin 并设 txn_mode=false；语句成功后自动 commit，失败 abort。
 
@@ -155,7 +137,7 @@ Parser AST -> SetTransactionIsolationPlan -> ExecutionManager 修改 session_iso
 
 `txn_mode_` 只表示自动提交策略，`state_` 才表示事务是否已经结束。
 
-## 11. 物理回滚逐操作
+## 10. 物理回滚逐操作
 
 ### INSERT 的 WriteRecord
 
@@ -171,37 +153,11 @@ Parser AST -> SetTransactionIsolationPlan -> ExecutionManager 修改 session_iso
 
 如果记录里有指向临时缓冲的浅拷贝，事务结束前数据会失效，所以 RmRecord 拷贝必须深拷贝。
 
-## 12. 专题：SAVEPOINT 最小设计
+## 11. READ COMMITTED 与 SNAPSHOT 的读取时间
 
-Transaction 增加：
+SNAPSHOT 通常整个事务固定 read_ts；READ COMMITTED 每条语句可刷新快照，语句边界由 `enter_statement/leave_statement` 标记。
 
-```cpp
-std::map<std::string, size_t> savepoints_;
-```
-
-创建：`savepoints_[name] = write_set_->size()`。回滚到保存点：
-
-```cpp
-size_t target = savepoints_.at(name);
-while (write_set_->size() > target) {
-    auto *record = write_set_->back();
-    sm_manager_->rollback(record, context);
-    delete record;
-    write_set_->pop_back();
-}
-```
-
-然后删除创建位置晚于 target 的其他保存点。ROLLBACK TO 不把事务 state 设 ABORTED，也不释放全部锁，除非题目另有规定。
-
-## 13. 专题：READ COMMITTED 与 SNAPSHOT 的读取时间
-
-SNAPSHOT 通常整个事务固定 read_ts；READ COMMITTED 每条语句可刷新快照。当前 `enter_statement/leave_statement` 是语句边界落点。不能只改 parser 的隔离级别名字，必须让 get_visible_record 使用正确 read_ts。
-
-## 14. 专题：新增只读事务标志
-
-Transaction 增加 `read_only_`，BEGIN READ ONLY 时设置。Insert/Update/Delete 在写前统一检查并拒绝。最好在 DML 共同入口或 TransactionManager prepare_write 处检查，避免三个 Executor 漏一个。
-
-## 15. MVCC 关键结构
+## 12. MVCC 关键结构
 
 | 结构 | 作用 |
 |---|---|
@@ -212,30 +168,12 @@ Transaction 增加 `read_only_`，BEGIN READ ONLY 时设置。Insert/Update/Dele
 | `record_versions_` | 每记录版本链 |
 | `version_info_` | 页/槽到 UndoLink 信息 |
 
-新增写操作必须经 prepare_xxx 登记，否则 get_visible_record 不知道版本；只物理覆盖表页会破坏快照。
+写操作必须经 prepare_xxx 登记，否则 get_visible_record 不知道版本；只物理覆盖表页会破坏快照。
 
-## 16. 事务锁与 latch 区别
+## 13. 事务锁与 latch 区别
 
 事务锁保护逻辑表/记录并跨语句持有；mutex/latch 保护内存结构的短临界区。不能用 `latch_` 替代 SQL 锁，也不应持 TransactionManager 全局 latch 执行磁盘 I/O。
 
-## 17. 事务功能改动排查
-
-```text
-parser/AST 命令
- -> Plan/ExecutionManager
- -> rmdb.cpp 会话 txn_id/自动提交
- -> Transaction 字段
- -> TransactionManager 行为
- -> DML 写前/写后登记
- -> SmManager 表+索引回滚
-```
-
-任何只改中间一层的方案都要检查链路两端。
-
-## 18. 专题：事务超时
-
-Transaction 增加 start_wall_time/deadline；在每条语句入口或锁等待处检查，超时标 ABORTED 并走统一 abort。不能只在客户端返回错误而不回滚已完成写操作。
-
-## 19. 专题：COMMIT 后清理什么
+## 14. COMMIT 后清理什么
 
 物理事务：释放 WriteRecord、锁、索引 latch/deleted page 集合。MVCC：分配 commit_ts、把本事务版本标已提交、更新 watermark/依赖、最后释放资源。清理顺序不能早于持久化和版本发布。

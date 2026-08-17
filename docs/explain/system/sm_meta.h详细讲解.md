@@ -2,7 +2,7 @@
 
 源码入口：[sm_meta.h](../../src/system/sm_meta.h:24)
 
-这个文件定义数据库的**元数据结构**：列、索引、表、整个库。它们就是内存里的"户籍册"，`SmManager::db_` 就是这些结构的组合。**新增元数据字段（DEFAULT、UNIQUE、新类型）的题，主战场就是这里 + 序列化函数**。
+这个文件定义数据库的**元数据结构**：列、索引、表、整个库。它们就是内存里的"户籍册"，`SmManager::db_` 就是这些结构的组合。
 
 ## 〇、四个结构的关系
 
@@ -44,7 +44,7 @@ struct ColMeta {
 
 **offset 的重要性**：记录是一串连续字节，`record.data + col.offset` 就是这一列的起始地址。所有 Executor 读列值都靠它。
 
-### 1.1 序列化（新增字段的必改处）
+### 1.1 序列化
 
 ```cpp
 friend std::ostream &operator<<(std::ostream &os, const ColMeta &col) {
@@ -57,7 +57,7 @@ friend std::istream &operator>>(std::istream &is, ColMeta &col) {
 }
 ```
 
-**关键规则**：`<<` 写的字段顺序必须和 `>>` 读的字段顺序**完全一致**，并且新字段要同时加在 `<<` 和 `>>` 的**相同位置**。否则 create_table 后能正常用，但重启读元数据时字段错位、数据损坏。`ColType` 的 `<< >>` 重载在 defs.h 里，所以这里直接 `os << col.type` 就能读写枚举。
+**关键规则**：`<<` 写的字段顺序必须和 `>>` 读的字段顺序**完全一致**，否则重启读元数据时字段错位、数据损坏。`ColType` 的 `<< >>` 重载在 defs.h 里，所以这里直接 `os << col.type` 就能读写枚举。
 
 ## 二、`IndexMeta`（索引元数据）逐个字段
 
@@ -246,33 +246,10 @@ for (i...) { TabMeta tab; is >> tab; db_meta.tabs_[tab.name] = tab; }
 
 读回时用 `tab.name` 作为 map 的 key 重新注册。
 
-## 五、新增元数据字段的最小模板（DEFAULT 列默认值例子）
+## 五、易错点总结
 
-第 1 步：`ColMeta` 加字段：
-
-```cpp
-bool has_default = false;
-Value default_value;   // 或存字符串文本
-```
-
-第 2 步：**必须**同步 `operator<<` 和 `operator>>`（放在相同位置，`index` 之后）：
-
-```cpp
-os << ... << col.index << ' ' << col.has_default;
-is >> ... >> col.index >> col.has_default;
-```
-
-第 3 步：`create_table`（sm_manager.cpp）里构造 ColMeta 时赋初值。
-
-第 4 步：下游使用（Insert 值数不足时补默认值）在 Insert 分析层完成。
-
-> 注意：`Value` 含 `shared_ptr<RmRecord> raw`，直接文本序列化不方便。建议元数据只存"类型化文本"或简单布尔标志，运行时再转换。**只要新增字段就重开库测试**（旧 meta 文件读不回新字段，要删库重建）。
-
-## 六、易错点总结
-
-1. **`<<` 与 `>>` 字段顺序必须完全一致**，新字段加在相同位置，否则重启元数据错位。
+1. **`<<` 与 `>>` 字段顺序必须完全一致**，否则重启元数据错位。
 2. `IndexMeta::cols` 顺序 = 联合键顺序 = 最左前缀。不要用无序容器保存。
 3. `ColMeta::index` 是 unused，判断索引要看 `TabMeta::indexes`。
 4. `get_index_meta` 的第一列硬性前提：索引 `cols[0]` 必须被查询列覆盖。
 5. `tabs_` 是 map，insert 不使已有引用失效，但 erase 会。
-6. 改磁盘格式/元数据后要删库重建（旧文件格式不兼容）。

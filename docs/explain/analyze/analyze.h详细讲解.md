@@ -193,45 +193,11 @@ CompOp convert_sv_comp_op(ast::SvCompOp op);                           // SV_OP_
 AggType convert_agg_type(ast::AggFuncType func_type);                  // AGG_* → AGG_*
 ```
 
-新增比较符、聚合函数时，这三个 switch/map 是必经之路。
-
-## 四、新增 SELECT 标志的最小改法
-
-以 `is_distinct` 为例（做 DISTINCT 题时直接套）：
-
-1. `ast::SelectStmt` 加 `bool is_distinct = false;`
-2. 本文件 `Query` 加 `bool is_distinct = false;`
-3. `analyze_select` 里创建 Query 后、返回前复制：
-
-```cpp
-query->is_distinct = x->is_distinct;
-```
-
-4. 依次检查所有"另建 Query"的路径（顶层 UNION、派生表分支、子查询）。若功能明确不支持这些组合，在 analyze 层显式拒绝，不能让字段静默丢失。
-
-## 五、JOIN 扩展时 ANTI 的列限制放哪
-
-**必须在列绑定完成后**。此时 `query->cols` 里的 `tab_name` 已是真表名，判断才可靠：
-
-```cpp
-// 启用 join_types 后，在 analyze_select 尾部（check_clause 之后）
-query->join_types = x->join_types;
-for (size_t i = 0; i < query->join_types.size(); ++i) {
-    if (query->join_types[i] != ANTI_JOIN) continue;
-    const std::string &right_tab = query->tables[i + 1];   // ANTI 的右表
-    for (auto &col : query->cols) {
-        if (col.tab_name == right_tab) throw RMDBError("failure");
-    }
-}
-```
-
-`SELECT *` 时 `query->cols` 已展开为全部表列，所以 ANTI 的 `SELECT *` 也会被上面这段拒绝——这符合"最小版本拒绝右表列"的要求。
-
-## 六、易错点总结
+## 四、易错点总结
 
 1. 列绑定必须在 Analyze 做，别把 `ColumnNotFound` 留给执行器。
 2. `id` 在多表都出现时抛 `AmbiguousColumnError`；`t.id` 用别名映射到真表。
 3. 常量写进记录前必须 `init_raw(len)`，长度按列 len，否则字节布局错。
 4. INT→FLOAT 允许提升，反向不能乱截断。
-5. `Query::join_types` 当前在 `#if 0` 里，未参与编译；不能只改 Planner 假定它存在。
+5. `Query::join_types` 当前在 `#if 0` 里，未参与编译。
 6. `sm_manager_` 是借用指针，不负责 delete。

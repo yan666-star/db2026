@@ -2,13 +2,13 @@
 
 源码入口：[executor_nestedloop_join.h](../../src/execution/executor_nestedloop_join.h:43)
 
-这个文件是 **嵌套循环内连接执行器 `NestedLoopJoinExecutor`**。它只实现 **INNER JOIN**（含可选的索引嵌套循环 INLJ）。**LEFT/RIGHT/FULL/ANTI 不要改这个文件硬撑，应走 `executor_extended_join.h`**（当前 `#if 0` 关闭）。
+这个文件是 **嵌套循环内连接执行器 `NestedLoopJoinExecutor`**。它只实现 **INNER JOIN**（含可选的索引嵌套循环 INLJ）。
 
 ## 一、它和 ExtendedJoinExecutor 的区别
 
 | | NestedLoopJoinExecutor | ExtendedJoinExecutor |
 |---|---|---|
-| 语义 | 仅 INNER | LEFT/RIGHT/FULL/ANTI/SEMI |
+| 语义 | 仅 INNER | LEFT/RIGHT/FULL/ANTI |
 | 右表 | 实时扫描，不物化 | 物化到 right_buffer_ |
 | 加速 | 支持 set_index_lookup（INLJ） | 无索引探测 |
 | 状态 | is_end_ + current_rec_ | 更复杂的状态机 |
@@ -122,8 +122,6 @@ void find_match() {
 
 **为什么是两个 while**：外层遍历左行，内层为当前左行遍历所有右行。每发现一个匹配就 `return`（暂停），上层 `Next()` 取走后，下一次 `nextTuple()` 从"当前 right 位置的下一条"继续。这就是 INNER JOIN 一对多时输出多行的机制。
 
-**与 SEMI 的本质区别**：SEMI 找到任意一个右匹配就输出左行并**直接换下一个左行**，不能继续右循环——否则一个左部门有 3 个员工会输出 3 次。
-
 ## 七、构造函数
 
 ```cpp
@@ -171,33 +169,7 @@ std::unique_ptr<RmRecord> Next() override {
 `beginTuple`：左表空直接结束（INNER 空左表结果为空）。否则绑定索引、打开右表、定位首个匹配。
 `nextTuple`：只推进右表（不手动推左表），`find_match` 内部在右表耗尽时自动换左行。**这就是"断点续传"**：状态都收敛在 find_match 里。
 
-## 九、如果题目要求在这个文件里做 SEMI/ANTI
-
-官方建议：**别改这个文件，启用 ExtendedJoinExecutor**。因为 NestedLoop 不物化右表，做 SEMI/ANTI 需要额外状态（`left_has_match_`、`right_matched_`），混进当前状态机会破坏 INNER 的简单性。
-
-如果题目明确限制只能用这个文件，最小思路：
-
-```cpp
-// 增加 join_type_ 和 left_has_match_
-JoinType join_type_ = INNER_JOIN;
-bool left_has_match_ = false;
-
-// find_match 里按类型分支
-if (eval_conditions(*joined, fed_conds_, cols_)) {
-    left_has_match_ = true;
-    if (join_type_ == SEMI_JOIN) {
-        current_rec_ = std::make_unique<RmRecord>(*left_rec);   // 只输出左行
-        is_end_ = false;
-        // 需要额外逻辑确保"一个左行只输出一次"
-        return;
-    }
-    ...
-}
-```
-
-但注意：**SEMI/ANTI 输出 schema 只有左列**，而 NestedLoop 的 `cols_` 是左+右。只输出左行会导致 cols_/len_ 与记录不一致。这也是必须用 ExtendedJoinExecutor 的另一个原因——它维护了"输出 schema（左）"和"求值 schema（左+右）"两套。
-
-## 十、易错点总结
+## 九、易错点总结
 
 1. `right_->beginTuple()` 必须在每个新左行之前调用，否则右表停在上一左行的位置。
 2. `Next()` 返回副本，不能 move 出 current_rec_。

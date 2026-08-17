@@ -2,7 +2,7 @@
 
 源码入口：[sm_manager.cpp](../../src/system/sm_manager.cpp:57)
 
-这个文件是 SmManager 的**实现**：数据库/表/索引的生命周期、元数据落地、事务回滚。**资格赛若考元数据/DDL 相关题，这里是落笔处**。阅读顺序：`create_table` → `create_index` → `drop_table/drop_index` → `rollback_*`。
+这个文件是 SmManager 的**实现**：数据库/表/索引的生命周期、元数据落地、事务回滚。元数据与 DDL 相关的实现都集中在这里。阅读顺序：`create_table` → `create_index` → `drop_table/drop_index` → `rollback_*`。
 
 ## 〇、文件顶部的匿名命名空间
 
@@ -10,7 +10,7 @@
 void copy_file_for_checkpoint(const std::string &source, const std::string &destination);
 ```
 
-一个文件复制工具，给 checkpooint 快照（`create_index_snapshots` / `restore_index_snapshots`）用。普通功能题不用碰。
+一个文件复制工具，给 checkpooint 快照（`create_index_snapshots` / `restore_index_snapshots`）用。与常规功能无关。
 
 ## 一、数据库生命周期
 
@@ -55,8 +55,6 @@ void SmManager::open_db(const std::string& db_name) {
 }
 ```
 
-**新增元数据字段后，这里会踩坑**：`ifs >> db_` 依赖 `operator>>` 把新字段读回。如果 `operator>>` 没同步，读回的元数据错位或读不到，后续所有查表都异常。**改元数据 = 改 sm_meta.h 的序列化 + 这里能正确读回**。
-
 ### 1.3 `flush_meta()`
 
 ```cpp
@@ -85,7 +83,7 @@ void SmManager::close_db() {
 
 ## 二、`show_tables` / `desc_table` / `show_index`（输出类）
 
-这三个都是**只读输出**，用 `RecordPrinter` 打印，并通过 `enable_output_file` 开关同时写入 `output.txt`（判题用）。
+这三个都是**只读输出**，用 `RecordPrinter` 打印，并通过 `enable_output_file` 开关同时写入 `output.txt`。
 
 `desc_table` 逐个列打印：
 
@@ -93,7 +91,7 @@ void SmManager::close_db() {
 std::vector<std::string> field_info = {col.name, coltype2str(col.type), col.index ? "YES" : "NO"};
 ```
 
-注意第三列用的是 `col.index`——但 `ColMeta::index` 是 **unused**，所以这里永远打印 "NO"（除非你实现了它）。**如果题目要求 desc 显示"该列是否有索引"，你需要改成查 `tab.indexes`，不要用 `col.index`**。这是个隐藏坑。
+注意第三列用的是 `col.index`，但 `ColMeta::index` 是 **unused** 字段，所以这里永远打印 "NO"。这是实现上容易忽略的细节。
 
 `show_index` 打印每个索引的列组合字符串，第三列硬编码 `"unique"`。
 
@@ -138,8 +136,7 @@ void SmManager::create_table(const std::string& tab_name, const std::vector<ColD
 **关键点**：
 1. **列顺序 = 物理布局顺序 = INSERT values 对应顺序**。不能用 map 按列名重排。
 2. `record_size` 必须等于所有列长之和。record 层用它在页里算槽地址。
-3. **新增列属性时**：这里构造 ColMeta 的地方要赋新字段初值。
-4. create 完成后立即 `flush_meta()`，保证重启不丢。
+3. create 完成后立即 `flush_meta()`，保证重启不丢。
 
 ## 四、`create_index`（核心，逐段解释）
 
@@ -209,9 +206,9 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
 | `get_value` 预查 | 已存在的 key → 说明有重复 → 撤销建索引并抛 failure |
 | `insert_entry(key, rid)` | 把 (key → 表 Rid) 插进 B+树 |
 
-**create_index 的几个隐藏坑**：
+**create_index 的几个易错点**：
 1. **联合键拼序**：`(dept,id)` 索引，key = dept 4 字节 + id 4 字节。源偏移分别取 dept 和 id 的 ColMeta.offset，**不是**按表列顺序。写错就插错键。
-2. **唯一性预查**：当前实现**默认索引是唯一的**——遇到重复 key 直接抛 failure 并撤销。如果题目要求"普通索引允许重复键"，这里要改：去掉预查 throw，并确认 B+树叶子支持重复键（index 层改动，难度上升）。
+2. **唯一性预查**：当前实现**默认索引是唯一的**——遇到重复 key 直接抛 failure 并撤销。
 3. **清理顺序**：预查失败时，先 close/destroy 索引文件、erase ihs_、pop_back 元数据、flush_meta，最后才 throw。漏一步会残留。
 4. 创建完要 `flush_file_header` + `flush_all_pages` + `sync`，保证索引落盘。
 
@@ -339,18 +336,7 @@ void SmManager::rollback_update(const std::string& table_name, Rid& rid, RmRecor
 3. `memcmp` 比较键：**没变就跳过**（避免白插白删）。
 4. 键变了：插入旧键、删除新键。
 
-## 七、资格赛可能考的改动落点
-
-| 功能 | 改这里哪里 |
-|---|---|
-| CREATE TABLE 新列属性 | `create_table` 构造 ColMeta 处 + sm_meta.h 序列化 + ColDef |
-| UNIQUE vs 普通索引 | `create_index` 去掉/保留唯一性预查 + IndexMeta 加 is_unique + Insert/Update 冲突检查 |
-| desc 显示列索引状态 | `desc_table` 改 `col.index` → 查 `tab.indexes`（当前是坑） |
-| SHOW CREATE TABLE | 新增 `show_create_table`，从 TabMeta 拼 SQL |
-| 表重命名 | 跨层（见 sm_manager.h 详解），难度高 |
-| 回滚新操作类型 | `rollback` switch 加 case + 对应 `rollback_xxx` |
-
-## 八、易错点总结
+## 七、易错点总结
 
 1. create_index 的联合键拼序是**索引列序**，源偏移是 ColMeta.offset，别按表列序拼。
 2. create_index **必须扫旧表装索引**，否则旧数据查不到。

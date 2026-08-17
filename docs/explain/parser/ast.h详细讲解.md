@@ -30,15 +30,11 @@ enum JoinType {
 };
 ```
 
-**当前运行链路只走 `INNER_JOIN`**。LEFT/RIGHT/FULL/ANTI 是扩展骨架；SEMI 要自己加一个枚举值：
+**当前运行链路只走 `INNER_JOIN`**。LEFT/RIGHT/FULL/ANTI 是扩展骨架。
 
-```cpp
-SEMI_JOIN
-```
+枚举是 `enum` 不是 `enum class`，所以写代码时直接用 `INNER_JOIN` 不带作用域前缀。
 
-枚举是 `enum` 不是 `enum class`，所以写代码时直接用 `INNER_JOIN` 不带作用域前缀。新增 SEMI 后，凡是 `switch(join_type)` / `if (join_type == ...)` 的地方都要记得补分支，否则新类型会落进默认行为（通常是 INNER）。
-
-## 二、`SetOpType` 枚举（集合算子，第六题）
+## 二、`SetOpType` 枚举（集合算子）
 
 位置：[ast.h](../../src/parser/ast.h:53)
 
@@ -66,7 +62,7 @@ enum SvType { SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING, SV_TYPE_BOOL };
 enum SvCompOp { SV_OP_EQ, SV_OP_NE, SV_OP_LT, SV_OP_GT, SV_OP_LE, SV_OP_GE };
 ```
 
-`SV_` 前缀是 **S**emantic **V**alue 的意思，强调它存在 yacc 语义值里。Analyze 的 `convert_sv_comp_op` 把它一对一映射成 common 层的 `CompOp`。新增比较符（如 LIKE）要同时在两边加。
+`SV_` 前缀是 **S**emantic **V**alue 的意思，强调它存在 yacc 语义值里。Analyze 的 `convert_sv_comp_op` 把它一对一映射成 common 层的 `CompOp`。
 
 ### 3.3 `OrderByDir` / `SetKnobType` / `TransactionIsolationLevel`
 
@@ -348,7 +344,7 @@ struct SemValue {
 | `sv_cond` / `sv_conds` | BinaryExpr | condition / whereClause |
 | `sv_set_op` | SetOpType | 集合算子 |
 
-**新增非终结符的步骤**：先在 `SemValue` 找能装下它的字段；没有就加一个字段；再在 yacc.y 写 `%type <字段名> 非终结符`。语义值字段必须和产生式 `$$` 的 C++ 类型一致，否则编译/运行错乱。
+语义值字段必须和产生式 `$$` 的 C++ 类型一致，否则编译/运行错乱。
 
 ## 十、全局变量与宏
 
@@ -360,32 +356,10 @@ extern std::shared_ptr<ast::TreeNode> parse_tree;  // 最近一次成功解析�
 - `parse_tree`：定义在 `ast.cpp`，由 yacc 的 `start` 产生式写入。Analyze 拿它做语义分析。
 - `YYSTYPE`：让 bison 生成的解析器把语义值栈的类型定为 `ast::SemValue`。
 
-## 十一、新增一个 SELECT 标志的最小模板（DISTINCT 例子）
+## 十一、易错点总结
 
-在 `SelectStmt` 末尾加默认字段：
-
-```cpp
-bool is_distinct = false;
-```
-
-yacc 的 `select_branch` 里构造完 stmt 后赋值：
-
-```cpp
-stmt->is_distinct = $2;
-```
-
-`Query` 也要加同名字段，`analyze_select` 里显式复制：
-
-```cpp
-query->is_distinct = x->is_distinct;
-```
-
-**为什么用默认 false**：普通 SELECT 的构造代码完全不用改，旧行为自动保持。加字段后必须顺着查 `SelectStmt → Query → Plan → Executor` 全程，任何一环漏传都会静默丢失。
-
-## 十二、易错点总结
-
-1. `SelectStmt::conds` 是 **ON + WHERE 合并**后的扁平数组，没有来源标记。若题目要求区分 ON 和 WHERE 语义，扁平结构不够，要加字段。
-2. `FromClause::join_types` 和 `SelectStmt::join_types` 外层都是 `#if 0`，**当前未参与编译**。要启用 JOIN 扩展，改成 `#if 1` 并打通 Analyze/Planner。
+1. `SelectStmt::conds` 是 **ON + WHERE 合并**后的扁平数组，没有来源标记。
+2. `FromClause::join_types` 和 `SelectStmt::join_types` 外层都是 `#if 0`，**当前未参与编译**。
 3. `SemValue` 字段与 `%type` 绑定必须类型一致。
 4. AST 节点用 `shared_ptr`，多个上层可以共享子表达式；语义值复制 shared_ptr 只增引用计数，不深拷贝。
 5. AST 只保存语法事实，不查询表是否存在——那是 Analyze 的活。

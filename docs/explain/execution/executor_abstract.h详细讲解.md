@@ -128,34 +128,9 @@ std::vector<ColMeta>::const_iterator get_col(const std::vector<ColMeta> &rec_col
 
 在列元数据列表中定位目标列。**两轮查找**：先 `(tab_name, col_name)`，再只看 `col_name`。后者让"无表前缀"的列也能匹配（在 schema 无歧义时）。ProjectionExecutor 构造时用它的返回值 `pos - rec_cols.begin()` 算下标。
 
-## 五、新增执行器必须遵守的约定
+## 五、易错点总结
 
-| 接口 | 必须保证 |
-|---|---|
-| `beginTuple()` | 可重复调用并重置状态；定位首条 |
-| `nextTuple()` | 恰好推进一次；不返回数据 |
-| `Next()` | 不推进；返回独立可用副本 |
-| `is_end()` | 与"当前记录是否存在"一致 |
-| `cols()` / `tupleLen()` | 与 Next 返回的记录布局一致 |
-
-最常见的状态机模板（管道算子）：
-
-```cpp
-void beginTuple() {
-    prev_->beginTuple();
-    find_next_valid();          // 推进到第一条合法结果
-}
-
-void nextTuple() {
-    if (is_end_) return;
-    prev_->nextTuple();
-    find_next_valid();          // 推进到下一条
-}
-```
-
-## 六、易错点总结
-
-1. **基类 `cols()` 默认解引用空指针**，任何新执行器都必须覆盖 cols()，否则 UB。
+1. **基类 `cols()` 默认解引用空指针**，子类必须覆盖 cols()，否则 UB。
 2. `Next()` 必须返回**副本**（`make_unique<RmRecord>(*current_rec_)`），不能把 `current_rec_` move 出去，否则下次调用拿不到。
 3. `plan_`（Plan 裸指针）是**借用**，执行器析构时不能 delete，否则 shared_ptr 后续会二次释放。
 4. `nextTuple()` 与 `Next()` 是不同动作：Next 读、nextTuple 推进。命名很像，别搞混。

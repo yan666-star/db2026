@@ -1,4 +1,4 @@
-# common：线下资格赛修改百科
+# common 模块讲解
 
 ## 0. common 是各层共同使用的“统一语言”
 
@@ -67,7 +67,7 @@ rhs_col={class,id}
 
 ### 0.4 为什么 Condition 按值复制
 
-Condition 只含小型字段和 Value 智能指针，可从 Query 复制到 Plan，再复制到 Executor。执行器得到自己的条件数组，不依赖 Analyze 局部变量。新增字段必须保证复制仍安全。
+Condition 只含小型字段和 Value 智能指针，可从 Query 复制到 Plan，再复制到 Executor。执行器得到自己的条件数组，不依赖 Analyze 局部变量。
 
 ## 1. 目录职责
 
@@ -139,8 +139,6 @@ is_rhs_val=false -> 使用 rhs_col，忽略 rhs_val
 | `HavingCond` | `lhs/op/rhs_val` | 聚合后过滤 |
 | `OrderByItem` | 普通列或聚合项、方向 | 排序规则 |
 
-新增聚合函数要同步：parser AggFuncType -> common AggType -> Analyze 转换 -> AggregationExecutor 状态更新和输出类型。
-
 ## 6. SetClause
 
 | 字段 | 作用 |
@@ -152,7 +150,7 @@ is_rhs_val=false -> 使用 rhs_col，忽略 rhs_val
 | `is_arithmetic` | 是否为加减乘除更新 |
 | `arithmetic_op` | 具体算术操作 |
 
-UpdateExecutor 根据 lhs 的 ColMeta.offset 覆写记录。新增 UPDATE 表达式时，需保证 Analyze 已绑定 rhs_col 并完成类型检查。
+UpdateExecutor 根据 lhs 的 ColMeta.offset 覆写记录。
 
 ## 7. Context
 
@@ -181,101 +179,3 @@ Context 贯穿 Portal、Executor、SmManager。不要在 Executor 析构时释�
 | `timestamp_t` | MVCC 时间戳 |
 
 不要混淆 frame_id 与 page_id；Rid 保存的是 page_no+slot_no，不是缓冲帧号。
-
-## 9. 资格赛修改注意
-
-1. 只有多个层都要读取的信息才放 common。
-2. 新 enum 值必须排查所有 switch。
-3. 新 Value 类型需要定义逻辑值、raw 编码、比较、打印。
-4. 结构字段默认值应保持旧功能行为。
-5. common 是值语义边界；包含 unique_ptr 的结构复制方式要谨慎。
-
-## 10. 如何从记录中读取一个值
-
-Executor 手中有：
-
-```text
-RmRecord.data：整行字节
-ColMeta.offset：列起点
-ColMeta.len：列长度
-ColMeta.type：解释方式
-```
-
-INT：
-
-```cpp
-int value;
-memcpy(&value, rec.data + col.offset, sizeof(int));
-```
-
-FLOAT 同理。STRING 不能假定以 `\0` 结尾，最多读取 col.len 字节，再处理补零/空格。不要直接 `*(int*)(rec.data+offset)`，未对齐地址在某些平台有问题，memcpy 更安全。
-
-## 11. 专题：增加新 CompOp 时同步哪些 switch
-
-假设加入 `OP_LIKE`：
-
-```cpp
-enum CompOp {
-    OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE, OP_LIKE
-};
-```
-
-必须全仓搜索 `switch (op)`、`OP_GE` 等枚举使用点，至少包括：
-
-- Analyze 的 AST->common 转换。
-- execution_eval 的求值。
-- Planner 是否允许该条件选择索引。
-- 连接条件左右交换时是否有反向操作符。
-- EXPLAIN/打印名称。
-
-LIKE 不适合 Planner 当普通范围条件，第一版应作为剩余过滤条件。
-
-## 12. 专题：Value 增加 BOOL/DATE 类型的字段设计
-
-每种值存在两种表示：逻辑值字段和 raw 物理字节。只加 union 字段而不改 init_raw，会导致 InsertExecutor 复制空指针；只加 raw 而不加比较/打印，上层无法正确处理。
-
-同步矩阵：
-
-| 环节 | 要做什么 |
-|---|---|
-| parser | 字面量节点 |
-| Analyze | convert_sv_value/type cast |
-| Value | set_xxx/init_raw |
-| execution_eval | 比较 |
-| record_printer | 输出 |
-| index | ix_compare、min/max key（若允许索引） |
-
-## 13. 专题：SetClause 支持 `a = b + 1`
-
-推荐 common 表示：
-
-```cpp
-struct SetClause {
-    TabCol lhs;
-    bool is_rhs_val;
-    TabCol rhs_col;
-    Value rhs;
-    bool is_arithmetic;
-    ArithmeticOp arithmetic_op;
-};
-```
-
-语义约定：`is_arithmetic=true` 时，rhs_col 是当前记录中的基准列，rhs 是常量操作数。Analyze 确认 lhs/rhs_col 都存在且是数值类型；UpdateExecutor 才读取旧记录计算。
-
-## 14. 所有权细节
-
-`Value.raw` 若是 `shared_ptr<RmRecord>`，复制 Value 时共享 raw；后续不得就地修改共享 raw。`Condition` 和 `SetClause` 在 Query/Plan/Executor 间通常按值复制，因此新增裸指针字段容易悬空，应优先使用值、string、TabCol 或智能指针。
-
-Context 中所有管理器指针是借用。Context 本身不拥有事务；TransactionManager 决定事务释放时间。
-
-## 15. common 改动的反向排查法
-
-修改一个结构后按字段名搜索：
-
-```text
-谁构造它 -> 字段是否赋值
-谁复制它 -> 默认复制是否安全
-谁读取它 -> 新枚举分支是否覆盖
-谁序列化它 -> 磁盘格式是否需要变
-谁打印它 -> 输出是否需要变
-```

@@ -2,7 +2,7 @@
 
 源码入口：[sm_manager.h](../../src/system/sm_manager.h:24)
 
-这个文件声明 **系统管理器 `SmManager`**：数据库的"户籍管理处"。它保存库元数据、所有打开的表/索引句柄，并执行 DDL（create/drop table、create/drop index）和事务回滚。**任何涉及元数据落地的改动（新列属性、新表级约束、SHOW 命令）都在这里接缝**。
+这个文件声明 **系统管理器 `SmManager`**：数据库的"户籍管理处"。它保存库元数据、所有打开的表/索引句柄，并执行 DDL（create/drop table、create/drop index）和事务回滚。
 
 ## 一、`ColDef`（建表列定义）
 
@@ -16,7 +16,7 @@ struct ColDef {
 };
 ```
 
-这是 **Planner → SmManager 之间传递的建表列定义**。Planner 从 `ast::ColDef` 转成这个 `system::ColDef`（见 planner.cpp 的 CreateTable 分支），再传给 `SmManager::create_table`。新增列属性（DEFAULT 等）时，这个结构也要加字段。
+这是 **Planner → SmManager 之间传递的建表列定义**。Planner 从 `ast::ColDef` 转成这个 `system::ColDef`（见 planner.cpp 的 CreateTable 分支），再传给 `SmManager::create_table`。
 
 ## 二、`SmManager` 成员变量逐个解释
 
@@ -93,21 +93,10 @@ void rollback_update(const std::string& table_name, Rid& rid, RmRecord& record, 
 
 `rollback` 按 `WriteRecord` 的写类型分派到三个具体回滚函数。**它们是事务 ABORT 的物理撤销逻辑**，见 sm_manager.cpp 详解。
 
-## 四、新增 DDL 类功能时改哪里
-
-| 功能 | 改动落点 |
-|---|---|
-| 新列属性（DEFAULT） | `ColDef` + `ColMeta` + 序列化 + `create_table` + Insert 补默认值 |
-| UNIQUE 索引 | `IndexMeta` 加 `is_unique` + 序列化 + create_index + Insert/Update 冲突检查 |
-| 新 SHOW 命令 | `show_xxx(Context*)` + RecordPrinter 输出，无需新 Executor |
-| 表重命名 | DbMeta key + TabMeta.name + 每个 ColMeta.tab_name + IndexMeta.tab_name + fhs_ key + 磁盘文件（跨层，难） |
-| 表级约束 | TabMeta 持久化 + Insert/Update 写前验证 + 回滚复用 |
-
-## 五、易错点总结
+## 四、易错点总结
 
 1. `db_` 是内存目录，改动后必须 `flush_meta()`，否则重启丢失。
 2. `fhs_`/`ihs_` 的 key 一个是**表名**、一个是**索引文件名**，别混。索引文件名必须用 `ix_manager_->get_index_name()` 生成，不要手拼字符串。
 3. 句柄是 unique_ptr，Executor 只借用裸指针，析构时不能 delete。
 4. drop 操作必须"句柄 + 物理文件 + 元数据"三处一起清，只删一处会残留。
 5. `Context*` 是借用指针，不负责释放。
-6. 新字段进元数据后，`<< >>` 序列化和 open_db 读回都要同步。
