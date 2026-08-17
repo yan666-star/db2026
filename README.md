@@ -1,43 +1,65 @@
 <div align="center">
-<img src="RMDB.jpg"  width=25%  /> 
+<img src="RMDB.jpg" width="25%" />
+
+**RMDB** · 全国大学生计算机系统能力大赛 · 数据库管理系统赛道
 </div>
 
+参赛队伍在 RMDB 框架上实现完整关系型数据库内核，并具备运行 TPC-C 常用负载的能力。RMDB 由中国人民大学数据库教学团队开发，并得到教育部-华为“智能基座”项目及大赛技术委员会支持。
 
+## 快速开始
 
-全国大学生计算机系统能力大赛数据库管理系统赛道，以培养学生“数据库管理系统内核实现”能力为目标。本次比赛为参赛队伍提供数据库管理系统代码框架RMDB，参赛队伍在RMDB的基础上，设计和实现一个完整的关系型数据库管理系统，该系统要求具备运行TPC-C基准测试（TPC-C是一个面向联机事务处理的测试基准）常用负载的能力。
+```bash
+cmake -S . -B build
+cmake --build build -j
+./build/bin/rmdb <database_name>
+```
 
-RMDB由中国人民大学数据库教学团队开发，同时得到教育部-华为”智能基座”项目的支持，平台、赛题和测试用例等得到了全国大学生计算机系统能力大赛数据库管理系统赛道技术委员会的支持和审核。系统能力大赛专家组和[101计划数据库系统课程](http://101.pku.edu.cn/courseDetails?id=DC767C683D697417E0555943CA7634DE)工作组给予了指导。
+## 实验环境
 
-## 实验环境：
-- 操作系统：Ubuntu 18.04 及以上(64位)
-- 编译器：GCC
-- 编程语言：C++17
-- 管理工具：cmake
-- 推荐编辑器：VScode
+| 项目 | 要求 |
+|------|------|
+| 操作系统 | Ubuntu 18.04+（64 位） |
+| 语言 / 编译器 | C++17 / GCC 7.1+ |
+| 构建 | CMake 3.16+ |
+| 其他 | flex、bison、readline |
 
-### 依赖环境库配置：
-- gcc 7.1及以上版本（要求完全支持C++17）
-- cmake 3.16及以上版本
-- flex
-- bison
-- readline
+## 仓库结构
 
-欲查看有关依赖运行库和编译工具的更多信息，以及如何运行的说明，请查阅[RMDB使用文档](RMDB使用文档.pdf)
+```text
+src/                 内核源码（parser / analyze / optimizer / execution / …）
+SQL测试/              SQL 回归与性能测试脚本
+docs/                 全部文档（见下方导航）
+  official/          官方 PDF 与决赛赛题
+  problems/          初赛题目
+  solutions/         题解
+  performance/       性能优化记录（含 xin 优化历程）
+  design/            架构与正确性设计
+  explain/           分模块源码讲解
+rmdb_client/         客户端
+deps/                第三方依赖
+```
 
-欲了解如何在非Linux系统PC上部署实验环境的指导，请查阅[RMDB环境配置文档](RMDB环境配置文档.pdf)
+根目录 `题目`、`题解` 为指向 `docs/problems`、`docs/solutions` 的兼容软链接。
 
-### 项目说明文档
+## 文档导航
 
-- [RMDB环境配置文档](RMDB环境配置文档.pdf)
-- [RMDB使用文档](RMDB使用文档.pdf)
-- [RMDB项目结构](RMDB项目结构.pdf)
+完整索引见 **[docs/README.md](docs/README.md)**。
 
-## 推荐参考资料
+| 类别 | 链接 |
+|------|------|
+| 使用 / 环境 / 结构 | [docs/official/RMDB使用文档.pdf](docs/official/RMDB使用文档.pdf) · [环境配置](docs/official/RMDB环境配置文档.pdf) · [项目结构](docs/official/RMDB项目结构.pdf) |
+| **xin 优化历程** | [docs/performance/xin优化历程.md](docs/performance/xin优化历程.md) |
+| 性能前后对比 | [docs/performance/性能优化前后版本对比.md](docs/performance/性能优化前后版本对比.md) |
+| 源码讲解 | [docs/explain/README.md](docs/explain/README.md) |
+| 初赛题目 / 题解 | [docs/problems/](docs/problems/) · [docs/solutions/](docs/solutions/) |
 
-- [**Database System Concepts** (***Seventh Edition***)](https://db-book.com/)
-- [PostgreSQL 数据库内核分析](https://book.douban.com/subject/6971366//)
+## 推荐参考
+
+- [Database System Concepts (Seventh Edition)](https://db-book.com/)
+- [PostgreSQL 数据库内核分析](https://book.douban.com/subject/6971366/)
 - [数据库系统实现](https://book.douban.com/subject/4838430/)
 - [数据库系统概论(第5版)](http://chinadb.ruc.edu.cn/second/url/2)
 
 ## License
-RMDB采用[木兰宽松许可证，第2版](https://license.coscl.org.cn/MulanPSL2)，可以自由拷贝和使用源码, 当做修改或分发时, 请遵守[木兰宽松许可证，第2版](https://license.coscl.org.cn/MulanPSL2).
+
+RMDB 采用 [木兰宽松许可证，第 2 版](https://license.coscl.org.cn/MulanPSL2)。拷贝、修改或分发时请遵守该许可证。

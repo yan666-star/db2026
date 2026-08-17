@@ -4,7 +4,7 @@
 
 This repository contains the RMDB C++17 database system. Core source code lives in `src/`, split by subsystem: `parser/`, `analyze/`, `optimizer/`, `execution/`, `record/`, `index/`, `storage/`, `transaction/`, `recovery/`, `replacer/`, `system/`, and `common/`. The main server entry point is `src/rmdb.cpp`; unit-test entry points include `src/unit_test.cpp` and parser tests under `src/parser/`.
 
-Third-party dependencies are under `deps/`. Build outputs go in `build/` and should not be treated as source. SQL regression and performance assets are in the SQL test directory, while problem statements and solution notes are in the Chinese-named topic and solution directories. Root PDFs document environment setup, usage, structure, and contest requirements.
+Third-party dependencies are under `deps/`. Build outputs go in `build/` and should not be treated as source. SQL regression and performance assets are in `SQL测试/`. Documentation lives under `docs/`: `official/` (contest PDFs), `problems/` / `solutions/` (topics and writeups; root `题目` / `题解` are compatibility symlinks), `performance/` (optimization notes including `xin优化历程.md`), `design/`, and `explain/` (module walkthroughs). See `docs/README.md` for the index.
 
 ## Build, Test, and Development Commands
 
