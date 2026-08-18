@@ -42,6 +42,7 @@ docs/                 全部文档（见下方导航）
   problems/          初赛题目
   solutions/         题解
   official/          官方章程与赛题资料
+  AI辅助编程声明1.pdf  AI 辅助编程使用说明
 rmdb_client/         客户端
 deps/                第三方依赖
 ```
@@ -55,6 +56,7 @@ deps/                第三方依赖
 | 源码讲解 | [docs/explain/README.md](docs/explain/README.md) |
 | 性能优化历程 | [docs/performance/xin优化历程.md](docs/performance/xin优化历程.md) |
 | 性能前后对比 | [docs/performance/性能优化前后版本对比.md](docs/performance/性能优化前后版本对比.md) |
+| AI 辅助编程声明 | [docs/AI辅助编程声明1.pdf](docs/AI辅助编程声明1.pdf) |
 
 完整索引见 [docs/README.md](docs/README.md)。
 

@@ -66,7 +66,7 @@ ColMeta Analyze::promote_union_col(const ColMeta &a, const ColMeta &b);  // 升�
 ### 1.4 `analyze_derived_subquery(subquery, alias)` 与 `analyze_top_level_union(x)`
 
 - 派生表：`from (select...) alias` → 递归 `analyze_select(subquery, true)`，取 `get_branch_output_cols`，把所有列 `tab_name` 改成 alias。
-- 顶层 UNION：包装成一个**假表** `__union_output__`，放进 `derived_tables`，再 `tables=[__union_output__]`，让 Planner 走单表路径。这是关键技巧：**顶层 UNION 不需要新增 Plan 分支，伪装成派生表即可**。
+- 顶层 UNION：包装成一个**假表** `__union_output__`，放进 `derived_tables`，再 `tables=[__union_output__]`，让 Planner 走单表路径。这是关键技巧：**顶层 UNION 伪装成派生表，复用单表查询路径**。
 
 ## 二、`analyze_select`（SELECT 主流程）逐步讲解
 
@@ -170,8 +170,6 @@ if (auto sv_col = std::dynamic_pointer_cast<ast::Col>(sv_item->expr)) {
     throw RMDBError("failure");
 }
 ```
-
-**ANSI/ANTI 的"只允许左表列"检查就放在 `query->cols` 绑定完成之后**——此时 `col.tab_name` 已是真表名，判断才可靠。
 
 ### 2.6 GROUP BY / HAVING / ORDER BY / LIMIT
 
@@ -314,7 +312,7 @@ AggType Analyze::convert_agg_type(ast::AggFuncType func_type);                 /
 
 ## 八、易错点总结
 
-1. `SELECT *` 在第 2.5 阶段展开，之后所有限制检查都要考虑它（ANTI 的 `SELECT *` 会被列为限制条件）。
+1. `SELECT *` 在第 2.5 阶段展开，之后所有限制检查都要考虑它。
 2. `conds` 处理顺序是 `get_clause` **然后** `check_clause`，顺序不能反。
 3. 常量的 `init_raw` 必须按列 len 做，否则定长 STRING 的填充字节、INT 的字节序都会错。
 4. `query->parse = std::move(parse)` 在函数末尾；move 之后不能再依赖原 parse 对象。

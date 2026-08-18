@@ -4,14 +4,9 @@
 
 这个文件是 **嵌套循环内连接执行器 `NestedLoopJoinExecutor`**。它只实现 **INNER JOIN**（含可选的索引嵌套循环 INLJ）。
 
-## 一、它和 ExtendedJoinExecutor 的区别
+## 一、当前引擎唯一的连接执行器
 
-| | NestedLoopJoinExecutor | ExtendedJoinExecutor |
-|---|---|---|
-| 语义 | 仅 INNER | LEFT/RIGHT/FULL/ANTI |
-| 右表 | 实时扫描，不物化 | 物化到 right_buffer_ |
-| 加速 | 支持 set_index_lookup（INLJ） | 无索引探测 |
-| 状态 | is_end_ + current_rec_ | 更复杂的状态机 |
+NestedLoopJoinExecutor 是引擎当前**唯一的连接执行器**：只实现 INNER JOIN（含可选的索引嵌套循环 INLJ 加速）。引擎没有接入 LEFT/RIGHT/FULL/ANTI 等其他连接类型。
 
 ## 二、成员变量逐个解释
 

@@ -99,25 +99,6 @@ rhs_val.int_val=7000
 
 为什么传 query：派生表的列不一定在 SmManager.db_ 中，必须通过 query->derived_tables 获取可见 schema。
 
-### 0.6 SEMI JOIN 为什么在 Analyze 限制右表列
-
-执行器只输出左记录。如果用户写：
-
-```sql
-select employees.emp_id
-from departments semi join employees on ...;
-```
-
-执行器的输出中根本没有 emp_id。越晚发现越可能出现 Projection 找不到列。因此在 query->select_items/cols 已绑定后立刻检查 `col.tab_name == query->tables[0]`，把问题停在语义层。
-
-参数示例：
-
-```text
-query->tables[0] = departments
-col.tab_name      = employees
-不相等 -> 拒绝
-```
-
 ## 1. 目录职责
 
 Analyze 位于 parser 和 planner 之间，把“用户写法”转换成“已绑定、已检查的 Query”。
@@ -218,4 +199,3 @@ lhs_col + op + (rhs_val 或 rhs_col)
 2. `id` 在多表都有时应判歧义；`t.id` 用别名映射到真表。
 3. 常量写进记录前需要正确 `raw` 长度。
 4. INT 到 FLOAT 可做允许的提升，反向转换不能随意截断。
-5. 当前 Query 中 JOIN 类型字段仍处于 `#if 0` 模板时，说明运行链尚未启用。

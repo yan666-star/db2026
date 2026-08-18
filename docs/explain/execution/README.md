@@ -112,7 +112,6 @@ tupleLen()    输出记录字节数
 | `executor_filter.h` | FilterExecutor |
 | `executor_projection.h` | ProjectionExecutor |
 | `executor_nestedloop_join.h` | 内连接 |
-| `executor_extended_join.h` | 外连接 |
 | `execution_sort.h` | SortExecutor |
 | `executor_aggregation.h` | AggregationExecutor |
 | `executor_union.h` | UnionExecutor |
@@ -187,10 +186,6 @@ tupleLen()    输出记录字节数
 | `current_rec_` | 当前匹配拼接行 |
 
 `prepare_index_lookup()` 会把左侧等值键传给右侧 IndexScan；`find_match()` 是核心双层循环。
-
-### ExtendedJoinExecutor
-
-[源码](../../src/execution/executor_extended_join.h:1) 为外连接/ANTI 等语义准备，当前尚未接入运行路径。
 
 ### Sort/Aggregation/Union
 

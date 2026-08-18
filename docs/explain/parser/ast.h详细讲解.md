@@ -6,31 +6,24 @@
 
 ## 〇、AST 树长什么样
 
-以 `select a.id from a semi join b on a.id = b.id` 为例，yacc.y 归约完成后得到一棵对象树：
+以 `select a.id from a join b on a.id = b.id` 为例，yacc.y 归约完成后得到一棵对象树：
 
 ```text
 SelectStmt
  ├─ tabs        = [TableRef(a), TableRef(b)]     ← 表引用数组
  ├─ conds       = [BinaryExpr(a.id = b.id)]      ← ON+WHERE 条件数组
- ├─ join_types  = [SEMI_JOIN]                    ← 边类型数组（#if 0 关闭）
  └─ select_items= [SelectItem(Col(a.id))]
 ```
 
 ## 一、`JoinType` 枚举（连接类型）
 
-位置：[ast.h](../../src/parser/ast.h:44)
+位置：[ast.h](../../src/parser/ast.h:19)
 
 ```cpp
-enum JoinType {
-    INNER_JOIN,   // 内连接（当前正式路径：JOIN ... ON）
-    LEFT_JOIN,    // 左外连接（扩展）
-    RIGHT_JOIN,   // 右外连接（扩展）
-    FULL_JOIN,    // 全外连接（扩展）
-    ANTI_JOIN     // 反半连接（扩展）
-};
+enum JoinType { INNER_JOIN, LEFT_JOIN, RIGHT_JOIN, FULL_JOIN };
 ```
 
-**当前运行链路只走 `INNER_JOIN`**。LEFT/RIGHT/FULL/ANTI 是扩展骨架。
+**当前语法与运行链路只使用 `INNER_JOIN`**；LEFT/RIGHT/FULL 仅在枚举中保留，当前没有产生式能构造它们。
 
 枚举是 `enum` 不是 `enum class`，所以写代码时直接用 `INNER_JOIN` 不带作用域前缀。
 
@@ -203,23 +196,10 @@ struct TableRef {
 struct FromClause {
     std::vector<ast::TableRef> tables;                          // 表顺序
     std::vector<std::shared_ptr<ast::BinaryExpr>> conds;        // ON+WHERE 展平
-#if 0  // TODO(JOIN扩展): 改为 #if 1
-    std::vector<JoinType> join_types;                           // 每条 JOIN 边的类型
-#endif
 };
 ```
 
 **`FromClause` 是 `tableList` 产生式的语义值类型**。yacc 动作不断向它 `push_back` 表和条件。
-
-`join_types` 的关键约定（启用后必须保持）：
-
-```text
-tables     = [A, B, C]
-join_types = [A与B的类型, (A⋈B)与C的类型]
-数组长度   = tables.size() - 1
-```
-
-第 i 个 `join_types[i]` 表示"把 `tables[i+1]` 接到当前左深树"时用的连接类型。**不是按 ON 条件数 push**——一个 JOIN 可以有多个 ON 条件，但连接类型永远只有一个。
 
 ## 八、`SelectStmt`（查询主节点）逐个字段
 
@@ -236,9 +216,6 @@ struct SelectStmt : public TreeNode {
     std::vector<SetOpType> set_ops;                          // 分支间算子
     std::vector<std::shared_ptr<BinaryExpr>> conds;          // ON+WHERE
     std::vector<std::shared_ptr<JoinExpr>> jointree;         // 框架字段，未用
-#if 0  // TODO(JOIN扩展): 改为 #if 1
-    std::vector<JoinType> join_types;                        // 边类型
-#endif
     std::vector<std::shared_ptr<Col>> group_bys;             // GROUP BY 列
     std::vector<std::shared_ptr<HavingExpr>> havings;        // HAVING
     bool has_limit = false;                                  // 是否有 LIMIT
@@ -262,7 +239,6 @@ struct SelectStmt : public TreeNode {
 | `union_branches` | vector\<SelectStmt> | yacc | Analyze | 各分支 |
 | `set_ops` | vector\<SetOpType> | yacc | Analyze | 相邻分支算子，长度=branches-1 |
 | `conds` | vector\<BinaryExpr> | yacc ON+WHERE | Analyze | 原始谓词（ON 和 WHERE 合在一起） |
-| `join_types` | vector\<JoinType> | yacc | Analyze | 连接边类型（#if 0） |
 | `group_bys` | vector\<Col> | yacc | Analyze | 分组列 |
 | `havings` | vector\<HavingExpr> | yacc | Analyze | 聚合后条件 |
 | `has_limit` | bool | 构造函数 | Analyze | `limit_num_ >= 0` |
@@ -359,7 +335,6 @@ extern std::shared_ptr<ast::TreeNode> parse_tree;  // 最近一次成功解析�
 ## 十一、易错点总结
 
 1. `SelectStmt::conds` 是 **ON + WHERE 合并**后的扁平数组，没有来源标记。
-2. `FromClause::join_types` 和 `SelectStmt::join_types` 外层都是 `#if 0`，**当前未参与编译**。
-3. `SemValue` 字段与 `%type` 绑定必须类型一致。
-4. AST 节点用 `shared_ptr`，多个上层可以共享子表达式；语义值复制 shared_ptr 只增引用计数，不深拷贝。
-5. AST 只保存语法事实，不查询表是否存在——那是 Analyze 的活。
+2. `SemValue` 字段与 `%type` 绑定必须类型一致。
+3. AST 节点用 `shared_ptr`，多个上层可以共享子表达式；语义值复制 shared_ptr 只增引用计数，不深拷贝。
+4. AST 只保存语法事实，不查询表是否存在——那是 Analyze 的活。

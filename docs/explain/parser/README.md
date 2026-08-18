@@ -5,7 +5,7 @@
 parser 的输入是一串字符：
 
 ```sql
-select a.id from a semi join b on a.id = b.id;
+select a.id from a join b on a.id = b.id;
 ```
 
 计算机不会直接理解 SQL。parser 分两步：
@@ -56,49 +56,6 @@ $$ = $1;
 ```
 
 即：把修改完成的 FromClause 作为这轮 tableList 的结果。
-
-### 0.2 SEMI JOIN 产生式逐参数解释
-
-```yacc
-tableList SEMI JOIN tableRef ON whereClause
-```
-
-位置发生变化：
-
-```text
-$1=旧tableList
-$2=SEMI
-$3=JOIN
-$4=右表
-$5=ON
-$6=条件数组
-```
-
-所以代码必须是：
-
-```cpp
-$1.tables.push_back($4);       // 不是 $3，$3 是 JOIN token
-$1.join_types.push_back(SEMI_JOIN);
-$1.conds.insert($1.conds.end(), $6.begin(), $6.end());
-$$ = $1;
-```
-
-例子：
-
-```sql
-from departments semi join employees
-on departments.id = employees.dept_id
-```
-
-产生：
-
-```text
-tables=[departments, employees]
-join_types=[SEMI_JOIN]
-conds=[departments.id = employees.dept_id]
-```
-
-这里 `join_types` 不能按条件数保存，因为一个 JOIN 后可能有两个 ON 条件，但连接类型仍只有一个。
 
 ## 1. 目录职责
 
@@ -203,7 +160,7 @@ $1.conds.insert($1.conds.end(), $5.begin(), $5.end());
 | `union_branches` | SELECT 数组 | 集合语法 | Analyze | 各分支 |
 | `set_ops` | SetOpType 数组 | 集合语法 | Analyze/Union | 相邻分支运算符 |
 
-当前 `JoinType` 已定义 INNER/LEFT/RIGHT/FULL/ANTI，但运行链路不等于全部启用。
+`JoinType` 枚举定义了 INNER/LEFT/RIGHT/FULL；当前语法与运行链路只使用 `INNER_JOIN`。
 
 ## 7. SemValue
 

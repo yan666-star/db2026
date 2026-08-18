@@ -151,61 +151,7 @@ ON a.id=b.id AND b.score>60
 
 `$5` 中有两个 BinaryExpr。执行 insert 后，两个元素按原顺序进入 conds。
 
-## 八、`ANTI JOIN` 产生式中的编号
-
-语法：
-
-```yacc
-tableList ANTI JOIN tableRef ON whereClause
-```
-
-编号：
-
-```text
-$1 tableList
-$2 ANTI
-$3 JOIN
-$4 tableRef
-$5 ON
-$6 whereClause
-```
-
-正确动作：
-
-```cpp
-$1.tables.push_back($4);
-$1.conds.insert($1.conds.end(), $6.begin(), $6.end());
-$1.join_types.push_back(ANTI_JOIN);
-$$ = $1;
-```
-
-不能照抄普通 JOIN 的 `$3/$5`。普通 JOIN 只有一个关键字，ANTI JOIN 有两个关键字，右表和条件都向后移动一位。
-
-执行这个动作时还没有做反连接。这里只保存：
-
-```text
-新增的右表是谁
-ON 条件有哪些
-这一条边是 ANTI_JOIN
-```
-
-## 九、`SEMI JOIN` 产生式
-
-SEMI 与 ANTI 的语法结构相同：
-
-```yacc
-| tableList SEMI JOIN tableRef ON whereClause
-{
-    $1.tables.push_back($4);
-    $1.conds.insert($1.conds.end(), $6.begin(), $6.end());
-    $1.join_types.push_back(SEMI_JOIN);
-    $$ = $1;
-}
-```
-
-Parser 层唯一差异是枚举值。SEMI 的“有匹配输出一次左行”由执行器实现。
-
-## 十、SELECT 主产生式中的数据搬运
+## 八、SELECT 主产生式中的数据搬运
 
 位置：[yacc.y](../../src/parser/yacc.y:492)
 
@@ -235,7 +181,7 @@ conds.insert(conds.end(), $5.begin(), $5.end());
 
 `std::move($4.conds)` 把 vector 内部缓冲交给局部变量 `conds`，减少复制。此后不要再依赖 `$4.conds` 的原内容。
 
-## 十一、条件列表的 AND 语义
+## 九、条件列表的 AND 语义
 
 `whereClause` 通常把：
 
@@ -245,7 +191,7 @@ c1 AND c2 AND c3
 
 展平成 vector `[c1,c2,c3]`。执行层 `eval_conditions()` 依次判断，任一 false 就返回 false。
 
-## 十二、动作代码的所有权
+## 十、动作代码的所有权
 
 AST 节点大量使用 `shared_ptr`：
 

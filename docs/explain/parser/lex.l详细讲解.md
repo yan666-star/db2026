@@ -5,13 +5,13 @@
 这个文件是 **Flex 词法分析器源文件**。它不做任何语义判断，只做一件事：把 SQL 字符流切成一个个 token，交给 yacc.y。SQL 是一串字符：
 
 ```sql
-select * from a semi join b on a.id = b.id;
+select * from a join b on a.id = b.id;
 ```
 
 lex.l 把它切成：
 
 ```text
-SELECT  *  FROM  IDENTIFIER(a)  SEMI  JOIN  IDENTIFIER(b)  ON  IDENTIFIER(a)  .  IDENTIFIER(id)  =  IDENTIFIER(b)  .  IDENTIFIER(id)  ;
+SELECT  *  FROM  IDENTIFIER(a)  JOIN  IDENTIFIER(b)  ON  IDENTIFIER(a)  .  IDENTIFIER(id)  =  IDENTIFIER(b)  .  IDENTIFIER(id)  ;
 ```
 
 yacc.y 拿到这串 token 后再判断排列是否合法。

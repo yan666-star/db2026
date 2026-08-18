@@ -132,7 +132,7 @@ Plan 使用 `shared_ptr`。父 Plan 通过 `subplan_` 或 `left_/right_` 引用�
 | `left_` | 已连接的左子树 |
 | `right_` | 新加入的右表计划 |
 | `conds_` | 本层跨左右输入的条件 |
-| `type` | INNER/LEFT/RIGHT/FULL/ANTI；当前活动构造默认 INNER |
+| `type` | JoinType 连接类型；当前构造器恒置 INNER_JOIN |
 
 ### ProjectionPlan
 

@@ -63,9 +63,6 @@ class Query{
     std::map<std::string, std::string> alias_to_table;   // 别名 → 真表名
     std::map<std::string, std::string> table_to_alias;   // 真表名 → 别名
     std::map<std::string, DerivedTableInfo> derived_tables; // 派生表
-#if 0  // TODO(JOIN扩展): 改为 #if 1
-    std::vector<JoinType> join_types;              // 连接边类型
-#endif
     Query(){}
 };
 ```
@@ -91,14 +88,6 @@ class Query{
 | `alias_to_table` | map | analyze_select | check_column | 别名消解 |
 | `table_to_alias` | map | analyze_select | Portal/EXPLAIN | 输出展示 |
 | `derived_tables` | map | analyze_select | Planner | 派生表/UNION |
-| `join_types` | vector\<JoinType> | analyze_select | Planner | 边类型（#if 0） |
-
-**`join_types` 的关键约定**（启用后必须保持）：
-
-```text
-join_types[i] = tables[i] 与 tables[i+1] 之间的连接类型
-长度应等于 tables.size() - 1
-```
 
 ## 三、`Analyze` 类接口逐个解释
 
@@ -199,5 +188,4 @@ AggType convert_agg_type(ast::AggFuncType func_type);                  // AGG_* 
 2. `id` 在多表都出现时抛 `AmbiguousColumnError`；`t.id` 用别名映射到真表。
 3. 常量写进记录前必须 `init_raw(len)`，长度按列 len，否则字节布局错。
 4. INT→FLOAT 允许提升，反向不能乱截断。
-5. `Query::join_types` 当前在 `#if 0` 里，未参与编译。
-6. `sm_manager_` 是借用指针，不负责 delete。
+5. `sm_manager_` 是借用指针，不负责 delete。

@@ -14,7 +14,7 @@ Query → Optimizer::plan_query → Planner::do_planner → Plan 树 → Portal 
 
 ```text
 ProjectionPlan          →  ProjectionExecutor
-  └─ JoinPlan           →  NestedLoopJoinExecutor / ExtendedJoinExecutor
+  └─ JoinPlan           →  NestedLoopJoinExecutor
        ├─ ScanPlan      →  SeqScanExecutor / IndexScanExecutor
        └─ ScanPlan      →  SeqScanExecutor
 ```
@@ -110,18 +110,10 @@ class JoinPlan : public Plan {
             ...
             type = INNER_JOIN;
         }
-#if 0  // TODO(JOIN扩展): 改为 #if 1
-        JoinPlan(PlanTag tag, std::shared_ptr<Plan> left, std::shared_ptr<Plan> right,
-                 std::vector<Condition> conds, JoinType join_type)
-        {
-            ...
-            type = join_type;
-        }
-#endif
         std::shared_ptr<Plan> left_;   // 左子树（左深树中已连接的子计划）
         std::shared_ptr<Plan> right_;  // 右子树（新接入的表扫描/过滤计划）
         std::vector<Condition> conds_; // 本层 Join 条件（两端分属已连接表与新表）
-        JoinType type;                 // 当前固定 INNER；扩展后可为 LEFT/RIGHT/FULL/ANTI/SEMI
+        JoinType type;                 // future TODO: 后续可以支持的连接类型
 };
 ```
 

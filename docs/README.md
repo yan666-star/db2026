@@ -12,6 +12,7 @@
 | [problems/](problems/) | 初赛题目（第 1–10 题 + 性能测试） |
 | [solutions/](solutions/) | 题解与实现笔记 |
 | [official/](official/) | 官方章程、赛题与测试说明 |
+| [AI辅助编程声明1.pdf](AI辅助编程声明1.pdf) | AI 辅助编程使用说明 |
 
 ## 建议阅读顺序
 
@@ -25,3 +26,4 @@
 
 - 构建与运行：仓库根目录 [README.md](../README.md)
 - SQL 回归与性能脚本：`SQL测试/`
+- AI 辅助编程声明：[AI辅助编程声明1.pdf](AI辅助编程声明1.pdf)
